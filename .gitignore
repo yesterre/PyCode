@@ -1,0 +1,67 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build and packaging output
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Environment variables, API keys, and local secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+*.secret
+*.secrets
+secrets.*
+credentials.*
+*.pem
+*.key
+*.crt
+*.p12
+
+# Local-only app configuration
+*.local
+*.local.*
+config.local.*
+settings.local.*
+
+# Local data, databases, and logs
+*.log
+logs/
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+data/
+tmp/
+temp/
+
+# IDE, editor, and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Local agent/tool state
+.agents/
+.codex/
