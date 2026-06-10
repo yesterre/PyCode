@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+pytest-cache-files-*/
+.pytest_tmp/
 .mypy_cache/
 .ruff_cache/
 .hypothesis/
@@ -53,6 +55,8 @@ logs/
 data/
 tmp/
 temp/
+index.json
+.pclens/
 
 # IDE, editor, and OS files
 .vscode/
