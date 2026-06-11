@@ -1,7 +1,8 @@
 import os
 from pathlib import Path
 
-from services.user_service import UserService
+from controllers.user_controller import UserController, create_user_controller
+from services.user_service import UserService, preview_user_name
 from utils.formatting import format_user_name
 
 
@@ -15,22 +16,24 @@ def load_config(config_path: Path) -> dict[str, str]:
 async def async_main() -> None:
     service = UserService()
     user = service.get_user(1)
-    print(format_user_name(user.name))
+    print(preview_user_name(user))
 
 
 class AppRunner:
-    def __init__(self, service: UserService) -> None:
-        self.service = service
+    def __init__(self, controller: UserController) -> None:
+        self.controller = controller
 
     def run(self) -> None:
-        user = self.service.get_user(1)
-        print(f"Hello, {format_user_name(user.name)}")
+        user_text = self.controller.show_user(1)
+        guest_text = self.controller.show_guest()
+        print(f"Hello, {format_user_name(user_text)}")
+        print(f"Guest: {guest_text}")
 
 
 def main() -> None:
     config = load_config(Path("settings.toml"))
-    service = UserService()
-    runner = AppRunner(service)
+    controller = create_user_controller()
+    runner = AppRunner(controller)
     print(f"Running in {config['mode']} mode")
     runner.run()
 

@@ -24,9 +24,9 @@
 推荐结构是：
 
 ```
-pycodelens/
+pycode/
 │
-├── pycodelens/
+├── pycode/
 │   ├── __init__.py
 │   ├── cli.py
 │   ├── scanner.py
@@ -60,7 +60,7 @@ pycodelens/
 
 ---
 
-## 阶段 1：代码结构索引 MVP
+## 阶段 1：代码结构索引 MVP （已完成）
 
 这是第一个真正的 MVP。
 
@@ -91,7 +91,7 @@ cli.py
 最终希望用户可以运行：
 
 ```bash
-python -m pycodelens.cli index ./examples/demo_project
+python -m pycode.cli index ./examples/demo_project
 ```
 
 然后生成：
@@ -226,7 +226,7 @@ query.py
 项目结构变成：
 
 ```
-pycodelens/
+pycode/
 │
 ├── cli.py
 ├── scanner.py
@@ -315,10 +315,10 @@ impact：分析改动影响
 命令可以设计成：
 
 ```bash
-pycodelens ask "这个项目的入口在哪里？"
-pycodelens explain app/main.py
-pycodelens onboard
-pycodelens impact app/models/user.py
+pycode ask "这个项目的入口在哪里？"
+pycode explain app/main.py
+pycode onboard
+pycode impact app/models/user.py
 ```
 
 这一阶段可以新增模块：

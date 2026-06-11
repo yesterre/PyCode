@@ -18,16 +18,21 @@ def test_parse_python_file_extracts_basic_structure(tmp_path: Path) -> None:
                 "",
                 "class AppRunner:",
                 "    def __init__(self):",
-                "        pass",
+                "        setup_runner()",
                 "",
                 "    async def run_async(self):",
-                "        pass",
+                "        self.load()",
                 "",
                 "def main():",
-                "    pass",
+                "    service = UserService()",
+                "    service.get_user(1)",
+                "    build_default_service()",
                 "",
                 "async def async_main():",
-                "    pass",
+                "    await run_job()",
+                "",
+                "if __name__ == \"__main__\":",
+                "    main()",
             ]
         ),
         encoding="utf-8",
@@ -48,6 +53,19 @@ def test_parse_python_file_extracts_basic_structure(tmp_path: Path) -> None:
     assert len(result.classes) == 1
     assert result.classes[0].name == "AppRunner"
     assert result.classes[0].methods == ["__init__", "run_async"]
+    assert result.call_infos[0].caller == "AppRunner.__init__"
+    assert result.call_infos[0].calls == ["setup_runner"]
+    assert result.call_infos[1].caller == "AppRunner.run_async"
+    assert result.call_infos[1].calls == ["self.load"]
+    assert result.call_infos[2].caller == "main"
+    assert result.call_infos[2].calls == [
+        "UserService",
+        "service.get_user",
+        "build_default_service",
+    ]
+    assert result.call_infos[3].caller == "async_main"
+    assert result.call_infos[3].calls == ["run_job"]
+    assert result.has_main_guard is True
 
 
 def test_parse_python_file_defaults_to_file_name_without_project_path(
@@ -60,6 +78,32 @@ def test_parse_python_file_defaults_to_file_name_without_project_path(
 
     assert result.path == "standalone.py"
     assert result.functions == ["main"]
+    assert result.call_infos == []
+    assert result.has_main_guard is False
+
+
+def test_parse_python_file_extracts_module_and_attribute_calls(
+    tmp_path: Path,
+) -> None:
+    file_path = tmp_path / "calls.py"
+    file_path.write_text(
+        "\n".join(
+            [
+                "import os",
+                "",
+                "def load_config():",
+                "    value = os.getenv('MODE')",
+                "    print(value)",
+                "    return str(value)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = parse_python_file(file_path, tmp_path)
+
+    assert result.call_infos[0].caller == "load_config"
+    assert result.call_infos[0].calls == ["os.getenv", "print", "str"]
 
 
 def test_parse_python_file_supports_utf8_bom(tmp_path: Path) -> None:
