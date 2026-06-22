@@ -1,8 +1,8 @@
 # PyCode
 
-PyCode 是一个 Python 代码库理解与改动影响分析 Agent 项目。当前已完成阶段二：代码关系图谱。
+PyCode 是一个 Python 代码库理解与改动影响分析 Agent 项目。当前已进入阶段三：代码库问答和轻量 LLM 接入。
 
-现阶段项目暂不接入 LLM、不做自然语言问答、不自动修改代码，重点是先把 Python 项目的结构信息和基础关系稳定提取出来，为后续代码库问答、影响分析和 Agent 工具调用提供结构化基础。
+现阶段项目基于阶段一索引和阶段二代码图谱选择有限上下文，再通过 LLM 解释这些证据。当前不自动修改代码，不让 LLM 自己读取整个仓库，也不做多 Agent。
 
 ## 已完成功能
 
@@ -33,6 +33,13 @@ PyCode 是一个 Python 代码库理解与改动影响分析 Agent 项目。当�
 - 提供 `examples/demo_project` 示例项目用于阶段二验证。
 - 提供 parser、graph_builder、query、storage、cli 等单元测试。
 
+### 阶段三：代码库问答
+
+- 基于 `index.json` 和 `code_graph.json` 选择有限上下文。
+- 支持自然语言问答、文件解释、新手阅读顺序和初步影响分析。
+- 使用 OpenAI Responses API 做第一版 LLM 接入。
+- 回答输出会附带文件路径、节点或图谱关系作为依据位置。
+
 ## 项目结构
 
 ```text
@@ -45,6 +52,9 @@ pycode/
   storage.py
   graph_builder.py
   query.py
+  retriever.py
+  prompt_builder.py
+  llm_client.py
 
 examples/
   demo_project/
@@ -65,7 +75,9 @@ tests/
   test_cli.py
   test_graph_builder.py
   test_parser.py
+  test_prompt_builder.py
   test_query.py
+  test_retriever.py
   test_scanner.py
   test_storage.py
 
@@ -190,6 +202,70 @@ Graph file: examples\demo_project\.pclens\code_graph.json
 .\.venv\Scripts\python.exe -m pycode.cli query imports .\examples\demo_project main.py --graph .\examples\demo_project\.pclens\code_graph.json
 ```
 
+## 阶段三：代码库问答
+
+阶段三命令需要先生成索引和图谱：
+
+```powershell
+.\.venv\Scripts\python.exe -m pycode.cli index .\examples\demo_project
+.\.venv\Scripts\python.exe -m pycode.cli graph .\examples\demo_project
+```
+
+真实调用 LLM 前需要设置 OpenAI API Key：
+
+```powershell
+$env:OPENAI_API_KEY="你的 API Key"
+```
+
+也可以复制 `.env.example` 为 `.env`，在 `.env` 中配置模型、API Key 和 base URL：
+
+```text
+OPENAI_API_KEY=你的 API Key
+OPENAI_MODEL=gpt-5.4-mini
+OPENAI_API_TYPE=responses
+OPENAI_BASE_URL=https://api.openai.com/v1
+```
+
+如果使用 DeepSeek、Qwen 或其它 OpenAI-compatible 网关，遇到不支持 `/responses` 的错误时，将 API 类型改为 chat：
+
+```text
+OPENAI_MODEL=deepseek-v4-pro-202606
+OPENAI_API_TYPE=chat
+OPENAI_BASE_URL=https://你的兼容网关/v1
+```
+
+配置优先级为：终端环境变量优先于 `.env`，命令行 `--model` 优先于 `OPENAI_MODEL`。
+
+自然语言问答：
+
+```powershell
+.\.venv\Scripts\python.exe -m pycode.cli ask .\examples\demo_project "这个项目的入口在哪里？"
+```
+
+解释单个文件：
+
+```powershell
+.\.venv\Scripts\python.exe -m pycode.cli explain .\examples\demo_project main.py
+```
+
+生成新手阅读顺序：
+
+```powershell
+.\.venv\Scripts\python.exe -m pycode.cli onboard .\examples\demo_project
+```
+
+初步影响分析：
+
+```powershell
+.\.venv\Scripts\python.exe -m pycode.cli impact .\examples\demo_project services/user_service.py
+```
+
+指定模型：
+
+```powershell
+.\.venv\Scripts\python.exe -m pycode.cli ask .\examples\demo_project "这个项目的入口在哪里？" --model gpt-5.5
+```
+
 ## 运行测试
 
 运行全部测试：
@@ -207,7 +283,7 @@ python -m pytest tests --basetemp=.pytest_tmp --cache-clear
 正常通过时会看到类似：
 
 ```text
-38 passed
+48 passed
 ```
 
 ## 当前局限
@@ -217,13 +293,14 @@ python -m pytest tests --basetemp=.pytest_tmp --cache-clear
 - 当前不做复杂类型推断，所以 `runner.run()`、`self.service.get_user()` 这类变量方法调用不一定能精确解析到真实方法节点。
 - 当前 import 解析以常见项目内部导入为主，对标准库和第三方库只建立外部节点。
 - 当前入口判断属于初步判断，主要依据文件名和顶层 `main` 函数。
-- 当前不接入 LLM。
+- 当前 LLM 只解释 PyCode 选择出的有限上下文。
 - 当前不自动修改代码。
+- 当前不让 LLM 自己读取整个仓库。
 - 当前不使用 Neo4j 等图数据库，图谱先保存为 JSON。
 
 ## 后续计划
 
-- 阶段三：基于 `index.json` 和 `code_graph.json` 做代码库问答，引入 LLM，但重点放在上下文选择。
+- 阶段三：继续增强代码库问答的上下文选择、函数级片段截取和回答质量。
 - 增强调用关系解析，把更多方法调用解析到准确的类方法节点。
 - 将 `has_main_guard` 等入口线索写入图谱，提高入口判断准确度。
 - 优化 CLI 查询输出，展示更友好的文件路径、节点名称和关系说明。

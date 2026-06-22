@@ -1,8 +1,11 @@
 import argparse
+import sys
 from pathlib import Path
 
 from pycode.graph_builder import build_code_graph
+from pycode.llm_client import DEFAULT_MODEL, LLMClient, OpenAIResponsesClient
 from pycode.models import CodeGraph, GraphEdge, GraphNode, ProjectIndex
+from pycode.prompt_builder import build_code_qa_prompt
 from pycode.parser import parse_python_file
 from pycode.query import (
     find_entry_candidates,
@@ -10,8 +13,15 @@ from pycode.query import (
     get_file_imports,
     get_function_calls,
 )
+from pycode.retriever import (
+    RetrievalResult,
+    retrieve_explain,
+    retrieve_for_question,
+    retrieve_impact,
+    retrieve_onboard,
+)
 from pycode.scanner import scan_python_files
-from pycode.storage import load_graph, save_graph, save_index
+from pycode.storage import load_graph, load_index, save_graph, save_index
 
 
 DEFAULT_INDEX_DIR = ".pclens"
@@ -90,6 +100,53 @@ def query_project_graph(
     return result
 
 
+def ask_project(
+    project_path: Path,
+    question: str,
+    model: str | None = None,
+    llm_client: LLMClient | None = None,
+) -> str:
+    """Answer a natural-language question using selected project context."""
+    index, graph = _load_project_artifacts(project_path)
+    retrieval = retrieve_for_question(question, project_path, index, graph)
+    return _answer_with_retrieval(retrieval, model, llm_client)
+
+
+def explain_project_target(
+    project_path: Path,
+    file_path: str,
+    model: str | None = None,
+    llm_client: LLMClient | None = None,
+) -> str:
+    """Explain one project file using selected context."""
+    index, graph = _load_project_artifacts(project_path)
+    retrieval = retrieve_explain(file_path, project_path, index, graph)
+    return _answer_with_retrieval(retrieval, model, llm_client)
+
+
+def onboard_project(
+    project_path: Path,
+    model: str | None = None,
+    llm_client: LLMClient | None = None,
+) -> str:
+    """Generate a newcomer reading order from project graph context."""
+    index, graph = _load_project_artifacts(project_path)
+    retrieval = retrieve_onboard(project_path, index, graph)
+    return _answer_with_retrieval(retrieval, model, llm_client)
+
+
+def impact_project_target(
+    project_path: Path,
+    file_path: str,
+    model: str | None = None,
+    llm_client: LLMClient | None = None,
+) -> str:
+    """Analyze the likely impact of changing one file."""
+    index, graph = _load_project_artifacts(project_path)
+    retrieval = retrieve_impact(file_path, project_path, index, graph)
+    return _answer_with_retrieval(retrieval, model, llm_client)
+
+
 def _print_index_summary(index: ProjectIndex, output_path: Path) -> None:
     import_count = sum(len(file.imports) for file in index.files)
     class_count = sum(len(file.classes) for file in index.files)
@@ -139,6 +196,55 @@ def _print_query_result(
             print(f"{item.source} --{item.type}--> {item.target}")
         else:
             print(f"{item.id} ({item.type})")
+
+
+def _load_project_artifacts(project_path: Path) -> tuple[ProjectIndex, CodeGraph]:
+    index_path = project_path / DEFAULT_INDEX_DIR / DEFAULT_INDEX_FILE
+    graph_path = project_path / DEFAULT_INDEX_DIR / DEFAULT_GRAPH_FILE
+    missing: list[str] = []
+    if not index_path.exists():
+        missing.append(str(index_path))
+    if not graph_path.exists():
+        missing.append(str(graph_path))
+    if missing:
+        raise FileNotFoundError(
+            "Missing PyCode artifacts: "
+            + ", ".join(missing)
+            + ". Run `pycode index <project_path>` and `pycode graph <project_path>` first."
+        )
+    return load_index(index_path), load_graph(graph_path)
+
+
+def _answer_with_retrieval(
+    retrieval: RetrievalResult,
+    model: str,
+    llm_client: LLMClient | None,
+) -> str:
+    prompt = build_code_qa_prompt(retrieval)
+    client = llm_client or OpenAIResponsesClient(model=model)
+    answer = client.generate(prompt)
+    _print_llm_answer(answer, retrieval)
+    return answer
+
+
+def _print_llm_answer(answer: str, retrieval: RetrievalResult) -> None:
+    print("PyCode answer completed.")
+    print(f"Intent: {retrieval.intent}")
+    print("Answer:")
+    _safe_print(answer)
+    print("Evidence:")
+    evidence = retrieval.evidence
+    if not evidence:
+        print("- N/A")
+        return
+    for item in evidence:
+        _safe_print(f"- {item}")
+
+
+def _safe_print(text: str) -> None:
+    encoding = sys.stdout.encoding or "utf-8"
+    safe_text = text.encode(encoding, errors="replace").decode(encoding)
+    print(safe_text)
 
 
 def _count_by_type(items: list[GraphNode] | list[GraphEdge]) -> dict[str, int]:
@@ -223,7 +329,71 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to an existing code_graph.json. Defaults to <project>/.pclens/code_graph.json.",
     )
 
+    ask_parser = subparsers.add_parser(
+        "ask",
+        help="Ask a natural-language question about a generated project graph.",
+    )
+    ask_parser.add_argument(
+        "project_path",
+        type=Path,
+        help="Python project directory containing .pclens/index.json and .pclens/code_graph.json.",
+    )
+    ask_parser.add_argument(
+        "question",
+        help="Natural-language question about the project.",
+    )
+    _add_model_argument(ask_parser)
+
+    explain_parser = subparsers.add_parser(
+        "explain",
+        help="Explain one project file using indexed context.",
+    )
+    explain_parser.add_argument(
+        "project_path",
+        type=Path,
+        help="Python project directory containing PyCode artifacts.",
+    )
+    explain_parser.add_argument(
+        "file_path",
+        help="Project-relative file path to explain.",
+    )
+    _add_model_argument(explain_parser)
+
+    onboard_parser = subparsers.add_parser(
+        "onboard",
+        help="Generate a newcomer reading order for the project.",
+    )
+    onboard_parser.add_argument(
+        "project_path",
+        type=Path,
+        help="Python project directory containing PyCode artifacts.",
+    )
+    _add_model_argument(onboard_parser)
+
+    impact_parser = subparsers.add_parser(
+        "impact",
+        help="Analyze likely impact of changing one file.",
+    )
+    impact_parser.add_argument(
+        "project_path",
+        type=Path,
+        help="Python project directory containing PyCode artifacts.",
+    )
+    impact_parser.add_argument(
+        "file_path",
+        help="Project-relative file path to analyze.",
+    )
+    _add_model_argument(impact_parser)
+
     return parser
+
+
+def _add_model_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--model",
+        default=None,
+        help=f"OpenAI model to use. Defaults to OPENAI_MODEL from .env, then {DEFAULT_MODEL}.",
+    )
 
 
 def main() -> None:
@@ -241,6 +411,14 @@ def main() -> None:
             args.target,
             args.graph_path,
         )
+    elif args.command == "ask":
+        ask_project(args.project_path, args.question, args.model)
+    elif args.command == "explain":
+        explain_project_target(args.project_path, args.file_path, args.model)
+    elif args.command == "onboard":
+        onboard_project(args.project_path, args.model)
+    elif args.command == "impact":
+        impact_project_target(args.project_path, args.file_path, args.model)
 
 
 if __name__ == "__main__":

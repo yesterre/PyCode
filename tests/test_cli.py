@@ -2,7 +2,16 @@ from pathlib import Path
 
 import pytest
 
-from pycode.cli import build_parser, graph_project, query_project_graph
+from pycode.cli import (
+    ask_project,
+    build_parser,
+    explain_project_target,
+    graph_project,
+    impact_project_target,
+    index_project,
+    onboard_project,
+    query_project_graph,
+)
 from pycode.models import GraphEdge, GraphNode
 
 
@@ -96,6 +105,88 @@ def test_build_parser_accepts_stage_two_commands() -> None:
     assert query_args.target == "func:main.py:main"
 
 
+def test_stage_three_commands_use_mock_llm_and_print_evidence(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project_path = _create_sample_project(tmp_path)
+    index_project(project_path)
+    graph_project(project_path)
+    capsys.readouterr()
+    llm = _MockLLM()
+
+    answer = ask_project(project_path, "这个项目的入口在哪里？", llm_client=llm)
+
+    captured = capsys.readouterr()
+    assert answer == "mock answer"
+    assert "PyCode answer completed." in captured.out
+    assert "Evidence:" in captured.out
+    assert "- main.py" in captured.out
+    assert "用户问题: 这个项目的入口在哪里？" in llm.prompts[-1]
+
+
+def test_stage_three_explain_onboard_and_impact_use_mock_llm(
+    tmp_path: Path,
+) -> None:
+    project_path = _create_sample_project(tmp_path)
+    index_project(project_path)
+    graph_project(project_path)
+    llm = _MockLLM()
+
+    explain_project_target(project_path, "services/user_service.py", llm_client=llm)
+    onboard_project(project_path, llm_client=llm)
+    impact_project_target(project_path, "services/user_service.py", llm_client=llm)
+
+    assert len(llm.prompts) == 3
+    assert "问题类型: explain" in llm.prompts[0]
+    assert "问题类型: onboard" in llm.prompts[1]
+    assert "问题类型: impact" in llm.prompts[2]
+
+
+def test_stage_three_commands_require_generated_artifacts(tmp_path: Path) -> None:
+    project_path = _create_sample_project(tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="Run `pycode index"):
+        ask_project(project_path, "入口在哪里？", llm_client=_MockLLM())
+
+
+def test_llm_answer_print_handles_unencodable_console_text(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project_path = _create_sample_project(tmp_path)
+    index_project(project_path)
+    graph_project(project_path)
+    capsys.readouterr()
+
+    answer = ask_project(project_path, "入口在哪里？", llm_client=_MockLLM("uses nonbreaking hyphen ‑"))
+
+    captured = capsys.readouterr()
+    assert answer == "uses nonbreaking hyphen ‑"
+    assert "PyCode answer completed." in captured.out
+
+
+def test_build_parser_accepts_stage_three_commands() -> None:
+    parser = build_parser()
+
+    ask_args = parser.parse_args(["ask", "demo_project", "入口在哪里？"])
+    explain_args = parser.parse_args(
+        ["explain", "demo_project", "main.py", "--model", "gpt-5.5"]
+    )
+    onboard_args = parser.parse_args(["onboard", "demo_project"])
+    impact_args = parser.parse_args(["impact", "demo_project", "main.py"])
+
+    assert ask_args.command == "ask"
+    assert ask_args.project_path == Path("demo_project")
+    assert ask_args.question == "入口在哪里？"
+    assert explain_args.command == "explain"
+    assert explain_args.file_path == "main.py"
+    assert explain_args.model == "gpt-5.5"
+    assert onboard_args.command == "onboard"
+    assert impact_args.command == "impact"
+    assert impact_args.file_path == "main.py"
+
+
 def _create_sample_project(tmp_path: Path) -> Path:
     project_path = tmp_path / "demo_project"
     service_dir = project_path / "services"
@@ -127,3 +218,13 @@ def _create_sample_project(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return project_path
+
+
+class _MockLLM:
+    def __init__(self, answer: str = "mock answer") -> None:
+        self.prompts: list[str] = []
+        self.answer = answer
+
+    def generate(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        return self.answer
