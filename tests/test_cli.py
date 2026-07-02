@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from pycode.cli import (
+    agent_project,
     ask_project,
     build_parser,
     explain_project_target,
@@ -13,6 +14,8 @@ from pycode.cli import (
     query_project_graph,
 )
 from pycode.models import GraphEdge, GraphNode
+from pycode.tools import ToolContext, ToolSpec
+from pycode.tools.base import success
 
 
 def test_graph_project_builds_and_saves_code_graph(
@@ -187,6 +190,153 @@ def test_build_parser_accepts_stage_three_commands() -> None:
     assert impact_args.file_path == "main.py"
 
 
+def test_build_parser_accepts_stage_four_agent_command() -> None:
+    parser = build_parser()
+
+    agent_args = parser.parse_args(
+        [
+            "agent",
+            "demo_project",
+            "分析当前 git diff",
+            "--run-tests",
+            "--graph",
+            "graph.json",
+            "--model",
+            "gpt-5.5",
+            "--plan-only",
+        ]
+    )
+
+    assert agent_args.command == "agent"
+    assert agent_args.project_path == Path("demo_project")
+    assert agent_args.task == "分析当前 git diff"
+    assert agent_args.run_tests is True
+    assert agent_args.no_tests is False
+    assert agent_args.graph_path == Path("graph.json")
+    assert agent_args.model == "gpt-5.5"
+    assert agent_args.plan_only is True
+
+
+def test_agent_project_uses_mock_llm_and_prints_steps(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project_path = tmp_path / "demo_project"
+    project_path.mkdir()
+    llm = _MockLLM("agent mock answer")
+
+    result = agent_project(
+        project_path,
+        "分析当前 git diff",
+        llm_client=llm,
+        tools={
+            "changed_files": ToolSpec(
+                "changed_files",
+                _fake_changed_files,
+                read_only=True,
+            ),
+            "git_diff": ToolSpec("git_diff", _fake_git_diff, read_only=True),
+        },
+    )
+
+    captured = capsys.readouterr()
+    assert result.answer == "agent mock answer"
+    assert "PyCode agent completed." in captured.out
+    assert "Task type: diff-impact" in captured.out
+    assert "1. changed_files: ok - Found 1 changed files." in captured.out
+    assert "2. git_diff: ok - Git diff collected." in captured.out
+    assert "Evidence:" in captured.out
+    assert "- main.py" in captured.out
+    assert "agent mock answer" in captured.out
+    assert "User task: 分析当前 git diff" in llm.prompts[-1]
+
+
+def test_agent_project_plan_only_does_not_call_llm_or_tools(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project_path = tmp_path / "demo_project"
+    project_path.mkdir()
+    llm = _MockLLM("should not be used")
+
+    result = agent_project(
+        project_path,
+        "检查 services/user_service.py 的改动影响",
+        plan_only=True,
+        llm_client=llm,
+        tools={
+            "changed_files": ToolSpec(
+                "changed_files",
+                _raising_tool,
+                read_only=True,
+            ),
+        },
+    )
+
+    captured = capsys.readouterr()
+    assert result.answer is None
+    assert result.tool_results == []
+    assert llm.prompts == []
+    assert "1. changed_files: planned" in captured.out
+    assert "Answer:\nN/A" in captured.out
+
+
+def test_agent_project_can_route_retrieve_context_through_cli_layer(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project_path = tmp_path / "demo_project"
+    project_path.mkdir()
+    llm = _MockLLM("agent impact answer")
+
+    result = agent_project(
+        project_path,
+        "检查 services/user_service.py 的改动影响",
+        llm_client=llm,
+        tools={
+            "changed_files": ToolSpec("changed_files", _fake_changed_files, True),
+            "git_diff": ToolSpec("git_diff", _fake_git_diff, True),
+            "read_file": ToolSpec("read_file", _fake_read_file, True),
+            "retrieve_context": ToolSpec("retrieve_context", _fake_retrieve_context, True),
+            "query_graph": ToolSpec("query_graph", _fake_query_graph, True),
+        },
+    )
+
+    captured = capsys.readouterr()
+    assert result.answer == "agent impact answer"
+    assert "retrieve_context: ok - Selected 1 context items." in captured.out
+    assert "- services/user_service.py" in captured.out
+    assert "Selected 1 context items." in llm.prompts[-1]
+
+
+def test_agent_project_answers_entry_and_onboard_question_through_runtime(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project_path = tmp_path / "demo_project"
+    project_path.mkdir()
+    llm = _MockLLM("entry and onboard answer")
+
+    result = agent_project(
+        project_path,
+        "\u8fd9\u4e2a\u9879\u76ee\u7684\u5165\u53e3\u5728\u54ea\uff1f"
+        "\u9605\u8bfb\u987a\u5e8f\u5e94\u8be5\u662f\u600e\u6837\u7684\uff1f",
+        llm_client=llm,
+        tools={
+            "retrieve_context": ToolSpec("retrieve_context", _fake_retrieve_context, True),
+        },
+    )
+
+    captured = capsys.readouterr()
+    assert result.answer == "entry and onboard answer"
+    assert result.task.task_type == "onboard-question"
+    assert [step.arguments["intent"] for step in result.steps] == ["entry", "onboard"]
+    assert "Runtime turns: 2" in captured.out
+    assert "Runtime:" in captured.out
+    assert "retrieve_context: ok - Selected 1 context items." in captured.out
+    assert "- services/user_service.py" in captured.out
+
+
 def _create_sample_project(tmp_path: Path) -> Path:
     project_path = tmp_path / "demo_project"
     service_dir = project_path / "services"
@@ -228,3 +378,48 @@ class _MockLLM:
     def generate(self, prompt: str) -> str:
         self.prompts.append(prompt)
         return self.answer
+
+
+def _fake_changed_files(context: ToolContext):
+    return success("changed_files", "Found 1 changed files.", files=["main.py"])
+
+
+def _fake_git_diff(context: ToolContext):
+    return success("git_diff", "Git diff collected.", diff="diff --git a/main.py")
+
+
+def _fake_read_file(context: ToolContext, **kwargs):
+    return success("read_file", "Read file.", path=kwargs["file_path"], content="class UserService:")
+
+
+def _fake_retrieve_context(context: ToolContext, **kwargs):
+    return success(
+        "retrieve_context",
+        "Selected 1 context items.",
+        evidence=["services/user_service.py", "file:services/user_service.py"],
+        items=[
+            {
+                "path": "services/user_service.py",
+                "node_ids": ["file:services/user_service.py"],
+                "edges": ["file:main.py --imports--> file:services/user_service.py"],
+            }
+        ],
+    )
+
+
+def _fake_query_graph(context: ToolContext, **kwargs):
+    return success(
+        "query_graph",
+        "Found 1 imported-by edges.",
+        edges=[
+            {
+                "source": "file:main.py",
+                "target": "file:services/user_service.py",
+                "type": "imports",
+            }
+        ],
+    )
+
+
+def _raising_tool(context: ToolContext, **kwargs):
+    raise AssertionError("tool should not run in plan-only mode")

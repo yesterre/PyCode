@@ -376,3 +376,14 @@ def _dedupe(items: list[str]) -> list[str]:
         seen.add(item)
         result.append(item)
     return result
+
+
+def _detect_intent(question: str) -> str:
+    text = question.lower()
+    if any(word in text for word in ["\u5165\u53e3", "\u542f\u52a8", "entry", "main"]):
+        return "entry"
+    if any(word in text for word in ["\u5f71\u54cd", "impact", "\u6539\u52a8", "\u4fee\u6539"]):
+        return "impact"
+    if any(word in text for word in ["\u4f9d\u8d56", "import", "\u8c03\u7528", "call"]):
+        return "dependency"
+    return "general"

@@ -2,6 +2,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from pycode.agent import AgentResult, run_agent_task
 from pycode.graph_builder import build_code_graph
 from pycode.llm_client import DEFAULT_MODEL, LLMClient, OpenAIResponsesClient
 from pycode.models import CodeGraph, GraphEdge, GraphNode, ProjectIndex
@@ -22,6 +23,7 @@ from pycode.retriever import (
 )
 from pycode.scanner import scan_python_files
 from pycode.storage import load_graph, load_index, save_graph, save_index
+from pycode.tools import ToolSpec
 
 
 DEFAULT_INDEX_DIR = ".pclens"
@@ -147,6 +149,49 @@ def impact_project_target(
     return _answer_with_retrieval(retrieval, model, llm_client)
 
 
+def agent_project(
+    project_path: Path,
+    task: str,
+    *,
+    run_tests: bool = False,
+    plan_only: bool = False,
+    model: str | None = None,
+    graph_path: Path | None = None,
+    llm_client: LLMClient | None = None,
+    tools: dict[str, ToolSpec] | None = None,
+) -> AgentResult:
+    """Run the stage-4 Agent workflow for a development-analysis task."""
+    client = None if plan_only else llm_client or OpenAIResponsesClient(model=model)
+    result = run_agent_task(
+        task,
+        project_path,
+        allow_tests=run_tests,
+        graph_path=_resolve_agent_graph_path(project_path, graph_path),
+        llm_client=client,
+        tools=tools,
+        plan_only=plan_only,
+    )
+    _print_agent_result(result)
+    return result
+
+
+def _resolve_agent_graph_path(
+    project_path: Path,
+    graph_path: Path | None,
+) -> Path | None:
+    if graph_path is None:
+        return None
+    if graph_path.is_absolute():
+        return graph_path
+    if graph_path.exists():
+        return graph_path.resolve()
+
+    project_relative = project_path / graph_path
+    if project_relative.exists():
+        return project_relative.resolve()
+    return graph_path
+
+
 def _print_index_summary(index: ProjectIndex, output_path: Path) -> None:
     import_count = sum(len(file.imports) for file in index.files)
     class_count = sum(len(file.classes) for file in index.files)
@@ -241,6 +286,85 @@ def _print_llm_answer(answer: str, retrieval: RetrievalResult) -> None:
         _safe_print(f"- {item}")
 
 
+def _print_agent_result(result: AgentResult) -> None:
+    print("PyCode agent completed.")
+    print(f"Task: {result.task.description}")
+    print(f"Task type: {result.task.task_type}")
+    print(f"Project path: {result.task.project_path}")
+    print(f"Tests allowed: {result.task.allow_tests}")
+    print(f"Stop reason: {result.stop_reason}")
+    print(f"Runtime turns: {len(result.turns)}")
+    print(f"Steps: {len(result.steps)}")
+
+    for index, step in enumerate(result.steps, start=1):
+        if index <= len(result.tool_results):
+            tool_result = result.tool_results[index - 1]
+            status = "ok" if tool_result.ok else "failed"
+            print(f"{index}. {step.tool}: {status} - {tool_result.summary}")
+            if tool_result.error:
+                _safe_print(f"   Error: {tool_result.error}")
+            continue
+        print(f"{index}. {step.tool}: planned - {step.reason or 'N/A'}")
+        if step.arguments:
+            _safe_print(f"   Arguments: {step.arguments}")
+
+    if result.turns:
+        print("Runtime:")
+        for turn in result.turns:
+            status = "ok" if turn.tool_result.ok else "failed"
+            _safe_print(
+                f"- turn {turn.index}: {turn.tool_call.name} -> "
+                f"{status} - {turn.tool_result.summary}"
+            )
+
+    print("Evidence:")
+    evidence = _agent_evidence(result)
+    if not evidence:
+        print("- N/A")
+    else:
+        for item in evidence:
+            _safe_print(f"- {item}")
+
+    print("Answer:")
+    _safe_print(result.answer or "N/A")
+
+
+def _agent_evidence(result: AgentResult) -> list[str]:
+    evidence: list[str] = []
+    for tool_result in result.tool_results:
+        data = tool_result.data
+        for item in data.get("evidence", []):
+            evidence.append(str(item))
+        for item in data.get("files", []):
+            evidence.append(str(item))
+        if data.get("path"):
+            evidence.append(str(data["path"]))
+        for item in data.get("matches", []):
+            path = item.get("path")
+            line_number = item.get("line_number")
+            if path and line_number:
+                evidence.append(f"{path}:{line_number}")
+            elif path:
+                evidence.append(str(path))
+        for item in data.get("items", []):
+            path = item.get("path")
+            if path:
+                evidence.append(str(path))
+            evidence.extend(str(node_id) for node_id in item.get("node_ids", []))
+            evidence.extend(str(edge) for edge in item.get("edges", []))
+        for edge in data.get("edges", []):
+            source = edge.get("source")
+            edge_type = edge.get("type")
+            target = edge.get("target")
+            if source and edge_type and target:
+                evidence.append(f"{source} --{edge_type}--> {target}")
+        for node in data.get("nodes", []):
+            node_id = node.get("id")
+            if node_id:
+                evidence.append(str(node_id))
+    return _dedupe(evidence)
+
+
 def _safe_print(text: str) -> None:
     encoding = sys.stdout.encoding or "utf-8"
     safe_text = text.encode(encoding, errors="replace").decode(encoding)
@@ -252,6 +376,17 @@ def _count_by_type(items: list[GraphNode] | list[GraphEdge]) -> dict[str, int]:
     for item in items:
         counts[item.type] = counts.get(item.type, 0) + 1
     return counts
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
 
 
 def _require_target(query_type: str, target: str | None) -> None:
@@ -385,6 +520,44 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_model_argument(impact_parser)
 
+    agent_parser = subparsers.add_parser(
+        "agent",
+        help="Run the stage-4 Agent workflow for a development-analysis task.",
+    )
+    agent_parser.add_argument(
+        "project_path",
+        type=Path,
+        help="Python project directory to analyze.",
+    )
+    agent_parser.add_argument(
+        "task",
+        help="Development-analysis task for the Agent.",
+    )
+    test_group = agent_parser.add_mutually_exclusive_group()
+    test_group.add_argument(
+        "--run-tests",
+        action="store_true",
+        help="Allow the Agent to run controlled pytest commands.",
+    )
+    test_group.add_argument(
+        "--no-tests",
+        action="store_true",
+        help="Analyze only and do not run tests. This is the default.",
+    )
+    agent_parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="Show the planned Agent tool steps without running tools or calling the LLM.",
+    )
+    agent_parser.add_argument(
+        "--graph",
+        dest="graph_path",
+        type=Path,
+        default=None,
+        help="Path to an existing code_graph.json. Defaults to <project>/.pclens/code_graph.json.",
+    )
+    _add_model_argument(agent_parser)
+
     return parser
 
 
@@ -419,6 +592,15 @@ def main() -> None:
         onboard_project(args.project_path, args.model)
     elif args.command == "impact":
         impact_project_target(args.project_path, args.file_path, args.model)
+    elif args.command == "agent":
+        agent_project(
+            args.project_path,
+            args.task,
+            run_tests=args.run_tests,
+            plan_only=args.plan_only,
+            model=args.model,
+            graph_path=args.graph_path,
+        )
 
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
 # PyCode
 
-PyCode 是一个 Python 代码库理解与改动影响分析 Agent 项目。当前已进入阶段三：代码库问答和轻量 LLM 接入。
+PyCode 是一个 Python 代码库理解与改动影响分析 Agent 项目。当前已进入阶段四：Agent 化增强。
 
-现阶段项目基于阶段一索引和阶段二代码图谱选择有限上下文，再通过 LLM 解释这些证据。当前不自动修改代码，不让 LLM 自己读取整个仓库，也不做多 Agent。
+现阶段项目在阶段一索引、阶段二代码图谱和阶段三 LLM 问答的基础上，增加轻量 Agent 工作流。Agent 会先规划工具调用，再读取 git diff、搜索代码、查询图谱或按权限运行测试，最后基于工具证据输出总结。当前不自动修改代码，不自动提交 git，也不做多 Agent。
 
 ## 已完成功能
 
@@ -40,6 +40,15 @@ PyCode 是一个 Python 代码库理解与改动影响分析 Agent 项目。当�
 - 使用 OpenAI Responses API 做第一版 LLM 接入。
 - 回答输出会附带文件路径、节点或图谱关系作为依据位置。
 
+### 阶段四：Agent 化增强
+
+- 新增 `pycode/tools/` 工具层，支持安全读文件、搜索代码、查询图谱、读取 git diff 和受控运行 pytest。
+- 工具层复用阶段三 `retriever.py`，可通过 `retrieve_context` 选择 index/graph 上下文作为 Agent 证据。
+- 新增 `pycode/agent/` 编排层，支持“规划 -> 调工具 -> 汇总证据 -> LLM 总结”的开发任务分析流程。
+- 新增 `agent` CLI 命令，支持分析 git diff、改动影响、测试覆盖和测试失败等开发场景。
+- 默认不运行测试，只有显式传入 `--run-tests` 才允许受控 pytest。
+- 支持 `--plan-only` 只展示 Agent 计划，不调用工具和 LLM。
+
 ## 项目结构
 
 ```text
@@ -55,6 +64,22 @@ pycode/
   retriever.py
   prompt_builder.py
   llm_client.py
+  tools/
+    base.py
+    read_file.py
+    search_code.py
+    retrieve_context.py
+    query_graph.py
+    git_tools.py
+    test_runner.py
+  agent/
+    types.py
+    planner.py
+    planner_enhanced.py
+    executor.py
+    runtime.py
+    policy.py
+    prompts.py
 
 examples/
   demo_project/
@@ -67,6 +92,8 @@ examples/
       user.py
     utils/
       formatting.py
+    tests/
+      test_user_service.py
     .pclens/
       index.json
       code_graph.json
@@ -80,11 +107,33 @@ tests/
   test_retriever.py
   test_scanner.py
   test_storage.py
+  test_tools_*.py
+  test_agent_*.py
 
 docs/
   stage1_development_record.md
   stage2_development_record.md
+  stage3_development_record.md
+  stage4_development_record.md
 ```
+
+### Stage 4 enhanced runtime loop
+
+The `agent` command now uses a lightweight Agent runtime loop instead of only a
+one-shot plan executor. The loop keeps a message history, executes one planned
+tool call per turn, records tool observations, and then builds the final LLM
+summary prompt from the collected evidence.
+
+The unified `agent` entry can reuse stage-3 retrieval for project questions such
+as entry-point lookup, newcomer reading order, file explanation, dependency
+questions, impact analysis, and general codebase questions.
+
+```powershell
+.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "这个项目的入口在哪？阅读顺序应该是怎样的？"
+```
+
+Use `--plan-only` to inspect the runtime tool calls without executing tools or
+calling the LLM.
 
 ## 安装依赖
 
@@ -266,6 +315,53 @@ OPENAI_BASE_URL=https://你的兼容网关/v1
 .\.venv\Scripts\python.exe -m pycode.cli ask .\examples\demo_project "这个项目的入口在哪里？" --model gpt-5.5
 ```
 
+## 阶段四：Agent 开发任务分析
+
+Agent 命令会根据任务文本自动规划工具调用，并把工具结果交给 LLM 总结。真实调用前同样需要配置 `OPENAI_API_KEY`。
+CLI 输出会展示每一步工具状态，并单独列出 `Evidence` 依据位置。
+
+分析当前 git diff：
+
+```powershell
+.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "分析当前 git diff 是否影响用户服务逻辑"
+```
+
+分析某个文件的改动影响：
+
+```powershell
+.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "检查 services/user_service.py 的改动影响"
+```
+
+默认不运行测试。若确认允许 Agent 运行受控 pytest：
+
+```powershell
+.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "分析当前改动并运行相关测试" --run-tests
+```
+
+明确只分析、不运行测试：
+
+```powershell
+.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "检查 services/user_service.py 的测试覆盖" --no-tests
+```
+
+只查看 Agent 计划，不运行工具、不调用 LLM：
+
+```powershell
+.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "检查 services/user_service.py 的改动影响" --plan-only
+```
+
+示例项目中包含一个小型 pytest 样例，可用于展示测试覆盖检查和受控测试运行：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest .\examples\demo_project\tests -q -o cache_dir=.pytest_tmp\.pytest_cache
+```
+
+指定模型或图谱文件：
+
+```powershell
+.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "检查 services/user_service.py 的改动影响" --model gpt-5.5 --graph .\examples\demo_project\.pclens\code_graph.json
+```
+
 ## 运行测试
 
 运行全部测试：
@@ -296,11 +392,13 @@ python -m pytest tests --basetemp=.pytest_tmp --cache-clear
 - 当前 LLM 只解释 PyCode 选择出的有限上下文。
 - 当前不自动修改代码。
 - 当前不让 LLM 自己读取整个仓库。
+- 当前 Agent 只做开发任务分析和建议，不自动提交 git。
+- 当前 Agent 默认不运行测试，必须显式使用 `--run-tests`。
 - 当前不使用 Neo4j 等图数据库，图谱先保存为 JSON。
 
 ## 后续计划
 
-- 阶段三：继续增强代码库问答的上下文选择、函数级片段截取和回答质量。
+- 阶段四：继续增强 Agent planner、工具结果筛选和 CLI 输出质量。
 - 增强调用关系解析，把更多方法调用解析到准确的类方法节点。
 - 将 `has_main_guard` 等入口线索写入图谱，提高入口判断准确度。
 - 优化 CLI 查询输出，展示更友好的文件路径、节点名称和关系说明。
