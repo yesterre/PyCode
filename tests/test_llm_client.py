@@ -25,6 +25,7 @@ def test_load_llm_settings_reads_env_file(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_TYPE", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text(
         "\n".join(
@@ -68,6 +69,7 @@ def test_openai_responses_client_uses_env_file_model_and_base_url(
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_TYPE", raising=False)
     env_path = tmp_path / ".env"
     env_path.write_text(
         "\n".join(

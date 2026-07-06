@@ -10,8 +10,10 @@ from pycode.cli import (
     graph_project,
     impact_project_target,
     index_project,
+    memory_project,
     onboard_project,
     query_project_graph,
+    task_project,
 )
 from pycode.models import GraphEdge, GraphNode
 from pycode.tools import ToolContext, ToolSpec
@@ -204,6 +206,9 @@ def test_build_parser_accepts_stage_four_agent_command() -> None:
             "--model",
             "gpt-5.5",
             "--plan-only",
+            "--no-memory",
+            "--no-memory-extract",
+            "--show-context",
         ]
     )
 
@@ -215,6 +220,131 @@ def test_build_parser_accepts_stage_four_agent_command() -> None:
     assert agent_args.graph_path == Path("graph.json")
     assert agent_args.model == "gpt-5.5"
     assert agent_args.plan_only is True
+    assert agent_args.no_memory is True
+    assert agent_args.no_memory_extract is True
+    assert agent_args.show_context is True
+
+
+def test_build_parser_accepts_stage_five_task_command() -> None:
+    parser = build_parser()
+
+    create_args = parser.parse_args(
+        [
+            "task",
+            "demo_project",
+            "create",
+            "--id",
+            "task_001",
+            "--title",
+            "Build index",
+            "--blocked-by",
+            "task_000",
+            "--owner",
+            "codex",
+        ]
+    )
+    claim_args = parser.parse_args(["task", "demo_project", "claim", "task_001"])
+
+    assert create_args.command == "task"
+    assert create_args.project_path == Path("demo_project")
+    assert create_args.operation == "create"
+    assert create_args.explicit_task_id == "task_001"
+    assert create_args.title == "Build index"
+    assert create_args.blocked_by == ["task_000"]
+    assert create_args.owner == "codex"
+    assert claim_args.operation == "claim"
+    assert claim_args.task_id == "task_001"
+
+
+def test_build_parser_accepts_stage_five_memory_command() -> None:
+    parser = build_parser()
+
+    add_args = parser.parse_args(
+        [
+            "memory",
+            "demo_project",
+            "add",
+            "--name",
+            "Project Entry",
+            "--type",
+            "project",
+            "--description",
+            "Entry point",
+            "--content",
+            "main.py is the entry point.",
+            "--tag",
+            "entry",
+        ]
+    )
+    load_args = parser.parse_args(["memory", "demo_project", "load", "project-entry"])
+
+    assert add_args.command == "memory"
+    assert add_args.project_path == Path("demo_project")
+    assert add_args.operation == "add"
+    assert add_args.explicit_name == "Project Entry"
+    assert add_args.memory_type == "project"
+    assert add_args.tags == ["entry"]
+    assert load_args.name == "project-entry"
+
+
+def test_task_project_cli_functions_print_task_status(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project_path = tmp_path / "demo_project"
+    project_path.mkdir()
+
+    task_project(
+        project_path,
+        "create",
+        task_id="task_001",
+        title="Build index",
+    )
+    task_project(
+        project_path,
+        "create",
+        task_id="task_002",
+        title="Build graph",
+        blocked_by=["task_001"],
+    )
+    task_project(project_path, "claim", task_id="task_001", owner="codex")
+    task_project(project_path, "complete", task_id="task_001")
+    task_project(project_path, "list")
+
+    captured = capsys.readouterr()
+    assert "PyCode Task created." in captured.out
+    assert "- task_001: completed - Build index" in captured.out
+    assert "- task_002: pending - Build graph" in captured.out
+    assert "Ready tasks: 1" in captured.out
+    assert "blocked_by=task_001" in captured.out
+    assert "can_start=True" in captured.out
+
+
+def test_memory_project_cli_functions_print_memory_status(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project_path = tmp_path / "demo_project"
+    project_path.mkdir()
+
+    memory_project(
+        project_path,
+        "add",
+        name="Project Entry",
+        memory_type="project",
+        description="Entry point",
+        body="main.py is the entry point.",
+        tags=["entry"],
+    )
+    memory_project(project_path, "list")
+    memory_project(project_path, "search", query="entry")
+    memory_project(project_path, "load", name="project-entry")
+
+    captured = capsys.readouterr()
+    assert "PyCode Memory created." in captured.out
+    assert "PyCode Memory list." in captured.out
+    assert "- project-entry: project - Entry point" in captured.out
+    assert "main.py is the entry point." in captured.out
 
 
 def test_agent_project_uses_mock_llm_and_prints_steps(
@@ -236,6 +366,7 @@ def test_agent_project_uses_mock_llm_and_prints_steps(
                 read_only=True,
             ),
             "git_diff": ToolSpec("git_diff", _fake_git_diff, read_only=True),
+            "retrieve_context": ToolSpec("retrieve_context", _fake_retrieve_context, True),
         },
     )
 
@@ -245,6 +376,12 @@ def test_agent_project_uses_mock_llm_and_prints_steps(
     assert "Task type: diff-impact" in captured.out
     assert "1. changed_files: ok - Found 1 changed files." in captured.out
     assert "2. git_diff: ok - Git diff collected." in captured.out
+    assert "Trace:" in captured.out
+    assert "tools=3" in captured.out
+    assert "denied=0" in captured.out
+    assert "Todos:" in captured.out
+    assert "completed=3" in captured.out
+    assert "failed=0" in captured.out
     assert "Evidence:" in captured.out
     assert "- main.py" in captured.out
     assert "agent mock answer" in captured.out
@@ -278,6 +415,8 @@ def test_agent_project_plan_only_does_not_call_llm_or_tools(
     assert result.tool_results == []
     assert llm.prompts == []
     assert "1. changed_files: planned" in captured.out
+    assert "Todos:" in captured.out
+    assert "pending=6" in captured.out
     assert "Answer:\nN/A" in captured.out
 
 
@@ -333,8 +472,35 @@ def test_agent_project_answers_entry_and_onboard_question_through_runtime(
     assert [step.arguments["intent"] for step in result.steps] == ["entry", "onboard"]
     assert "Runtime turns: 2" in captured.out
     assert "Runtime:" in captured.out
+    assert "Trace:" in captured.out
+    assert "tools=2" in captured.out
+    assert "Todos:" in captured.out
+    assert "completed=2" in captured.out
     assert "retrieve_context: ok - Selected 1 context items." in captured.out
     assert "- services/user_service.py" in captured.out
+
+
+def test_agent_project_can_show_context_sections(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project_path = tmp_path / "demo_project"
+    project_path.mkdir()
+
+    result = agent_project(
+        project_path,
+        "\u8fd9\u4e2a\u9879\u76ee\u7684\u5165\u53e3\u5728\u54ea\uff1f",
+        plan_only=True,
+        show_context=True,
+        tools={"retrieve_context": ToolSpec("retrieve_context", _raising_tool, True)},
+    )
+
+    captured = capsys.readouterr()
+    assert result.context is not None
+    assert "Context:" in captured.out
+    assert "- identity: placement=system" in captured.out
+    assert "- plan: placement=user" in captured.out
+    assert "No tools were executed." not in captured.out
 
 
 def _create_sample_project(tmp_path: Path) -> Path:
@@ -376,6 +542,8 @@ class _MockLLM:
         self.answer = answer
 
     def generate(self, prompt: str) -> str:
+        if "Extract durable PyCode memories" in prompt:
+            return "[]"
         self.prompts.append(prompt)
         return self.answer
 

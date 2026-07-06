@@ -10,10 +10,24 @@ def authorize_tool_call(
     """Return a failure result when the tool call is not allowed."""
     if spec.read_only:
         return None
+    if spec.writes_internal_state:
+        try:
+            context.resolve_in_project(".pclens")
+        except PermissionError as exc:
+            return failure(
+                tool_name,
+                "Tool execution denied.",
+                str(exc),
+                denied=True,
+                denied_by="policy",
+            )
+        return None
     if context.allow_tests:
         return None
     return failure(
         tool_name,
         "Tool execution denied.",
         "This tool is not read-only and tests were not explicitly allowed.",
+        denied=True,
+        denied_by="policy",
     )

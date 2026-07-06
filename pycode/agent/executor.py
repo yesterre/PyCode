@@ -75,6 +75,8 @@ def run_agent_task(
     tools: dict[str, ToolSpec] | None = None,
     max_steps: int = 8,
     plan_only: bool = False,
+    enable_memory: bool = True,
+    enable_memory_extraction: bool = True,
 ) -> AgentResult:
     """Run the Agent runtime loop and optionally ask an LLM to summarize evidence."""
     from pycode.agent.runtime import run_agent_runtime
@@ -89,7 +91,12 @@ def run_agent_task(
     )
     return run_agent_runtime(
         task,
-        RuntimeConfig(max_turns=max_steps, plan_only=plan_only),
+        RuntimeConfig(
+            max_turns=max_steps,
+            plan_only=plan_only,
+            enable_memory=enable_memory,
+            enable_memory_extraction=enable_memory_extraction,
+        ),
         tools=tools,
         llm_client=llm_client,
     )

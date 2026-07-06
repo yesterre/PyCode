@@ -48,6 +48,27 @@ def test_execute_plan_denies_non_read_only_tool_when_tests_not_allowed() -> None
     assert results[0].summary == "Tool execution denied."
 
 
+def test_execute_plan_allows_internal_state_tool_without_test_permission() -> None:
+    def internal_state_tool(context: ToolContext):
+        return success("task_dag", "internal state updated")
+
+    task = AgentTask("create task", Path("."), allow_tests=False)
+    steps = [AgentStep("task_dag")]
+    tools = {
+        "task_dag": ToolSpec(
+            "task_dag",
+            internal_state_tool,
+            read_only=False,
+            writes_internal_state=True,
+        ),
+    }
+
+    results = execute_plan(task, steps, tools=tools, context=ToolContext(Path(".")))
+
+    assert results[0].ok is True
+    assert results[0].summary == "internal state updated"
+
+
 def test_execute_plan_records_unknown_tool() -> None:
     task = AgentTask("demo task", Path("."))
 

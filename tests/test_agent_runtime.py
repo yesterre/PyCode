@@ -6,9 +6,10 @@ from pycode.agent import (
     execute_tool_call,
     run_agent_runtime,
 )
+from pycode.agent.memory import MemoryStore
 from pycode.agent.types import AgentStopReason, ToolCall
 from pycode.tools import ToolContext, ToolSpec
-from pycode.tools.base import success
+from pycode.tools.base import failure, success
 
 
 def test_runtime_executes_one_tool_per_turn_and_records_messages() -> None:
@@ -33,6 +34,16 @@ def test_runtime_executes_one_tool_per_turn_and_records_messages() -> None:
     assert calls[0]["intent"] == "entry"
     assert [message.role for message in result.messages] == ["user", "assistant", "tool"]
     assert result.tool_results[0].data["evidence"] == ["main.py"]
+    assert result.trace is not None
+    assert result.trace.tools[0].tool == "retrieve_context"
+    assert result.trace.tools[0].status == "ok"
+    assert [(todo.id, todo.status) for todo in result.todos] == [
+        ("todo-1", "completed")
+    ]
+    assert result.steps[0].todo_id == "todo-1"
+    assert "TodoStatusChanged" in [
+        event.event_type for event in result.trace.events
+    ]
 
 
 def test_runtime_plan_only_skips_tools_and_llm() -> None:
@@ -54,6 +65,12 @@ def test_runtime_plan_only_skips_tools_and_llm() -> None:
     assert result.tool_results == []
     assert result.turns == []
     assert [step.tool for step in result.steps] == ["retrieve_context"]
+    assert result.trace is not None
+    assert result.trace.tools == []
+    assert result.trace.stop_reason == AgentStopReason.PLAN_ONLY
+    assert [(todo.id, todo.status) for todo in result.todos] == [
+        ("todo-1", "pending")
+    ]
 
 
 def test_runtime_stops_when_max_turns_is_reached() -> None:
@@ -74,6 +91,49 @@ def test_runtime_stops_when_max_turns_is_reached() -> None:
     assert result.stop_reason == AgentStopReason.MAX_TURNS
     assert len(result.steps) == 2
     assert len(result.turns) == 1
+    assert result.trace is not None
+    assert result.trace.stop_reason == AgentStopReason.MAX_TURNS
+    assert [todo.status for todo in result.todos] == ["completed", "pending"]
+
+
+def test_runtime_marks_todo_failed_when_tool_fails() -> None:
+    def retrieve_context(context: ToolContext, **kwargs):
+        return failure("retrieve_context", "Context retrieval failed.", "no index")
+
+    task = AgentTask(
+        "\u8fd9\u4e2a\u9879\u76ee\u7684\u5165\u53e3\u5728\u54ea\uff1f",
+        Path("."),
+    )
+    result = run_agent_runtime(
+        task,
+        RuntimeConfig(max_turns=4),
+        tools={"retrieve_context": ToolSpec("retrieve_context", retrieve_context, True)},
+    )
+
+    assert result.tool_results[0].ok is False
+    assert result.todos[0].status == "failed"
+    assert result.todos[0].error == "no index"
+
+
+def test_runtime_marks_todo_failed_when_policy_denies_tool() -> None:
+    def run_tests(context: ToolContext):
+        return success("run_tests", "should not run")
+
+    task = AgentTask(
+        "\u8fd0\u884c\u6d4b\u8bd5\u5e76\u603b\u7ed3\u5931\u8d25\u539f\u56e0",
+        Path("."),
+        allow_tests=True,
+    )
+    result = run_agent_runtime(
+        task,
+        RuntimeConfig(max_turns=4),
+        tools={"run_tests": ToolSpec("run_tests", run_tests, read_only=False)},
+        context=ToolContext(Path("."), allow_tests=False),
+    )
+
+    assert result.tool_results[-1].ok is False
+    assert result.tool_results[-1].data["denied_by"] == "policy"
+    assert result.todos[-1].status == "failed"
 
 
 def test_execute_tool_call_uses_policy_for_non_read_only_tools() -> None:
@@ -90,6 +150,61 @@ def test_execute_tool_call_uses_policy_for_non_read_only_tools() -> None:
     assert result.summary == "Tool execution denied."
 
 
+def test_runtime_injects_relevant_memories_and_extracts_after_answer(
+    tmp_path: Path,
+) -> None:
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    store = MemoryStore(project_path)
+    store.add_memory(
+        name="Project Entry",
+        memory_type="project",
+        description="入口 main.py",
+        body="入口文件是 main.py。",
+    )
+
+    def retrieve_context(context: ToolContext, **kwargs):
+        return success("retrieve_context", "Selected context.")
+
+    llm = _MemoryAwareLLM()
+    result = run_agent_runtime(
+        AgentTask("请分析项目入口", project_path),
+        RuntimeConfig(max_turns=4),
+        tools={"retrieve_context": ToolSpec("retrieve_context", retrieve_context, True)},
+        llm_client=llm,
+    )
+
+    assert result.answer == "final answer"
+    assert result.memory is not None
+    assert [item.name for item in result.memory.relevant_memories] == ["project-entry"]
+    assert [item.name for item in result.memory.extracted_memories] == ["no-auto-tests"]
+    assert result.context is not None
+    assert "memory_index" in result.context.section_names()
+    assert "relevant_memories" in result.context.section_names()
+    assert "Project memory index:" in llm.prompts[1]
+    assert "<relevant_memories>" in llm.prompts[1]
+    assert (project_path / ".pclens" / "memory" / "no-auto-tests.md").exists()
+
+
+def test_runtime_no_memory_extract_skips_automatic_write(tmp_path: Path) -> None:
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+
+    def retrieve_context(context: ToolContext, **kwargs):
+        return success("retrieve_context", "Selected context.")
+
+    result = run_agent_runtime(
+        AgentTask("请分析项目入口", project_path),
+        RuntimeConfig(max_turns=4, enable_memory_extraction=False),
+        tools={"retrieve_context": ToolSpec("retrieve_context", retrieve_context, True)},
+        llm_client=_MemoryAwareLLM(),
+    )
+
+    assert result.memory is not None
+    assert result.memory.extracted_memories == []
+    assert not (project_path / ".pclens" / "memory" / "no-auto-tests.md").exists()
+
+
 class _MockLLM:
     def __init__(self, answer: str) -> None:
         self.answer = answer
@@ -98,3 +213,26 @@ class _MockLLM:
     def generate(self, prompt: str) -> str:
         self.prompts.append(prompt)
         return self.answer
+
+
+class _MemoryAwareLLM:
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    def generate(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        if "Select project memories" in prompt:
+            return '["project-entry"]'
+        if "Extract durable PyCode memories" in prompt:
+            return """
+            [
+              {
+                "name": "no-auto-tests",
+                "type": "feedback",
+                "description": "Do not run tests automatically.",
+                "body": "The user wants test commands instead of automatic test execution.",
+                "tags": ["tests"]
+              }
+            ]
+            """
+        return "final answer"

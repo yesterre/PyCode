@@ -70,3 +70,7 @@ Thumbs.db
 # Local agent/tool state
 .agents/
 .codex/
+
+# Local notes and review drafts
+CCLearning*.zip
+review_*.md

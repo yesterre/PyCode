@@ -500,7 +500,419 @@ Agent 可以围绕一个开发任务多步调用工具
 
 ---
 
-## 阶段 5：可视化和产品化展示
+## 阶段 5：Agent 内核增强与可观测化
+
+这一阶段暂时不急着做 Web 可视化，而是先把第四阶段已经形成的 Agent 骨架继续加厚。
+
+第四阶段已经有了：
+
+```
+单 Agent
+工具注册表
+planner / executor / runtime
+read_file / search_code / query_graph / git_diff / run_tests 等工具
+基础权限控制
+阶段三上下文检索能力复用
+```
+
+第五阶段要做的是把它从“能按规则调工具的开发分析 Agent”，增强为“可观测、可恢复、可规划、可积累项目知识的 Agent 载体”。
+
+这个阶段的重点不是多做几个命令，而是补齐 Agent 工程里的关键基础设施：
+
+```
+工具调用生命周期
+执行轨迹 Trace
+TodoWrite 执行清单
+任务 DAG
+项目记忆系统
+Prompt / Context 分层组装
+```
+
+这些能力完成后，再进入可视化阶段时，界面展示的就不只是问答结果，而是可以展示 Agent 的计划、状态、证据、依赖、记忆和工具调用过程。
+
+---
+
+### 阶段 5A：Hook + Trace 工具调用观测系统
+
+这一小阶段的目标是让 Agent 的每一次执行都有清晰的生命周期记录。
+
+第四阶段里，工具调用已经经过 executor 和 policy，但当前更多只是“执行并返回结果”。第五阶段 5A 要把工具调用变成可观测事件流。
+
+可以设计四类 Hook：
+
+```
+UserPromptSubmit：用户任务进入 Agent 前
+PreToolUse：工具执行前
+PostToolUse：工具执行后
+Stop：Agent 结束前
+```
+
+这些 Hook 可以用于：
+
+```
+记录用户任务
+记录工具名称和参数摘要
+执行权限检查
+记录工具耗时
+记录工具成功或失败
+统计 evidence 数量
+对大输出进行提醒或截断
+在 Agent 结束时输出运行摘要
+```
+
+这一阶段可以新增模块：
+
+```
+agent/
+  hooks.py
+  trace.py
+```
+
+也可以扩展：
+
+```
+agent/runtime.py
+agent/executor.py
+agent/policy.py
+agent/types.py
+```
+
+建议的数据结构可以包括：
+
+```
+TraceEvent
+ToolTrace
+AgentTrace
+HookContext
+HookResult
+```
+
+这一阶段暂时不要做：
+
+```
+不要做复杂插件系统
+不要让 Hook 绕过权限策略
+不要让 Hook 自动修改代码
+不要把日志和业务逻辑混在工具实现里
+```
+
+完成标准是：
+
+```
+每次 agent 执行都能得到结构化 trace
+trace 中包含每个工具的开始时间、结束时间、耗时、状态、摘要和错误
+权限拒绝也能被记录为 trace event
+CLI 可以打印简要执行轨迹
+后续可视化阶段可以直接复用 trace 数据
+```
+
+---
+
+### 阶段 5B：TodoWrite / Agent 执行清单
+
+这一小阶段的目标是让 Agent 在多步任务中有明确的执行清单，避免复杂任务中途漂移。
+
+当前 planner 会生成 `AgentStep` 列表，但它更像一次性计划。TodoWrite 要解决的是运行过程中的状态管理。
+
+Todo 条目可以采用三态生命周期：
+
+```
+pending：尚未开始
+in_progress：正在执行
+completed：已完成
+```
+
+要强制的约束是：
+
+```
+同一时间最多只能有一个 in_progress
+执行工具前应把对应 todo 标记为 in_progress
+工具执行完成后应更新为 completed 或保留错误状态
+完成的 todo 不删除，用于回溯
+```
+
+这一阶段可以新增模块：
+
+```
+agent/
+  todo.py
+```
+
+也可以新增工具：
+
+```
+tools/
+  todo_write.py
+```
+
+需要考虑两种形态：
+
+```
+内存态 Todo：用于单次 agent 执行
+文件态 Todo：可选保存到 .pclens/current_todos.json，方便观察和恢复
+```
+
+这一阶段暂时不要做：
+
+```
+不要把 TodoWrite 做成复杂项目管理系统
+不要和任务 DAG 混为一谈
+不要让 todo 自动决定工具调用
+```
+
+完成标准是：
+
+```
+AgentResult 中能看到本次任务的 todos
+每个 planned step 能映射到一个 todo
+runtime 执行时会更新 todo 状态
+如果工具失败，todo 状态和错误能被记录
+CLI 能展示 todo 清单和当前执行进度
+```
+
+---
+
+### 阶段 5C：基于文件的 Task DAG
+
+这一小阶段的目标是支持更复杂的、带依赖关系的开发分析任务。
+
+TodoWrite 适合当前会话内的扁平执行清单，但它不能表达“某个任务必须等另一个任务完成后才能开始”。Task DAG 要解决的是跨步骤、跨会话的依赖感知任务管理。
+
+可以把每个任务保存为单独 JSON 文件：
+
+```
+.pclens/tasks/
+  task_001.json
+  task_002.json
+  task_003.json
+```
+
+每个任务可以包含：
+
+```
+id
+title
+description
+status
+owner
+blocked_by
+created_at
+updated_at
+metadata
+```
+
+核心操作可以包括：
+
+```
+create_task：创建任务
+list_tasks：列出任务
+get_task：查看任务详情
+claim_task：认领任务，只有依赖已完成时才能认领
+complete_task：完成任务，并返回新解除阻塞的任务
+```
+
+依赖判断规则：
+
+```
+如果 blocked_by 为空，可以开始
+如果 blocked_by 中所有任务都是 completed，可以开始
+如果依赖任务不存在，视为阻塞而不是忽略
+pending -> in_progress -> completed 单向推进
+```
+
+这一阶段可以新增模块：
+
+```
+agent/
+  task_dag.py
+```
+
+也可以新增工具：
+
+```
+tools/
+  task_tools.py
+```
+
+这一阶段暂时不要做：
+
+```
+不要做多 Agent 并发认领
+不要做 git worktree 隔离
+不要做复杂锁机制
+不要把 Task DAG 做成完整项目管理软件
+```
+
+完成标准是：
+
+```
+可以创建带 blocked_by 的任务
+可以根据依赖判断任务是否可开始
+claim_task 会拒绝未解除阻塞的任务
+complete_task 会返回被解除阻塞的下游任务
+任务状态可以通过文件跨进程保存
+后续可视化阶段可以画出任务 DAG
+```
+
+---
+
+### 阶段 5D：轻量项目记忆系统
+
+这一小阶段的目标是让 PyCode 能积累项目级知识，而不是每次都从零开始分析。
+
+记忆系统不要一开始就做得太大。初版重点是保存 PyCode 自己分析出的项目知识。
+
+可以保存的记忆类型包括：
+
+```
+project：项目结构、入口、核心模块说明
+workflow：常用命令、测试命令、索引生成命令
+analysis：历史影响分析结论
+preference：用户对本项目的偏好或约束
+```
+
+建议存储结构：
+
+```
+.pclens/memory/
+  MEMORY.md
+  project-entry.md
+  test-command.md
+  impact-user-service.md
+```
+
+其中：
+
+```
+MEMORY.md 作为索引，只保存 name、description、type 和文件链接
+每个记忆文件用 Markdown 保存正文
+可以用简单 frontmatter 保存元数据
+```
+
+初期可以先做显式写入，不急着做 LLM 自动抽取：
+
+```
+memory_add
+memory_list
+memory_search
+memory_load
+```
+
+后续再考虑：
+
+```
+根据 AgentResult 自动沉淀分析结论
+根据问题选择相关记忆注入 prompt
+定期合并重复记忆
+```
+
+这一阶段可以新增模块：
+
+```
+agent/
+  memory.py
+```
+
+也可以新增工具：
+
+```
+tools/
+  memory_tools.py
+```
+
+这一阶段暂时不要做：
+
+```
+不要做复杂向量数据库
+不要默认把所有对话都写入记忆
+不要让记忆内容绕过项目权限边界
+不要让过期记忆覆盖当前代码事实
+```
+
+完成标准是：
+
+```
+可以创建、读取、列出和搜索项目记忆
+MEMORY.md 索引能自动更新
+Agent prompt 可以按需注入相关记忆
+记忆与 index / graph / retrieve_context 的证据边界清晰
+CLI 能展示当前项目已有记忆
+```
+
+---
+
+### 阶段 5E：Prompt / Context 分层组装器
+
+这一小阶段的目标是把 prompt 构建从单个字符串拼接，升级为可维护、可扩展的上下文组装系统。
+
+随着 Hook、Trace、Todo、Task DAG 和 Memory 加入，Agent 可用上下文会变多。如果仍然把所有内容都硬拼进一个 prompt，会很难维护，也会浪费 token。
+
+可以把上下文分成几类：
+
+```
+identity：Agent 身份和行为边界
+tools：可用工具说明
+policy：权限和安全规则
+project：项目路径、索引和图谱信息
+retrieval：本次检索到的代码上下文和 evidence
+trace：本次工具调用轨迹摘要
+todo：当前执行清单
+tasks：任务 DAG 状态
+memory：相关项目记忆
+```
+
+建议新增：
+
+```
+agent/
+  context.py
+  prompt_sections.py
+```
+
+核心思路是：
+
+```
+静态片段：身份、工具说明、权限规则
+动态片段：项目状态、检索证据、trace、todo、memory
+按需片段：只有存在相关数据时才注入
+```
+
+这一阶段暂时不要做：
+
+```
+不要做复杂 token 预算优化
+不要做完整上下文压缩系统
+不要把所有记忆无差别注入 prompt
+不要让 prompt_builder 和 agent/prompts.py 继续无限膨胀
+```
+
+完成标准是：
+
+```
+Agent 总结 prompt 由多个 section 组成
+每个 section 的来源清晰
+不存在的数据不会注入 prompt
+Prompt 中能包含 trace / todo / memory 的摘要
+阶段三问答 prompt 和阶段四/五 Agent prompt 边界清楚
+```
+
+---
+
+阶段五完成后，PyCode 的 Agent 层应该具备：
+
+```
+可观测：能看到工具调用轨迹
+可规划：能看到执行清单和任务依赖
+可恢复：任务 DAG 和记忆可以落盘
+可解释：最终结论能追溯到 evidence、trace 和 memory
+可展示：后续可视化层有足够丰富的数据可展示
+```
+
+这一阶段完成后，再做可视化 Demo 会更有意义。因为展示层不再只是包装 CLI 输出，而是可以展示一个 Agent 如何计划、执行、查证、记录和沉淀知识。
+
+---
+
+## 阶段 6：可视化和产品化展示
 
 这一阶段不是核心算法，但对简历和展示很重要。
 
@@ -557,7 +969,7 @@ rich_output.py
 
 ---
 
-## 阶段 6：工程化、测试和简历化
+## 阶段 7：工程化、测试和简历化
 
 最后阶段是把它从“能跑的 demo”变成“像样的项目”。
 
@@ -639,9 +1051,11 @@ demo 能展示核心能力
 ↓
 阶段 4：能作为 Agent 调工具完成开发分析任务
 ↓
-阶段 5：能展示
+阶段 5：能让 Agent 可观测、可恢复、可规划、可积累项目知识
 ↓
-阶段 6：能写进简历和面试讲解
+阶段 6：能展示
+↓
+阶段 7：能写进简历和面试讲解
 ```
 
 更具体一点：
@@ -651,8 +1065,9 @@ demo 能展示核心能力
 阶段 2 产物：code_graph.json
 阶段 3 产物：代码库问答 CLI
 阶段 4 产物：开发任务分析 Agent
-阶段 5 产物：可视化 Demo
-阶段 6 产物：完整 GitHub 项目
+阶段 5 产物：Hook/Trace、TodoWrite、Task DAG、Memory、Context Builder
+阶段 6 产物：可视化 Demo
+阶段 7 产物：完整 GitHub 项目
 ```
 
 # 代码Agent助手要求

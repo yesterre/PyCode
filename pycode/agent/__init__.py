@@ -1,7 +1,29 @@
 from pycode.agent.executor import execute_plan, execute_tool_call, run_agent_task
+from pycode.agent.context import AgentContext, ContextAssembler, ContextSection
+from pycode.agent.hooks import (
+    HookContext,
+    HookEventType,
+    HookRegistry,
+    HookResult,
+    create_default_hook_registry,
+)
+from pycode.agent.memory import (
+    MemoryIndexEntry,
+    MemoryItem,
+    MemoryRunInfo,
+    MemoryStore,
+    MemoryType,
+)
 from pycode.agent.planner import classify_task, plan_task
-from pycode.agent.prompts import build_agent_summary_prompt
+from pycode.agent.prompts import (
+    build_agent_summary_context,
+    build_agent_summary_prompt,
+    render_agent_prompt,
+)
 from pycode.agent.runtime import run_agent_runtime
+from pycode.agent.task_dag import CanStartResult, TaskDAGStore, TaskNode, TaskStatus
+from pycode.agent.todo import TodoItem, TodoList, TodoManager, TodoStatus
+from pycode.agent.trace import AgentTrace, ToolTrace, TraceEvent, TraceRecorder
 from pycode.agent.types import (
     AgentMessage,
     AgentResult,
@@ -19,14 +41,41 @@ __all__ = [
     "AgentStep",
     "AgentStopReason",
     "AgentTask",
+    "AgentTrace",
     "AgentTurn",
     "build_agent_summary_prompt",
+    "build_agent_summary_context",
+    "CanStartResult",
     "classify_task",
+    "create_default_hook_registry",
+    "ContextAssembler",
+    "ContextSection",
     "execute_plan",
     "execute_tool_call",
+    "HookContext",
+    "HookEventType",
+    "HookRegistry",
+    "HookResult",
+    "MemoryIndexEntry",
+    "MemoryItem",
+    "MemoryRunInfo",
+    "MemoryStore",
+    "MemoryType",
     "plan_task",
     "RuntimeConfig",
+    "AgentContext",
+    "render_agent_prompt",
     "run_agent_runtime",
     "run_agent_task",
+    "TaskDAGStore",
+    "TaskNode",
+    "TaskStatus",
+    "ToolTrace",
     "ToolCall",
+    "TodoItem",
+    "TodoList",
+    "TodoManager",
+    "TodoStatus",
+    "TraceEvent",
+    "TraceRecorder",
 ]

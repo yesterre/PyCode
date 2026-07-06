@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 
 from pycode.agent import AgentResult, run_agent_task
+from pycode.agent.memory import MemoryIndexEntry, MemoryItem, MemoryStore
+from pycode.agent.task_dag import TaskDAGStore, TaskNode
 from pycode.graph_builder import build_code_graph
 from pycode.llm_client import DEFAULT_MODEL, LLMClient, OpenAIResponsesClient
 from pycode.models import CodeGraph, GraphEdge, GraphNode, ProjectIndex
@@ -159,6 +161,9 @@ def agent_project(
     graph_path: Path | None = None,
     llm_client: LLMClient | None = None,
     tools: dict[str, ToolSpec] | None = None,
+    enable_memory: bool = True,
+    enable_memory_extraction: bool = True,
+    show_context: bool = False,
 ) -> AgentResult:
     """Run the stage-4 Agent workflow for a development-analysis task."""
     client = None if plan_only else llm_client or OpenAIResponsesClient(model=model)
@@ -170,9 +175,145 @@ def agent_project(
         llm_client=client,
         tools=tools,
         plan_only=plan_only,
+        enable_memory=enable_memory,
+        enable_memory_extraction=enable_memory_extraction,
     )
-    _print_agent_result(result)
+    _print_agent_result(result, show_context=show_context)
     return result
+
+
+def memory_project(
+    project_path: Path,
+    operation: str,
+    *,
+    name: str | None = None,
+    memory_type: str | None = None,
+    description: str = "",
+    body: str | None = None,
+    tags: list[str] | None = None,
+    query: str = "",
+    limit: int = 5,
+) -> list[MemoryIndexEntry] | list[MemoryItem] | MemoryItem:
+    """Manage project-local persistent memory files under .pclens/memory."""
+    store = MemoryStore(project_path)
+
+    if operation == "add":
+        if not name:
+            raise ValueError("Memory operation 'add' requires --name.")
+        if not memory_type:
+            raise ValueError("Memory operation 'add' requires --type.")
+        if body is None:
+            raise ValueError("Memory operation 'add' requires --content.")
+        item = store.add_memory(
+            name=name,
+            memory_type=memory_type,
+            description=description,
+            body=body,
+            tags=tags or [],
+            source="manual",
+        )
+        _print_memory_header("Memory created", project_path, store)
+        _print_memory_item(item, include_body=False)
+        return item
+
+    if operation == "list":
+        entries = store.list_memories()
+        _print_memory_header("Memory list", project_path, store)
+        _safe_print(f"Memories: {len(entries)}")
+        for entry in entries:
+            _print_memory_entry(entry)
+        return entries
+
+    if operation == "search":
+        items = store.search_memories(
+            query,
+            memory_type=memory_type,
+            limit=limit,
+            include_body=True,
+        )
+        _print_memory_header("Memory search", project_path, store)
+        _safe_print(f"Matches: {len(items)}")
+        for item in items:
+            _print_memory_item(item, include_body=False)
+        return items
+
+    if operation == "load":
+        if not name:
+            raise ValueError("Memory operation 'load' requires name.")
+        item = store.load_memory(name)
+        _print_memory_header("Memory loaded", project_path, store)
+        _print_memory_item(item, include_body=True)
+        return item
+
+    if operation == "rebuild":
+        entries = store.rebuild_index()
+        _print_memory_header("Memory index rebuilt", project_path, store)
+        _safe_print(f"Memories: {len(entries)}")
+        for entry in entries:
+            _print_memory_entry(entry)
+        return entries
+
+    raise ValueError(f"Unsupported memory operation: {operation}")
+
+
+def task_project(
+    project_path: Path,
+    operation: str,
+    task_id: str | None = None,
+    *,
+    title: str | None = None,
+    description: str = "",
+    blocked_by: list[str] | None = None,
+    owner: str | None = None,
+) -> list[TaskNode] | TaskNode:
+    """Manage project-local Task DAG state under .pclens/tasks."""
+    store = TaskDAGStore(project_path)
+
+    if operation == "create":
+        task = store.create_task(
+            task_id=task_id,
+            title=title or "",
+            description=description,
+            blocked_by=blocked_by or [],
+            owner=owner,
+        )
+        _print_task_header("Task created", project_path, store)
+        _print_task_node(task, store)
+        return task
+
+    if operation == "list":
+        tasks = store.list_tasks()
+        _print_task_header("Task list", project_path, store)
+        _safe_print(f"Tasks: {len(tasks)}")
+        for task in tasks:
+            _print_task_node(task, store)
+        return tasks
+
+    if operation == "get":
+        _require_task_id(operation, task_id)
+        task = store.get_task(task_id or "")
+        _print_task_header("Task loaded", project_path, store)
+        _print_task_node(task, store)
+        return task
+
+    if operation == "claim":
+        _require_task_id(operation, task_id)
+        task = store.claim_task(task_id or "", owner=owner)
+        _print_task_header("Task claimed", project_path, store)
+        _print_task_node(task, store)
+        return task
+
+    if operation == "complete":
+        _require_task_id(operation, task_id)
+        task, ready_tasks = store.complete_task(task_id or "")
+        _print_task_header("Task completed", project_path, store)
+        _print_task_node(task, store)
+        _safe_print(f"Ready tasks: {len(ready_tasks)}")
+        for ready_task in ready_tasks:
+            _print_task_node(ready_task, store)
+        return task
+
+    raise ValueError(f"Unsupported task operation: {operation}")
 
 
 def _resolve_agent_graph_path(
@@ -190,6 +331,58 @@ def _resolve_agent_graph_path(
     if project_relative.exists():
         return project_relative.resolve()
     return graph_path
+
+
+def _print_task_header(label: str, project_path: Path, store: TaskDAGStore) -> None:
+    print(f"PyCode {label}.")
+    print(f"Project path: {project_path}")
+    print(f"Task storage: {store.tasks_dir}")
+
+
+def _print_task_node(task: TaskNode, store: TaskDAGStore) -> None:
+    can_start = store.can_start(task)
+    blocked_by = ", ".join(task.blocked_by) if task.blocked_by else "N/A"
+    blocked = ", ".join(can_start.blocked_by) if can_start.blocked_by else "N/A"
+    missing = (
+        ", ".join(can_start.missing_dependencies)
+        if can_start.missing_dependencies
+        else "N/A"
+    )
+    _safe_print(
+        f"- {task.id}: {task.status} - {task.title} "
+        f"(owner={task.owner or 'N/A'}, blocked_by={blocked_by}, "
+        f"can_start={can_start.can_start}, active_blocks={blocked}, "
+        f"missing={missing})"
+    )
+
+
+def _print_memory_header(label: str, project_path: Path, store: MemoryStore) -> None:
+    print(f"PyCode {label}.")
+    print(f"Project path: {project_path}")
+    print(f"Memory storage: {store.memory_dir}")
+
+
+def _print_memory_entry(entry: MemoryIndexEntry) -> None:
+    tags = f", tags={','.join(entry.tags)}" if entry.tags else ""
+    _safe_print(
+        f"- {entry.name}: {entry.type} - {entry.description} "
+        f"(path={entry.path}{tags})"
+    )
+
+
+def _print_memory_item(item: MemoryItem, *, include_body: bool) -> None:
+    tags = f", tags={','.join(item.tags)}" if item.tags else ""
+    _safe_print(
+        f"- {item.name}: {item.type} - {item.description} "
+        f"(path={item.path}, source={item.source}{tags})"
+    )
+    if include_body:
+        _safe_print(item.body or "N/A")
+
+
+def _require_task_id(operation: str, task_id: str | None) -> None:
+    if not task_id:
+        raise ValueError(f"Task operation '{operation}' requires task_id.")
 
 
 def _print_index_summary(index: ProjectIndex, output_path: Path) -> None:
@@ -286,7 +479,7 @@ def _print_llm_answer(answer: str, retrieval: RetrievalResult) -> None:
         _safe_print(f"- {item}")
 
 
-def _print_agent_result(result: AgentResult) -> None:
+def _print_agent_result(result: AgentResult, *, show_context: bool = False) -> None:
     print("PyCode agent completed.")
     print(f"Task: {result.task.description}")
     print(f"Task type: {result.task.task_type}")
@@ -317,6 +510,12 @@ def _print_agent_result(result: AgentResult) -> None:
                 f"{status} - {turn.tool_result.summary}"
             )
 
+    _print_todo_summary(result)
+    _print_memory_summary(result)
+    _print_trace_summary(result)
+    if show_context:
+        _print_context_summary(result)
+
     print("Evidence:")
     evidence = _agent_evidence(result)
     if not evidence:
@@ -329,8 +528,118 @@ def _print_agent_result(result: AgentResult) -> None:
     _safe_print(result.answer or "N/A")
 
 
+def _print_todo_summary(result: AgentResult) -> None:
+    if not result.todos:
+        return
+
+    counts = {
+        "pending": 0,
+        "in_progress": 0,
+        "completed": 0,
+        "failed": 0,
+    }
+    current = "N/A"
+    for item in result.todos:
+        counts[item.status] = counts.get(item.status, 0) + 1
+        if item.status == "in_progress":
+            current = item.id
+
+    print("Todos:")
+    _safe_print(
+        "- progress: "
+        f"total={len(result.todos)}, completed={counts['completed']}, "
+        f"failed={counts['failed']}, pending={counts['pending']}, "
+        f"in_progress={counts['in_progress']}, current={current}"
+    )
+    for item in result.todos:
+        detail = (
+            f"- {item.id}: {item.status} - {item.tool} - "
+            f"{item.title or item.reason or 'N/A'}"
+        )
+        if item.error:
+            detail += f" Error: {item.error}"
+        _safe_print(detail)
+
+
+def _print_memory_summary(result: AgentResult) -> None:
+    if result.memory is None:
+        return
+
+    summary = result.memory.summary()
+    print("Memories:")
+    _safe_print(
+        "- counts: "
+        f"index={summary['index_entries']}, "
+        f"relevant={summary['relevant_memories']}, "
+        f"extracted={summary['extracted_memories']}"
+    )
+    if result.memory.selection_error:
+        _safe_print(f"- selection_error: {result.memory.selection_error}")
+    if result.memory.extraction_error:
+        _safe_print(f"- extraction_error: {result.memory.extraction_error}")
+    for item in result.memory.relevant_memories:
+        _safe_print(f"- relevant: {item.name} ({item.type}) - {item.description}")
+    for item in result.memory.extracted_memories:
+        _safe_print(f"- extracted: {item.name} ({item.type}) - {item.description}")
+
+
+def _print_trace_summary(result: AgentResult) -> None:
+    trace = result.trace
+    if trace is None:
+        return
+
+    summary = trace.summary()
+    print("Trace:")
+    _safe_print(f"- run_id: {trace.run_id}")
+    _safe_print(f"- duration_ms: {trace.duration_ms if trace.duration_ms is not None else 'N/A'}")
+    _safe_print(
+        "- counts: "
+        f"events={summary['events']}, tools={summary['tools']}, "
+        f"ok={summary['ok']}, failed={summary['failed']}, denied={summary['denied']}"
+    )
+    for tool_trace in trace.tools:
+        detail = (
+            f"- turn {tool_trace.turn_index}: {tool_trace.tool} -> "
+            f"{tool_trace.status}"
+        )
+        if tool_trace.duration_ms is not None:
+            detail += f" ({tool_trace.duration_ms} ms)"
+        if tool_trace.summary:
+            detail += f" - {tool_trace.summary}"
+        if tool_trace.denied_by:
+            detail += f" [denied_by={tool_trace.denied_by}]"
+        if tool_trace.error:
+            detail += f" Error: {tool_trace.error}"
+        _safe_print(detail)
+
+
+def _print_context_summary(result: AgentResult) -> None:
+    context = result.context
+    if context is None:
+        return
+
+    print("Context:")
+    _safe_print(f"- sections: {len(context.sections)}")
+    for section in context.sections:
+        _safe_print(
+            f"- {section.name}: placement={section.placement}, "
+            f"source={section.source}, chars={len(section.content)}"
+        )
+    if context.warnings:
+        print("Context warnings:")
+        for warning in context.warnings:
+            _safe_print(f"- {warning}")
+
+
 def _agent_evidence(result: AgentResult) -> list[str]:
     evidence: list[str] = []
+    if result.memory is not None:
+        for item in result.memory.relevant_memories:
+            if item.path:
+                evidence.append(f".pclens/memory/{item.path}")
+        for item in result.memory.extracted_memories:
+            if item.path:
+                evidence.append(f".pclens/memory/{item.path}")
     for tool_result in result.tool_results:
         data = tool_result.data
         for item in data.get("evidence", []):
@@ -556,7 +865,131 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to an existing code_graph.json. Defaults to <project>/.pclens/code_graph.json.",
     )
+    agent_parser.add_argument(
+        "--no-memory",
+        action="store_true",
+        help="Disable loading project memories for this Agent run.",
+    )
+    agent_parser.add_argument(
+        "--no-memory-extract",
+        action="store_true",
+        help="Disable automatic memory extraction after this Agent run.",
+    )
+    agent_parser.add_argument(
+        "--show-context",
+        action="store_true",
+        help="Show Agent context section metadata without printing the full prompt.",
+    )
     _add_model_argument(agent_parser)
+
+    memory_parser = subparsers.add_parser(
+        "memory",
+        help="Manage project-local persistent memories.",
+    )
+    memory_parser.add_argument(
+        "project_path",
+        type=Path,
+        help="Python project directory containing .pclens/memory.",
+    )
+    memory_parser.add_argument(
+        "operation",
+        choices=["add", "list", "search", "load", "rebuild"],
+        help="Memory operation to run.",
+    )
+    memory_parser.add_argument(
+        "name",
+        nargs="?",
+        help="Memory name for load.",
+    )
+    memory_parser.add_argument(
+        "--name",
+        dest="explicit_name",
+        default=None,
+        help="Memory name for add.",
+    )
+    memory_parser.add_argument(
+        "--type",
+        dest="memory_type",
+        default=None,
+        choices=["user", "feedback", "project", "reference"],
+        help="Memory type for add/search.",
+    )
+    memory_parser.add_argument(
+        "--description",
+        default="",
+        help="Short memory description for add.",
+    )
+    memory_parser.add_argument(
+        "--content",
+        dest="body",
+        default=None,
+        help="Markdown memory body for add.",
+    )
+    memory_parser.add_argument(
+        "--tag",
+        dest="tags",
+        action="append",
+        default=[],
+        help="Memory tag. Can be provided multiple times.",
+    )
+    memory_parser.add_argument(
+        "--query",
+        default="",
+        help="Search query for memory search.",
+    )
+    memory_parser.add_argument(
+        "--limit",
+        type=int,
+        default=5,
+        help="Maximum memories to return for search.",
+    )
+
+    task_parser = subparsers.add_parser(
+        "task",
+        help="Manage project-local Task DAG files.",
+    )
+    task_parser.add_argument(
+        "project_path",
+        type=Path,
+        help="Python project directory containing .pclens/tasks.",
+    )
+    task_parser.add_argument(
+        "operation",
+        choices=["create", "list", "get", "claim", "complete"],
+        help="Task DAG operation to run.",
+    )
+    task_parser.add_argument(
+        "task_id",
+        nargs="?",
+        help="Task id for get, claim, or complete.",
+    )
+    task_parser.add_argument(
+        "--id",
+        dest="explicit_task_id",
+        default=None,
+        help="Explicit task id to use when creating a task.",
+    )
+    task_parser.add_argument(
+        "--title",
+        default=None,
+        help="Task title for create.",
+    )
+    task_parser.add_argument(
+        "--description",
+        default="",
+        help="Task description for create.",
+    )
+    task_parser.add_argument(
+        "--blocked-by",
+        action="append",
+        default=[],
+        help="Dependency task id. Can be provided multiple times.",
+    )
+    task_parser.add_argument(
+        "--owner",
+        default=None,
+        help="Task owner for create or claim.",
+    )
 
     return parser
 
@@ -600,6 +1033,31 @@ def main() -> None:
             plan_only=args.plan_only,
             model=args.model,
             graph_path=args.graph_path,
+            enable_memory=not args.no_memory,
+            enable_memory_extraction=not args.no_memory_extract,
+            show_context=args.show_context,
+        )
+    elif args.command == "memory":
+        memory_project(
+            args.project_path,
+            args.operation,
+            name=args.explicit_name if args.operation == "add" else args.name,
+            memory_type=args.memory_type,
+            description=args.description,
+            body=args.body,
+            tags=args.tags,
+            query=args.query,
+            limit=args.limit,
+        )
+    elif args.command == "task":
+        task_project(
+            args.project_path,
+            args.operation,
+            task_id=args.explicit_task_id if args.operation == "create" else args.task_id,
+            title=args.title,
+            description=args.description,
+            blocked_by=args.blocked_by,
+            owner=args.owner,
         )
 
 

@@ -9,6 +9,7 @@ class ToolContext:
     allow_tests: bool = False
     python_executable: str | None = None
     max_output_chars: int = 4000
+    state: dict[str, Any] = field(default_factory=dict)
 
     @property
     def project_root(self) -> Path:
@@ -48,6 +49,7 @@ class ToolSpec:
     name: str
     handler: Callable[..., ToolResult]
     read_only: bool = True
+    writes_internal_state: bool = False
 
 
 def success(tool: str, summary: str, **data: Any) -> ToolResult:

@@ -1,8 +1,8 @@
 # PyCode
 
-PyCode 是一个 Python 代码库理解与改动影响分析 Agent 项目。当前已进入阶段四：Agent 化增强。
+PyCode 是一个 Python 代码库理解与改动影响分析 Agent 项目。当前已完成阶段五：Agent 内核增强与可观测化。
 
-现阶段项目在阶段一索引、阶段二代码图谱和阶段三 LLM 问答的基础上，增加轻量 Agent 工作流。Agent 会先规划工具调用，再读取 git diff、搜索代码、查询图谱或按权限运行测试，最后基于工具证据输出总结。当前不自动修改代码，不自动提交 git，也不做多 Agent。
+现阶段项目在阶段一索引、阶段二代码图谱、阶段三 LLM 问答和阶段四轻量 Agent 工作流的基础上，补齐了 trace、todo、Task DAG、memory 和分层 Context Builder。Agent 会先规划工具调用，再读取 git diff、搜索代码、查询图谱或按权限运行测试，最后基于工具证据和分层上下文输出总结。当前不自动修改代码，不自动提交 git，也不做多 Agent。
 
 ## 已完成功能
 
@@ -49,6 +49,15 @@ PyCode 是一个 Python 代码库理解与改动影响分析 Agent 项目。当�
 - 默认不运行测试，只有显式传入 `--run-tests` 才允许受控 pytest。
 - 支持 `--plan-only` 只展示 Agent 计划，不调用工具和 LLM。
 
+### 阶段五：Agent 内核增强与可观测化
+
+- 支持 Hook + Trace，记录用户任务、工具调用、权限拒绝、耗时、错误和结果摘要。
+- 支持 TodoWrite，将 planned steps 映射为运行时执行清单，并返回到 `AgentResult.todos`。
+- 支持基于 `.pclens/tasks/*.json` 的 Task DAG，用 `blocked_by` 表达跨会话任务依赖。
+- 支持 `.pclens/memory/` 轻量项目记忆，包含索引、相关记忆加载和可选自动提取。
+- 支持 Prompt / Context 分层组装，`AgentResult.context` 可展示 identity、tools、policy、plan、tool evidence、trace、todo、tasks、memory 等 section。
+- `agent --show-context` 可以查看 context section 摘要，不打印完整 prompt。
+
 ## 项目结构
 
 ```text
@@ -80,6 +89,12 @@ pycode/
     runtime.py
     policy.py
     prompts.py
+    context.py
+    prompt_sections.py
+    trace.py
+    todo.py
+    task_dag.py
+    memory.py
 
 examples/
   demo_project/
@@ -115,6 +130,7 @@ docs/
   stage2_development_record.md
   stage3_development_record.md
   stage4_development_record.md
+  stage5_development_record.md
 ```
 
 ### Stage 4 enhanced runtime loop

@@ -1,7 +1,15 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from pycode.tools import ToolResult
+if TYPE_CHECKING:
+    from pycode.agent.context import AgentContext
+    from pycode.agent.memory import MemoryRunInfo
+    from pycode.agent.todo import TodoItem
+    from pycode.agent.trace import AgentTrace
+    from pycode.tools.base import ToolResult
 
 
 @dataclass
@@ -20,6 +28,7 @@ class AgentStep:
     arguments: dict = field(default_factory=dict)
     reason: str = ""
     required: bool = True
+    todo_id: str | None = None
 
 
 @dataclass
@@ -58,6 +67,10 @@ class AgentStopReason:
 class RuntimeConfig:
     max_turns: int = 8
     plan_only: bool = False
+    enable_trace: bool = True
+    enable_memory: bool = True
+    enable_memory_extraction: bool = True
+    max_relevant_memories: int = 5
 
 
 @dataclass
@@ -77,6 +90,10 @@ class AgentResult:
     messages: list[AgentMessage] = field(default_factory=list)
     turns: list[AgentTurn] = field(default_factory=list)
     stop_reason: str = AgentStopReason.FINAL
+    trace: AgentTrace | None = None
+    todos: list[TodoItem] = field(default_factory=list)
+    memory: MemoryRunInfo | None = None
+    context: AgentContext | None = None
 
     @property
     def ok(self) -> bool:
