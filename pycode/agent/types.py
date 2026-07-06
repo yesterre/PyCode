@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -56,7 +57,7 @@ class AgentMessage:
     tool_name: str | None = None
 
 
-class AgentStopReason:
+class AgentStopReason(StrEnum):
     FINAL = "final"
     PLAN_ONLY = "plan_only"
     MAX_TURNS = "max_turns"

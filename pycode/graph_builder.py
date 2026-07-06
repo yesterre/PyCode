@@ -1,4 +1,5 @@
 from pycode.models import CodeGraph, FileInfo, GraphEdge, GraphNode, ProjectIndex
+from pycode.utils import normalize_path
 
 
 def build_code_graph(index: ProjectIndex) -> CodeGraph:
@@ -14,7 +15,7 @@ class _CodeGraphBuilder:
         self.edges: list[GraphEdge] = []
         self.edge_keys: set[tuple[str, str, str]] = set()
         self.files_by_path = {
-            _normalize_path(file_info.path): file_info for file_info in index.files
+            normalize_path(file_info.path): file_info for file_info in index.files
         }
         self.module_to_file = {
             _path_to_module(path): path for path in self.files_by_path
@@ -33,7 +34,7 @@ class _CodeGraphBuilder:
 
     def _add_structure_nodes(self) -> None:
         for file_info in self.index.files:
-            file_path = _normalize_path(file_info.path)
+            file_path = normalize_path(file_info.path)
             file_id = _file_id(file_path)
             self._add_node(
                 GraphNode(id=file_id, type="file", name=file_path, path=file_path)
@@ -90,14 +91,14 @@ class _CodeGraphBuilder:
 
     def _add_import_edges(self) -> None:
         for file_info in self.index.files:
-            source_id = _file_id(_normalize_path(file_info.path))
+            source_id = _file_id(normalize_path(file_info.path))
             for import_name in file_info.imports:
                 target_id = self._resolve_import_target(import_name)
                 self._add_edge(source_id, target_id, "imports")
 
     def _add_call_edges(self) -> None:
         for file_info in self.index.files:
-            file_path = _normalize_path(file_info.path)
+            file_path = normalize_path(file_info.path)
             for call_info in file_info.call_infos:
                 source_id = self._resolve_caller(file_path, call_info.caller)
                 if source_id is None:
@@ -158,12 +159,8 @@ class _CodeGraphBuilder:
         self.edges.append(GraphEdge(source=source, target=target, type=edge_type))
 
 
-def _normalize_path(path: str) -> str:
-    return path.replace("\\", "/")
-
-
 def _path_to_module(path: str) -> str:
-    normalized = _normalize_path(path)
+    normalized = normalize_path(path)
     if normalized.endswith("/__init__.py"):
         return normalized[: -len("/__init__.py")].replace("/", ".")
     if normalized.endswith(".py"):

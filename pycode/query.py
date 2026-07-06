@@ -1,4 +1,5 @@
 from pycode.models import CodeGraph, GraphEdge, GraphNode
+from pycode.utils import normalize_path
 
 
 def get_file_imports(graph: CodeGraph, file_path: str) -> list[GraphEdge]:
@@ -70,15 +71,11 @@ def get_source_nodes(graph: CodeGraph, edges: list[GraphEdge]) -> list[GraphNode
 
 
 def _file_id(file_path: str) -> str:
-    return f"file:{_normalize_path(file_path)}"
-
-
-def _normalize_path(path: str) -> str:
-    return path.replace("\\", "/")
+    return f"file:{normalize_path(file_path)}"
 
 
 def _looks_like_entry_file(node: GraphNode) -> bool:
-    path = _normalize_path(node.path or node.name).lower()
+    path = normalize_path(node.path or node.name).lower()
     name = path.rsplit("/", 1)[-1]
     return name in {"main.py", "app.py", "cli.py", "__main__.py"}
 

@@ -31,11 +31,11 @@ def memory(
 
     if operation == "add":
         if not name:
-            return _missing("name")
+            return _missing(operation, "name")
         if not memory_type:
-            return _missing("memory_type")
+            return _missing(operation, "memory_type")
         if body is None:
-            return _missing("body")
+            return _missing(operation, "body")
         try:
             item = store.add_memory(
                 name=name,
@@ -94,7 +94,7 @@ def memory(
 
     if operation == "load":
         if not name:
-            return _missing("name")
+            return _missing(operation, "name")
         try:
             item = store.load_memory(name)
         except (FileNotFoundError, PermissionError, ValueError) as exc:
@@ -149,10 +149,10 @@ def _normalize_tags(value: list[str] | str | None) -> list[str]:
     return [str(item) for item in value]
 
 
-def _missing(field_name: str) -> ToolResult:
+def _missing(operation: str, field_name: str) -> ToolResult:
     return failure(
         TOOL_NAME,
         f"Memory {field_name} is required.",
-        f"operation='add' or 'load' requires {field_name}.",
+        f"operation='{operation}' requires {field_name}.",
         storage_dir=_relative_storage_dir(),
     )

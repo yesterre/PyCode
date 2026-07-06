@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pycode.agent.context import AgentContext, ContextAssembler
+from pycode.agent.context import AgentContext, ContextAssembler, ContextSection
 from pycode.agent.prompt_sections import AGENT_SUMMARY_RULES
 
 if TYPE_CHECKING:
@@ -108,7 +108,7 @@ def render_agent_prompt(context: AgentContext) -> str:
     return "\n\n".join(part for part in parts if part)
 
 
-def _render_section(section) -> str:
+def _render_section(section: ContextSection) -> str:
     return "\n".join(
         [
             f"## {section.title}",

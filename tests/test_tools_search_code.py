@@ -48,6 +48,28 @@ def test_search_code_supports_include_globs_and_result_limit() -> None:
         _cleanup(workspace)
 
 
+def test_search_code_dedupes_overlapping_include_globs() -> None:
+    workspace = _workspace()
+    try:
+        project_path = workspace / "project"
+        tests_dir = project_path / "tests"
+        tests_dir.mkdir(parents=True)
+        (tests_dir / "test_main.py").write_text("target\n", encoding="utf-8")
+
+        result = search_code(
+            ToolContext(project_path),
+            "target",
+            include_globs=["tests/*.py", "tests/**/*.py"],
+        )
+
+        assert result.ok is True
+        assert result.data["matches"] == [
+            {"path": "tests/test_main.py", "line_number": 1, "line": "target"}
+        ]
+    finally:
+        _cleanup(workspace)
+
+
 def test_search_code_skips_excluded_directories() -> None:
     workspace = _workspace()
     try:

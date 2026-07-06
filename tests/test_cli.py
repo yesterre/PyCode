@@ -10,6 +10,7 @@ from pycode.cli import (
     graph_project,
     impact_project_target,
     index_project,
+    main,
     memory_project,
     onboard_project,
     query_project_graph,
@@ -153,6 +154,25 @@ def test_stage_three_commands_require_generated_artifacts(tmp_path: Path) -> Non
 
     with pytest.raises(FileNotFoundError, match="Run `pycode index"):
         ask_project(project_path, "入口在哪里？", llm_client=_MockLLM())
+
+
+def test_main_prints_friendly_runtime_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project_path = _create_sample_project(tmp_path)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["pycode", "ask", str(project_path), "entry?"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "Error: Missing PyCode artifacts:" in captured.err
 
 
 def test_llm_answer_print_handles_unencodable_console_text(
@@ -417,7 +437,7 @@ def test_agent_project_plan_only_does_not_call_llm_or_tools(
     assert "1. changed_files: planned" in captured.out
     assert "Todos:" in captured.out
     assert "pending=6" in captured.out
-    assert "Answer:\nN/A" in captured.out
+    assert "Answer:\n(plan only, no LLM summary generated.)" in captured.out
 
 
 def test_agent_project_can_route_retrieve_context_through_cli_layer(

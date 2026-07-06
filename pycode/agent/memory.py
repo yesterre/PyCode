@@ -4,10 +4,12 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 from pycode.tools.base import ToolResult
+from pycode.utils import dedupe_preserve_order
 
 
 DEFAULT_MEMORY_DIR = ".pclens/memory"
@@ -16,13 +18,19 @@ MEMORY_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 MAX_RELEVANT_MEMORIES = 5
 
 
-class MemoryType:
+class MemoryType(StrEnum):
     USER = "user"
     FEEDBACK = "feedback"
     PROJECT = "project"
     REFERENCE = "reference"
 
-    ALL = {USER, FEEDBACK, PROJECT, REFERENCE}
+
+MemoryType.ALL = {
+    MemoryType.USER,
+    MemoryType.FEEDBACK,
+    MemoryType.PROJECT,
+    MemoryType.REFERENCE,
+}
 
 
 @dataclass
@@ -153,6 +161,11 @@ class MemoryStore:
             old = self.load_memory(actual_name)
             created_at = old.created_at
 
+        entries = [
+            entry
+            for entry in self.list_memories()
+            if entry.name != actual_name
+        ]
         item = MemoryItem(
             name=actual_name,
             type=memory_type,
@@ -165,7 +178,8 @@ class MemoryStore:
             path=f"{actual_name}.md",
         )
         self._save_memory(item)
-        self.rebuild_index()
+        entries.append(item.to_index_entry())
+        self._write_index(entries)
         return item
 
     def list_memories(self) -> list[MemoryIndexEntry]:
@@ -219,7 +233,12 @@ class MemoryStore:
 
     def rebuild_index(self) -> list[MemoryIndexEntry]:
         entries = self.list_memories()
+        self._write_index(entries)
+        return entries
+
+    def _write_index(self, entries: list[MemoryIndexEntry]) -> None:
         self.memory_dir.mkdir(parents=True, exist_ok=True)
+        sorted_entries = sorted(entries, key=lambda entry: (entry.type, entry.name))
         lines = [
             "# PyCode Memory Index",
             "",
@@ -227,7 +246,7 @@ class MemoryStore:
             "",
         ]
         for memory_type in [MemoryType.USER, MemoryType.FEEDBACK, MemoryType.PROJECT, MemoryType.REFERENCE]:
-            typed_entries = [entry for entry in entries if entry.type == memory_type]
+            typed_entries = [entry for entry in sorted_entries if entry.type == memory_type]
             if not typed_entries:
                 continue
             lines.append(f"## {memory_type}")
@@ -238,7 +257,6 @@ class MemoryStore:
                 )
             lines.append("")
         self.index_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
-        return entries
 
     def read_index_text(self) -> str:
         if not self.index_path.exists():
@@ -343,8 +361,10 @@ def load_relevant_memories(
                 build_memory_selection_prompt(task_description, messages, entries)
             )
             selected_names = _parse_selected_memory_names(response)
+        except ValueError as exc:
+            selection_error = f"Memory selection parse failed: {type(exc).__name__}: {exc}"
         except Exception as exc:  # pragma: no cover - defensive boundary
-            selection_error = f"{type(exc).__name__}: {exc}"
+            selection_error = f"Memory selection LLM failed: {type(exc).__name__}: {exc}"
 
     if not selected_names:
         selected = store.search_memories(
@@ -597,18 +617,7 @@ def _query_terms(query: str) -> list[str]:
         terms.append(lowered)
         if re.search(r"[\u4e00-\u9fff]", lowered) and len(lowered) > 2:
             terms.extend(lowered[index : index + 2] for index in range(len(lowered) - 1))
-    return _dedupe_terms(terms)
-
-
-def _dedupe_terms(terms: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for term in terms:
-        if term in seen:
-            continue
-        seen.add(term)
-        result.append(term)
-    return result
+    return dedupe_preserve_order(terms)
 
 
 def _memory_fingerprints(store: MemoryStore) -> set[str]:

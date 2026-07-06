@@ -6,7 +6,7 @@ from pycode.agent import AgentResult, run_agent_task
 from pycode.agent.memory import MemoryIndexEntry, MemoryItem, MemoryStore
 from pycode.agent.task_dag import TaskDAGStore, TaskNode
 from pycode.graph_builder import build_code_graph
-from pycode.llm_client import DEFAULT_MODEL, LLMClient, OpenAIResponsesClient
+from pycode.llm_client import LLMClient, OpenAIResponsesClient
 from pycode.models import CodeGraph, GraphEdge, GraphNode, ProjectIndex
 from pycode.prompt_builder import build_code_qa_prompt
 from pycode.parser import parse_python_file
@@ -26,11 +26,13 @@ from pycode.retriever import (
 from pycode.scanner import scan_python_files
 from pycode.storage import load_graph, load_index, save_graph, save_index
 from pycode.tools import ToolSpec
+from pycode.utils import dedupe_preserve_order
 
 
 DEFAULT_INDEX_DIR = ".pclens"
 DEFAULT_INDEX_FILE = "index.json"
 DEFAULT_GRAPH_FILE = "code_graph.json"
+_CONFIGURED_STDOUT_ID: int | None = None
 
 
 def index_project(
@@ -455,7 +457,7 @@ def _load_project_artifacts(project_path: Path) -> tuple[ProjectIndex, CodeGraph
 
 def _answer_with_retrieval(
     retrieval: RetrievalResult,
-    model: str,
+    model: str | None,
     llm_client: LLMClient | None,
 ) -> str:
     prompt = build_code_qa_prompt(retrieval)
@@ -525,7 +527,12 @@ def _print_agent_result(result: AgentResult, *, show_context: bool = False) -> N
             _safe_print(f"- {item}")
 
     print("Answer:")
-    _safe_print(result.answer or "N/A")
+    if result.answer:
+        _safe_print(result.answer)
+    elif result.stop_reason == "plan_only":
+        _safe_print("(plan only, no LLM summary generated.)")
+    else:
+        _safe_print("(no LLM summary generated.)")
 
 
 def _print_todo_summary(result: AgentResult) -> None:
@@ -671,10 +678,22 @@ def _agent_evidence(result: AgentResult) -> list[str]:
             node_id = node.get("id")
             if node_id:
                 evidence.append(str(node_id))
-    return _dedupe(evidence)
+    return dedupe_preserve_order(evidence)
 
 
 def _safe_print(text: str) -> None:
+    global _CONFIGURED_STDOUT_ID
+    stdout_id = id(sys.stdout)
+    if _CONFIGURED_STDOUT_ID != stdout_id:
+        reconfigure = getattr(sys.stdout, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(errors="replace")
+                _CONFIGURED_STDOUT_ID = stdout_id
+                print(text)
+                return
+            except (AttributeError, OSError, TypeError, ValueError):
+                _CONFIGURED_STDOUT_ID = stdout_id
     encoding = sys.stdout.encoding or "utf-8"
     safe_text = text.encode(encoding, errors="replace").decode(encoding)
     print(safe_text)
@@ -685,17 +704,6 @@ def _count_by_type(items: list[GraphNode] | list[GraphEdge]) -> dict[str, int]:
     for item in items:
         counts[item.type] = counts.get(item.type, 0) + 1
     return counts
-
-
-def _dedupe(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for item in items:
-        if item in seen:
-            continue
-        seen.add(item)
-        result.append(item)
-    return result
 
 
 def _require_target(query_type: str, target: str | None) -> None:
@@ -998,7 +1006,7 @@ def _add_model_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--model",
         default=None,
-        help=f"OpenAI model to use. Defaults to OPENAI_MODEL from .env, then {DEFAULT_MODEL}.",
+        help="OpenAI model to use. Defaults to OPENAI_MODEL from the shell or .env.",
     )
 
 
@@ -1006,6 +1014,14 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    try:
+        _dispatch_command(args)
+    except (FileNotFoundError, PermissionError, ValueError, RuntimeError, OSError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+
+def _dispatch_command(args: argparse.Namespace) -> None:
     if args.command == "index":
         index_project(args.project_path, args.output_path)
     elif args.command == "graph":

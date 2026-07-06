@@ -2,7 +2,7 @@ from pathlib import Path
 
 from pycode.agent.todo import TodoManager
 from pycode.agent.types import AgentStep
-from pycode.tools import ToolContext
+from pycode.tools import TOOLS, ToolContext
 from pycode.tools.todo_write import todo_write
 
 
@@ -15,6 +15,13 @@ def test_todo_write_lists_current_runtime_todos() -> None:
     assert result.ok is True
     assert result.data["progress"]["total"] == 1
     assert result.data["todos"][0]["id"] == "todo-1"
+
+
+def test_todo_write_is_registered_as_internal_state_tool() -> None:
+    spec = TOOLS["todo_write"]
+
+    assert spec.read_only is False
+    assert spec.writes_internal_state is True
 
 
 def test_todo_write_updates_existing_todo_status() -> None:

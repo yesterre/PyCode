@@ -39,7 +39,10 @@ def run_agent_runtime(
     context: ToolContext | None = None,
     hook_registry: HookRegistry | None = None,
 ) -> AgentResult:
-    """Run a minimal Agent loop over planned tool calls."""
+    """Run a minimal Agent loop over planned tool calls.
+
+    Default trace hooks are always retained; custom hook registries are appended.
+    """
     runtime_config = config or RuntimeConfig(max_turns=task.max_steps)
     steps = plan_task(task)
     todo_manager = TodoManager.from_steps(steps)

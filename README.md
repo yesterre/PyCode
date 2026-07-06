@@ -286,7 +286,7 @@ $env:OPENAI_API_KEY="你的 API Key"
 
 ```text
 OPENAI_API_KEY=你的 API Key
-OPENAI_MODEL=gpt-5.4-mini
+OPENAI_MODEL=gpt-4.1-mini
 OPENAI_API_TYPE=responses
 OPENAI_BASE_URL=https://api.openai.com/v1
 ```

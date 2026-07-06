@@ -17,7 +17,12 @@ TOOLS = {
     "git_diff": ToolSpec("git_diff", get_git_diff, read_only=True),
     "changed_files": ToolSpec("changed_files", get_changed_files, read_only=True),
     "run_tests": ToolSpec("run_tests", run_pytest, read_only=False),
-    "todo_write": ToolSpec("todo_write", todo_write, read_only=True),
+    "todo_write": ToolSpec(
+        "todo_write",
+        todo_write,
+        read_only=False,
+        writes_internal_state=True,
+    ),
     "task_dag": ToolSpec(
         "task_dag",
         task_dag,

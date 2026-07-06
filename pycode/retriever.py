@@ -7,6 +7,7 @@ from pycode.query import (
     get_file_imported_by,
     get_file_imports,
 )
+from pycode.utils import dedupe_preserve_order, normalize_path
 
 
 MAX_SNIPPET_LINES = 80
@@ -36,7 +37,7 @@ class RetrievalResult:
                 evidence_items.append(item.path)
             evidence_items.extend(item.node_ids)
             evidence_items.extend(item.edges)
-        return _dedupe(evidence_items)
+        return dedupe_preserve_order(evidence_items)
 
 
 def retrieve_for_question(
@@ -67,7 +68,7 @@ def retrieve_explain(
     question: str | None = None,
 ) -> RetrievalResult:
     """Return context for explaining one file only."""
-    normalized = _normalize_path(file_path)
+    normalized = normalize_path(file_path)
     file_info = _file_by_path(index).get(normalized)
     item = ContextItem(
         title=f"Explain file {normalized}",
@@ -111,7 +112,7 @@ def retrieve_onboard(
             graph,
             reason="入口候选或入口直接导入的文件，适合作为阅读顺序线索。",
         )
-        for path in _dedupe([path for path in selected_paths if path])[:6]
+        for path in dedupe_preserve_order([path for path in selected_paths if path])[:6]
     ]
     return RetrievalResult(
         question="生成项目新手阅读顺序",
@@ -128,7 +129,7 @@ def retrieve_impact(
     question: str | None = None,
 ) -> RetrievalResult:
     """Return import and reverse-import context for a simple impact analysis."""
-    normalized = _normalize_path(file_path)
+    normalized = normalize_path(file_path)
     imported_by = get_file_imported_by(graph, normalized)
     imports = get_file_imports(graph, normalized)
     related_paths = [normalized]
@@ -151,7 +152,7 @@ def retrieve_impact(
             graph,
             reason="目标文件或通过 imports/imported-by 关系找到的影响范围候选。",
         )
-        for path in _dedupe(related_paths)[:8]
+        for path in dedupe_preserve_order(related_paths)[:8]
     ]
     return RetrievalResult(
         question=question or f"分析修改 {normalized} 的影响范围",
@@ -204,7 +205,7 @@ def _retrieve_dependency(
             graph,
             reason="与问题中目标文件存在导入或反向导入关系。",
         )
-        for path in _dedupe(paths)[:6]
+        for path in dedupe_preserve_order(paths)[:6]
     ]
     return RetrievalResult(question=question, intent="dependency", items=items)
 
@@ -259,7 +260,7 @@ def _context_for_file(
     graph: CodeGraph,
     reason: str,
 ) -> ContextItem:
-    normalized = _normalize_path(file_path)
+    normalized = normalize_path(file_path)
     file_info = _file_by_path(index).get(normalized)
     return ContextItem(
         title=f"File {normalized}",
@@ -273,25 +274,25 @@ def _context_for_file(
 
 def _detect_intent(question: str) -> str:
     text = question.lower()
-    if any(word in text for word in ["入口", "启动", "entry", "main"]):
+    if any(word in text for word in ["\u5165\u53e3", "\u542f\u52a8", "entry", "main"]):
         return "entry"
-    if any(word in text for word in ["影响", "impact", "改动", "修改"]):
+    if any(word in text for word in ["\u5f71\u54cd", "impact", "\u6539\u52a8", "\u4fee\u6539"]):
         return "impact"
-    if any(word in text for word in ["依赖", "import", "调用", "call"]):
+    if any(word in text for word in ["\u4f9d\u8d56", "import", "\u8c03\u7528", "call"]):
         return "dependency"
     return "general"
 
 
 def _best_file_match(question: str, index: ProjectIndex) -> str | None:
-    normalized_question = _normalize_path(question).lower()
+    normalized_question = normalize_path(question).lower()
     for file_info in index.files:
-        path = _normalize_path(file_info.path)
+        path = normalize_path(file_info.path)
         if path.lower() in normalized_question:
             return path
     for file_info in index.files:
-        name = _normalize_path(file_info.path).rsplit("/", 1)[-1]
+        name = normalize_path(file_info.path).rsplit("/", 1)[-1]
         if name.lower() in normalized_question:
-            return _normalize_path(file_info.path)
+            return normalize_path(file_info.path)
     return None
 
 
@@ -313,7 +314,7 @@ def _read_snippet(project_path: Path, relative_path: str) -> str:
 
 
 def _node_ids_for_path(graph: CodeGraph, path: str) -> list[str]:
-    normalized = _normalize_path(path)
+    normalized = normalize_path(path)
     return [
         node.id
         for node in graph.nodes
@@ -322,7 +323,7 @@ def _node_ids_for_path(graph: CodeGraph, path: str) -> list[str]:
 
 
 def _edges_for_path(graph: CodeGraph, path: str) -> list[GraphEdge]:
-    file_node_id = f"file:{_normalize_path(path)}"
+    file_node_id = f"file:{normalize_path(path)}"
     node_ids = {file_node_id}
     node_ids.update(_node_ids_for_path(graph, path))
     return [
@@ -343,7 +344,7 @@ def _file_path_from_node_id(node_id: str) -> str | None:
 
 
 def _file_by_path(index: ProjectIndex):
-    return {_normalize_path(file_info.path): file_info for file_info in index.files}
+    return {normalize_path(file_info.path): file_info for file_info in index.files}
 
 
 def _file_summary(file_info) -> str:
@@ -356,34 +357,9 @@ def _file_summary(file_info) -> str:
 
 
 def _tokens(text: str) -> list[str]:
-    normalized = _normalize_path(text).lower()
+    normalized = normalize_path(text).lower()
     separators = " \t\r\n,.;:()[]{}<>\"'`，。！？、：；（）【】"
     for separator in separators:
         normalized = normalized.replace(separator, " ")
     return [token for token in normalized.split() if len(token) >= 2]
 
-
-def _normalize_path(path: str) -> str:
-    return path.replace("\\", "/")
-
-
-def _dedupe(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for item in items:
-        if item in seen:
-            continue
-        seen.add(item)
-        result.append(item)
-    return result
-
-
-def _detect_intent(question: str) -> str:
-    text = question.lower()
-    if any(word in text for word in ["\u5165\u53e3", "\u542f\u52a8", "entry", "main"]):
-        return "entry"
-    if any(word in text for word in ["\u5f71\u54cd", "impact", "\u6539\u52a8", "\u4fee\u6539"]):
-        return "impact"
-    if any(word in text for word in ["\u4f9d\u8d56", "import", "\u8c03\u7528", "call"]):
-        return "dependency"
-    return "general"

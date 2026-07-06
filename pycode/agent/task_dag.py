@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -13,12 +14,17 @@ TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 GENERATED_TASK_ID_PATTERN = re.compile(r"^task_(\d+)$")
 
 
-class TaskStatus:
+class TaskStatus(StrEnum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
 
-    ALL = {PENDING, IN_PROGRESS, COMPLETED}
+
+TaskStatus.ALL = {
+    TaskStatus.PENDING,
+    TaskStatus.IN_PROGRESS,
+    TaskStatus.COMPLETED,
+}
 
 
 @dataclass

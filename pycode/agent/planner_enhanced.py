@@ -1,6 +1,7 @@
 import re
 
 from pycode.agent.types import AgentStep, AgentTask
+from pycode.utils import dedupe_preserve_order, normalize_path
 
 
 TASK_ENTRY_QUESTION = "entry-question"
@@ -201,7 +202,7 @@ def _retrieval_intents(
         intents.append("impact")
     if not intents and task_type == TASK_GENERAL:
         intents.append("general")
-    return _dedupe(intents)
+    return dedupe_preserve_order(intents)
 
 
 def _retrieval_arguments(
@@ -289,7 +290,7 @@ def _mentions_tests(text: str) -> bool:
 
 def _extract_python_paths(description: str) -> list[str]:
     matches = re.findall(r"[\w./\\-]+\.py", description)
-    return [_normalize_path(match) for match in matches]
+    return [normalize_path(match, strip_current_dir=True) for match in matches]
 
 
 def _extract_search_keyword(description: str) -> str | None:
@@ -312,18 +313,3 @@ def _extract_search_keyword(description: str) -> str | None:
 
 def _contains_any(text: str, words: tuple[str, ...]) -> bool:
     return any(word in text for word in words)
-
-
-def _normalize_path(path: str) -> str:
-    return path.replace("\\", "/").lstrip("./")
-
-
-def _dedupe(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for item in items:
-        if item in seen:
-            continue
-        seen.add(item)
-        result.append(item)
-    return result

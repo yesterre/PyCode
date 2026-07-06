@@ -1,7 +1,8 @@
 from pathlib import Path
 
 from pycode.agent import AgentStep, AgentTask, execute_plan, run_agent_task
-from pycode.tools import ToolContext, ToolResult, ToolSpec
+from pycode.agent.todo import TodoManager
+from pycode.tools import TOOLS, ToolContext, ToolResult, ToolSpec
 from pycode.tools.base import success
 
 
@@ -67,6 +68,32 @@ def test_execute_plan_allows_internal_state_tool_without_test_permission() -> No
 
     assert results[0].ok is True
     assert results[0].summary == "internal state updated"
+
+
+def test_execute_plan_allows_registered_todo_write_without_test_permission() -> None:
+    manager = TodoManager.from_steps([AgentStep("read_file")])
+    context = ToolContext(Path("."), state={"todo_manager": manager})
+    task = AgentTask("update todo", Path("."), allow_tests=False)
+    steps = [
+        AgentStep(
+            "todo_write",
+            {
+                "operation": "set_status",
+                "todo_id": "todo-1",
+                "status": "in_progress",
+            },
+        )
+    ]
+
+    results = execute_plan(
+        task,
+        steps,
+        tools={"todo_write": TOOLS["todo_write"]},
+        context=context,
+    )
+
+    assert results[0].ok is True
+    assert manager.items[0].status == "in_progress"
 
 
 def test_execute_plan_records_unknown_tool() -> None:

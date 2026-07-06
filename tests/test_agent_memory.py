@@ -97,7 +97,31 @@ def test_load_relevant_memories_uses_keyword_fallback_when_llm_fails(
     )
 
     assert [memory.name for memory in memories] == ["project-entry"]
-    assert "RuntimeError" in (error or "")
+    assert "Memory selection LLM failed: RuntimeError" in (error or "")
+
+
+def test_load_relevant_memories_reports_parse_failure_and_uses_fallback(
+    tmp_path: Path,
+) -> None:
+    project_path = tmp_path / "project"
+    project_path.mkdir()
+    store = MemoryStore(project_path)
+    store.add_memory(
+        name="Project Entry",
+        memory_type=MemoryType.PROJECT,
+        description="entry main.py",
+        body="Entry file is main.py.",
+    )
+
+    memories, error = load_relevant_memories(
+        project_path,
+        task_description="entry",
+        messages=[],
+        llm_client=_BadJsonLLM(),
+    )
+
+    assert [memory.name for memory in memories] == ["project-entry"]
+    assert "Memory selection parse failed: ValueError" in (error or "")
 
 
 def test_extract_memories_writes_new_items_and_skips_duplicates(tmp_path: Path) -> None:
@@ -146,6 +170,11 @@ def test_memory_extraction_prompt_contains_four_types() -> None:
 class _FailingLLM:
     def generate(self, prompt: str) -> str:
         raise RuntimeError("selection failed")
+
+
+class _BadJsonLLM:
+    def generate(self, prompt: str) -> str:
+        return "not json"
 
 
 class _MemoryExtractionLLM:

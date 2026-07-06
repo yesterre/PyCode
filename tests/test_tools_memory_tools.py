@@ -57,12 +57,18 @@ def test_memory_tool_requires_arguments(tmp_path: Path) -> None:
 
     missing_name = memory(context, operation="add", memory_type="project", body="body")
     missing_type = memory(context, operation="add", name="name", body="body")
+    missing_load_name = memory(context, operation="load")
     unsupported = memory(context, operation="delete", name="name")
 
     assert missing_name.ok is False
     assert missing_name.summary == "Memory name is required."
+    assert missing_name.error == "operation='add' requires name."
     assert missing_type.ok is False
     assert missing_type.summary == "Memory memory_type is required."
+    assert missing_type.error == "operation='add' requires memory_type."
+    assert missing_load_name.ok is False
+    assert missing_load_name.summary == "Memory name is required."
+    assert missing_load_name.error == "operation='load' requires name."
     assert unsupported.ok is False
     assert unsupported.summary == "Unsupported memory operation."
 

@@ -1,10 +1,9 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 
-DEFAULT_MODEL = "gpt-5.4-mini"
 DEFAULT_ENV_FILE = ".env"
 API_KEY_ENV = "OPENAI_API_KEY"
 BASE_URL_ENV = "OPENAI_BASE_URL"
@@ -14,6 +13,7 @@ API_TYPE_RESPONSES = "responses"
 API_TYPE_CHAT = "chat"
 
 
+@runtime_checkable
 class LLMClient(Protocol):
     def generate(self, prompt: str) -> str:
         """Return an LLM answer for the prepared prompt."""
@@ -35,7 +35,12 @@ class OpenAIResponsesClient:
             raise RuntimeError(
                 f"Missing {self.api_key_env}. Set it in your shell or .env before running PyCode LLM commands."
             )
-        model = self.model or _setting(settings, self.model_env) or DEFAULT_MODEL
+        model = _explicit_model(self.model) or _setting(settings, self.model_env)
+        if not model:
+            raise RuntimeError(
+                f"Missing {self.model_env}. Set it in your shell or .env, "
+                "or pass --model before running PyCode LLM commands."
+            )
         base_url = _setting(settings, self.base_url_env)
         api_type = (_setting(settings, self.api_type_env) or API_TYPE_RESPONSES).lower()
 
@@ -76,8 +81,8 @@ class OpenAIResponsesClient:
 def load_llm_settings(env_file: Path | None = None) -> dict[str, str]:
     """Load LLM settings from .env and merge shell environment over it."""
     settings: dict[str, str] = {}
-    env_path = env_file or Path.cwd() / DEFAULT_ENV_FILE
-    if env_path.exists() and env_path.is_file():
+    env_path = env_file or _find_env_file(Path.cwd())
+    if env_path is not None and env_path.exists() and env_path.is_file():
         settings.update(_parse_env_file(env_path))
 
     for key in (API_KEY_ENV, BASE_URL_ENV, MODEL_ENV, API_TYPE_ENV):
@@ -87,11 +92,27 @@ def load_llm_settings(env_file: Path | None = None) -> dict[str, str]:
     return settings
 
 
+def _find_env_file(start: Path) -> Path | None:
+    current = start.resolve()
+    for directory in [current, *current.parents]:
+        candidate = directory / DEFAULT_ENV_FILE
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
 def _setting(settings: dict[str, str], key: str) -> str | None:
     value = settings.get(key)
     if value is None:
         return None
     stripped = value.strip()
+    return stripped or None
+
+
+def _explicit_model(model: str | None) -> str | None:
+    if model is None:
+        return None
+    stripped = model.strip()
     return stripped or None
 
 

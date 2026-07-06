@@ -85,11 +85,25 @@ def _build_matcher(pattern: str, case_sensitive: bool, use_regex: bool):
 
 
 def _iter_search_files(project_root: Path, include_globs: list[str]):
-    for path in sorted(project_root.rglob("*")):
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    normalized_globs = [_normalize_glob(glob) for glob in include_globs]
+    for include_glob in normalized_globs:
+        for path in project_root.rglob(include_glob):
+            if path in seen:
+                continue
+            seen.add(path)
+            candidates.append(path)
+
+    for path in sorted(candidates):
         if not path.is_file():
             continue
         if any(part in DEFAULT_EXCLUDED_DIRS for part in path.relative_to(project_root).parts):
             continue
         relative = path.relative_to(project_root).as_posix()
-        if any(fnmatch.fnmatch(relative, glob) for glob in include_globs):
+        if any(fnmatch.fnmatch(relative, glob) for glob in normalized_globs):
             yield path
+
+
+def _normalize_glob(glob: str) -> str:
+    return glob.replace("\\", "/").lstrip("/")

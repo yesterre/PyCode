@@ -1,18 +1,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
 from pycode.agent.types import AgentStep
 
 
-class TodoStatus:
+class TodoStatus(StrEnum):
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     FAILED = "failed"
 
-    ALL = {PENDING, IN_PROGRESS, COMPLETED, FAILED}
+
+TodoStatus.ALL = {
+    TodoStatus.PENDING,
+    TodoStatus.IN_PROGRESS,
+    TodoStatus.COMPLETED,
+    TodoStatus.FAILED,
+}
 
 
 @dataclass

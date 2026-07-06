@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Callable
 
 from pycode.agent.trace import TraceRecorder
@@ -9,7 +10,7 @@ from pycode.agent.types import AgentTask, ToolCall
 from pycode.tools import ToolResult
 
 
-class HookEventType:
+class HookEventType(StrEnum):
     USER_PROMPT_SUBMIT = "UserPromptSubmit"
     PRE_TOOL_USE = "PreToolUse"
     POST_TOOL_USE = "PostToolUse"

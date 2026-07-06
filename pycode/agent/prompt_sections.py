@@ -9,6 +9,7 @@ from pycode.agent.context import (
     ContextSection,
 )
 from pycode.agent.memory import format_relevant_memories
+from pycode.utils import dedupe_preserve_order
 
 if TYPE_CHECKING:
     from pycode.agent.memory import MemoryItem
@@ -332,15 +333,4 @@ def _extract_evidence(tool_results: list["ToolResult"]) -> list[str]:
             node_id = node.get("id")
             if node_id:
                 evidence.append(str(node_id))
-    return _dedupe(evidence)
-
-
-def _dedupe(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for item in items:
-        if item in seen:
-            continue
-        seen.add(item)
-        result.append(item)
-    return result
+    return dedupe_preserve_order(evidence)
