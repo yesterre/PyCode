@@ -11,6 +11,12 @@ from pycode.agent.memory import (
     extract_memories,
     load_relevant_memories,
 )
+from pycode.agent.llm_planner import (
+    PLANNER_SOURCE_FALLBACK,
+    PLANNER_SOURCE_LLM,
+    PLANNER_SOURCE_RULE,
+    plan_task_with_llm,
+)
 from pycode.agent.planner import plan_task
 from pycode.agent.prompts import build_agent_summary_context, render_agent_prompt
 from pycode.agent.todo import TodoItem, TodoManager
@@ -26,7 +32,7 @@ from pycode.agent.types import (
     ToolCall,
 )
 from pycode.llm_client import LLMClient
-from pycode.tools import ToolContext, ToolResult, ToolSpec
+from pycode.tools import TOOLS, ToolContext, ToolResult, ToolSpec
 from pycode.tools.base import failure
 
 
@@ -44,11 +50,10 @@ def run_agent_runtime(
     Default trace hooks are always retained; custom hook registries are appended.
     """
     runtime_config = config or RuntimeConfig(max_turns=task.max_steps)
-    steps = plan_task(task)
-    todo_manager = TodoManager.from_steps(steps)
     messages = [AgentMessage(role="user", content=task.description)]
     trace_recorder = TraceRecorder(task) if runtime_config.enable_trace else None
     hooks = create_default_hook_registry()
+    tool_registry = tools or TOOLS
     if hook_registry is not None:
         hooks.extend(hook_registry)
 
@@ -60,6 +65,24 @@ def run_agent_runtime(
             trace_recorder=trace_recorder,
         ),
     )
+    memory_info, memory_index = _prepare_memory_context(
+        task,
+        messages,
+        runtime_config,
+        llm_client=llm_client if runtime_config.use_llm_planner else None,
+        trace_recorder=trace_recorder,
+        load_bodies=runtime_config.use_llm_planner and llm_client is not None,
+    )
+    steps, planner_source, planner_error = build_runtime_plan(
+        task,
+        runtime_config,
+        tools=tool_registry,
+        llm_client=llm_client,
+        memory_index=memory_index,
+        relevant_memories=memory_info.relevant_memories if memory_info else [],
+        trace_recorder=trace_recorder,
+    )
+    todo_manager = TodoManager.from_steps(steps)
     _record_todo_event(
         trace_recorder,
         "TodoListCreated",
@@ -69,14 +92,6 @@ def run_agent_runtime(
     )
 
     if runtime_config.plan_only:
-        memory_info, memory_index = _prepare_memory_context(
-            task,
-            messages,
-            runtime_config,
-            llm_client=None,
-            trace_recorder=trace_recorder,
-            load_bodies=False,
-        )
         _finish_trace(
             hooks,
             task,
@@ -88,10 +103,10 @@ def run_agent_runtime(
             steps,
             [],
             memory_index=memory_index,
-            relevant_memories=[],
+            relevant_memories=memory_info.relevant_memories if memory_info else [],
             trace=trace_recorder.trace if trace_recorder is not None else None,
             todos=list(todo_manager.items),
-            tools=tools,
+            tools=tool_registry,
         )
         prompt = render_agent_prompt(agent_context)
         return AgentResult(
@@ -107,6 +122,8 @@ def run_agent_runtime(
             todos=list(todo_manager.items),
             memory=memory_info,
             context=agent_context,
+            planner_source=planner_source,
+            planner_error=planner_error,
         )
 
     tool_context = context or ToolContext(task.project_path, allow_tests=task.allow_tests)
@@ -158,7 +175,7 @@ def run_agent_runtime(
             result = execute_tool_call(
                 task,
                 tool_call,
-                tools=tools,
+                tools=tool_registry,
                 context=tool_context,
             )
         _finish_step_todo(todo_manager, current_todo, result, trace_recorder)
@@ -184,14 +201,6 @@ def run_agent_runtime(
             )
         )
 
-    memory_info, memory_index = _prepare_memory_context(
-        task,
-        messages,
-        runtime_config,
-        llm_client=llm_client,
-        trace_recorder=trace_recorder,
-        load_bodies=True,
-    )
     agent_context = build_agent_summary_context(
         task,
         steps,
@@ -200,7 +209,7 @@ def run_agent_runtime(
         relevant_memories=memory_info.relevant_memories if memory_info else [],
         trace=trace_recorder.trace if trace_recorder is not None else None,
         todos=list(todo_manager.items),
-        tools=tools,
+        tools=tool_registry,
     )
     prompt = render_agent_prompt(agent_context)
     answer = llm_client.generate(prompt) if llm_client is not None else None
@@ -231,7 +240,64 @@ def run_agent_runtime(
         todos=list(todo_manager.items),
         memory=memory_info,
         context=agent_context,
+        planner_source=planner_source,
+        planner_error=planner_error,
     )
+
+
+def build_runtime_plan(
+    task: AgentTask,
+    config: RuntimeConfig,
+    *,
+    tools: dict[str, ToolSpec],
+    llm_client: LLMClient | None,
+    memory_index: str = "",
+    relevant_memories: list | None = None,
+    trace_recorder: TraceRecorder | None = None,
+) -> tuple[list[AgentStep], str, str | None]:
+    if config.use_llm_planner and llm_client is not None:
+        try:
+            result = plan_task_with_llm(
+                task,
+                tools=tools,
+                llm_client=llm_client,
+                memory_index=memory_index,
+                relevant_memories=relevant_memories or [],
+            )
+            _record_planner_event(
+                trace_recorder,
+                "LLMPlanGenerated",
+                "LLM planner generated the Agent tool plan.",
+                source=PLANNER_SOURCE_LLM,
+                status="ok",
+                steps=result.steps,
+                warnings=result.warnings or [],
+            )
+            return result.steps, PLANNER_SOURCE_LLM, None
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            steps = plan_task(task)
+            _record_planner_event(
+                trace_recorder,
+                "LLMPlanFallback",
+                "LLM planner failed; rule planner fallback was used.",
+                source=PLANNER_SOURCE_FALLBACK,
+                status="fallback",
+                steps=steps,
+                error=error,
+            )
+            return steps, PLANNER_SOURCE_FALLBACK, error
+
+    steps = plan_task(task)
+    _record_planner_event(
+        trace_recorder,
+        "PlannerSelected",
+        "Rule planner selected for this Agent run.",
+        source=PLANNER_SOURCE_RULE,
+        status="ok",
+        steps=steps,
+    )
+    return steps, PLANNER_SOURCE_RULE, None
 
 
 def _trigger_hooks(
@@ -239,6 +305,40 @@ def _trigger_hooks(
     context: HookContext,
 ):
     return hooks.trigger(context)
+
+
+def _record_planner_event(
+    trace_recorder: TraceRecorder | None,
+    event_type: str,
+    message: str,
+    *,
+    source: str,
+    status: str,
+    steps: list[AgentStep],
+    error: str | None = None,
+    warnings: list[str] | None = None,
+) -> None:
+    if trace_recorder is None:
+        return
+    trace_recorder.record_event(
+        event_type,
+        message,
+        status=status,
+        data={
+            "planner_source": source,
+            "steps": [
+                {
+                    "tool": step.tool,
+                    "arguments": step.arguments,
+                    "reason": step.reason,
+                    "required": step.required,
+                }
+                for step in steps
+            ],
+            "error": error,
+            "warnings": list(warnings or []),
+        },
+    )
 
 
 def _finish_trace(

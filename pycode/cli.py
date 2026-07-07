@@ -23,6 +23,7 @@ from pycode.retriever import (
     retrieve_impact,
     retrieve_onboard,
 )
+from pycode import rich_output as rich_render
 from pycode.scanner import scan_python_files
 from pycode.storage import load_graph, load_index, save_graph, save_index
 from pycode.tools import ToolSpec
@@ -38,6 +39,8 @@ _CONFIGURED_STDOUT_ID: int | None = None
 def index_project(
     project_path: Path,
     output_path: Path | None = None,
+    *,
+    rich_output: bool = False,
 ) -> ProjectIndex:
     """Scan a Python project, parse file structures, and save an index file."""
     if output_path is None:
@@ -45,7 +48,8 @@ def index_project(
 
     project_index = build_project_index(project_path)
     save_index(project_index, output_path)
-    _print_index_summary(project_index, output_path)
+    if not (rich_output and rich_render.print_index_summary_rich(project_index, output_path)):
+        _print_index_summary(project_index, output_path)
     return project_index
 
 
@@ -65,6 +69,8 @@ def build_project_index(project_path: Path) -> ProjectIndex:
 def graph_project(
     project_path: Path,
     output_path: Path | None = None,
+    *,
+    rich_output: bool = False,
 ) -> CodeGraph:
     """Build and save a code graph for a Python project."""
     if output_path is None:
@@ -73,7 +79,8 @@ def graph_project(
     project_index = build_project_index(project_path)
     graph = build_code_graph(project_index)
     save_graph(graph, output_path)
-    _print_graph_summary(graph, output_path)
+    if not (rich_output and rich_render.print_graph_summary_rich(graph, output_path)):
+        _print_graph_summary(graph, output_path)
     return graph
 
 
@@ -82,6 +89,8 @@ def query_project_graph(
     query_type: str,
     target: str | None = None,
     graph_path: Path | None = None,
+    *,
+    rich_output: bool = False,
 ) -> list[GraphEdge] | list[GraphNode]:
     """Load a saved code graph and run a graph query."""
     if graph_path is None:
@@ -102,7 +111,11 @@ def query_project_graph(
     else:
         raise ValueError(f"Unsupported query type: {query_type}")
 
-    _print_query_result(query_type, result, graph_path)
+    if not (
+        rich_output
+        and rich_render.print_query_result_rich(query_type, result, graph_path)
+    ):
+        _print_query_result(query_type, result, graph_path)
     return result
 
 
@@ -111,11 +124,13 @@ def ask_project(
     question: str,
     model: str | None = None,
     llm_client: LLMClient | None = None,
+    *,
+    rich_output: bool = False,
 ) -> str:
     """Answer a natural-language question using selected project context."""
     index, graph = _load_project_artifacts(project_path)
     retrieval = retrieve_for_question(question, project_path, index, graph)
-    return _answer_with_retrieval(retrieval, model, llm_client)
+    return _answer_with_retrieval(retrieval, model, llm_client, rich_output=rich_output)
 
 
 def explain_project_target(
@@ -123,22 +138,26 @@ def explain_project_target(
     file_path: str,
     model: str | None = None,
     llm_client: LLMClient | None = None,
+    *,
+    rich_output: bool = False,
 ) -> str:
     """Explain one project file using selected context."""
     index, graph = _load_project_artifacts(project_path)
     retrieval = retrieve_explain(file_path, project_path, index, graph)
-    return _answer_with_retrieval(retrieval, model, llm_client)
+    return _answer_with_retrieval(retrieval, model, llm_client, rich_output=rich_output)
 
 
 def onboard_project(
     project_path: Path,
     model: str | None = None,
     llm_client: LLMClient | None = None,
+    *,
+    rich_output: bool = False,
 ) -> str:
     """Generate a newcomer reading order from project graph context."""
     index, graph = _load_project_artifacts(project_path)
     retrieval = retrieve_onboard(project_path, index, graph)
-    return _answer_with_retrieval(retrieval, model, llm_client)
+    return _answer_with_retrieval(retrieval, model, llm_client, rich_output=rich_output)
 
 
 def impact_project_target(
@@ -146,11 +165,13 @@ def impact_project_target(
     file_path: str,
     model: str | None = None,
     llm_client: LLMClient | None = None,
+    *,
+    rich_output: bool = False,
 ) -> str:
     """Analyze the likely impact of changing one file."""
     index, graph = _load_project_artifacts(project_path)
     retrieval = retrieve_impact(file_path, project_path, index, graph)
-    return _answer_with_retrieval(retrieval, model, llm_client)
+    return _answer_with_retrieval(retrieval, model, llm_client, rich_output=rich_output)
 
 
 def agent_project(
@@ -166,9 +187,18 @@ def agent_project(
     enable_memory: bool = True,
     enable_memory_extraction: bool = True,
     show_context: bool = False,
+    rich_output: bool = False,
+    rule_plan: bool = False,
 ) -> AgentResult:
     """Run the stage-4 Agent workflow for a development-analysis task."""
-    client = None if plan_only else llm_client or OpenAIResponsesClient(model=model)
+    client = (
+        llm_client
+        or (
+            None
+            if plan_only and rule_plan
+            else OpenAIResponsesClient(model=model)
+        )
+    )
     result = run_agent_task(
         task,
         project_path,
@@ -177,10 +207,15 @@ def agent_project(
         llm_client=client,
         tools=tools,
         plan_only=plan_only,
+        use_llm_planner=not rule_plan,
         enable_memory=enable_memory,
         enable_memory_extraction=enable_memory_extraction,
     )
-    _print_agent_result(result, show_context=show_context)
+    if not (
+        rich_output
+        and rich_render.print_agent_result_rich(result, show_context=show_context)
+    ):
+        _print_agent_result(result, show_context=show_context)
     return result
 
 
@@ -459,11 +494,21 @@ def _answer_with_retrieval(
     retrieval: RetrievalResult,
     model: str | None,
     llm_client: LLMClient | None,
+    *,
+    rich_output: bool = False,
 ) -> str:
     prompt = build_code_qa_prompt(retrieval)
     client = llm_client or OpenAIResponsesClient(model=model)
     answer = client.generate(prompt)
-    _print_llm_answer(answer, retrieval)
+    if not (
+        rich_output
+        and rich_render.print_llm_answer_rich(
+            intent=retrieval.intent,
+            answer=answer,
+            evidence=retrieval.evidence,
+        )
+    ):
+        _print_llm_answer(answer, retrieval)
     return answer
 
 
@@ -485,6 +530,9 @@ def _print_agent_result(result: AgentResult, *, show_context: bool = False) -> N
     print("PyCode agent completed.")
     print(f"Task: {result.task.description}")
     print(f"Task type: {result.task.task_type}")
+    print(f"Planner: {result.planner_source}")
+    if result.planner_error:
+        _safe_print(f"Planner fallback reason: {result.planner_error}")
     print(f"Project path: {result.task.project_path}")
     print(f"Tests allowed: {result.task.allow_tests}")
     print(f"Stop reason: {result.stop_reason}")
@@ -735,6 +783,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to write the generated index JSON. Defaults to <project>/.pclens/index.json.",
     )
+    _add_plain_argument(index_parser)
 
     graph_parser = subparsers.add_parser(
         "graph",
@@ -753,6 +802,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to write the generated graph JSON. Defaults to <project>/.pclens/code_graph.json.",
     )
+    _add_plain_argument(graph_parser)
 
     query_parser = subparsers.add_parser(
         "query",
@@ -780,6 +830,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to an existing code_graph.json. Defaults to <project>/.pclens/code_graph.json.",
     )
+    _add_plain_argument(query_parser)
 
     ask_parser = subparsers.add_parser(
         "ask",
@@ -795,6 +846,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Natural-language question about the project.",
     )
     _add_model_argument(ask_parser)
+    _add_plain_argument(ask_parser)
 
     explain_parser = subparsers.add_parser(
         "explain",
@@ -810,6 +862,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Project-relative file path to explain.",
     )
     _add_model_argument(explain_parser)
+    _add_plain_argument(explain_parser)
 
     onboard_parser = subparsers.add_parser(
         "onboard",
@@ -821,6 +874,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Python project directory containing PyCode artifacts.",
     )
     _add_model_argument(onboard_parser)
+    _add_plain_argument(onboard_parser)
 
     impact_parser = subparsers.add_parser(
         "impact",
@@ -836,6 +890,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Project-relative file path to analyze.",
     )
     _add_model_argument(impact_parser)
+    _add_plain_argument(impact_parser)
 
     agent_parser = subparsers.add_parser(
         "agent",
@@ -864,7 +919,12 @@ def build_parser() -> argparse.ArgumentParser:
     agent_parser.add_argument(
         "--plan-only",
         action="store_true",
-        help="Show the planned Agent tool steps without running tools or calling the LLM.",
+        help="Generate the Agent tool plan without executing tools.",
+    )
+    agent_parser.add_argument(
+        "--rule-plan",
+        action="store_true",
+        help="Force the deterministic rule planner instead of the LLM planner.",
     )
     agent_parser.add_argument(
         "--graph",
@@ -889,6 +949,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show Agent context section metadata without printing the full prompt.",
     )
     _add_model_argument(agent_parser)
+    _add_plain_argument(agent_parser)
 
     memory_parser = subparsers.add_parser(
         "memory",
@@ -951,6 +1012,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=5,
         help="Maximum memories to return for search.",
     )
+    _add_plain_argument(memory_parser)
 
     task_parser = subparsers.add_parser(
         "task",
@@ -998,6 +1060,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Task owner for create or claim.",
     )
+    _add_plain_argument(task_parser)
 
     return parser
 
@@ -1007,6 +1070,14 @@ def _add_model_argument(parser: argparse.ArgumentParser) -> None:
         "--model",
         default=None,
         help="OpenAI model to use. Defaults to OPENAI_MODEL from the shell or .env.",
+    )
+
+
+def _add_plain_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--plain",
+        action="store_true",
+        help="Use plain text output instead of Rich terminal rendering.",
     )
 
 
@@ -1022,25 +1093,37 @@ def main() -> None:
 
 
 def _dispatch_command(args: argparse.Namespace) -> None:
+    use_rich = not getattr(args, "plain", False)
     if args.command == "index":
-        index_project(args.project_path, args.output_path)
+        index_project(args.project_path, args.output_path, rich_output=use_rich)
     elif args.command == "graph":
-        graph_project(args.project_path, args.output_path)
+        graph_project(args.project_path, args.output_path, rich_output=use_rich)
     elif args.command == "query":
         query_project_graph(
             args.project_path,
             args.query_type,
             args.target,
             args.graph_path,
+            rich_output=use_rich,
         )
     elif args.command == "ask":
-        ask_project(args.project_path, args.question, args.model)
+        ask_project(args.project_path, args.question, args.model, rich_output=use_rich)
     elif args.command == "explain":
-        explain_project_target(args.project_path, args.file_path, args.model)
+        explain_project_target(
+            args.project_path,
+            args.file_path,
+            args.model,
+            rich_output=use_rich,
+        )
     elif args.command == "onboard":
-        onboard_project(args.project_path, args.model)
+        onboard_project(args.project_path, args.model, rich_output=use_rich)
     elif args.command == "impact":
-        impact_project_target(args.project_path, args.file_path, args.model)
+        impact_project_target(
+            args.project_path,
+            args.file_path,
+            args.model,
+            rich_output=use_rich,
+        )
     elif args.command == "agent":
         agent_project(
             args.project_path,
@@ -1052,6 +1135,8 @@ def _dispatch_command(args: argparse.Namespace) -> None:
             enable_memory=not args.no_memory,
             enable_memory_extraction=not args.no_memory_extract,
             show_context=args.show_context,
+            rich_output=use_rich,
+            rule_plan=args.rule_plan,
         )
     elif args.command == "memory":
         memory_project(

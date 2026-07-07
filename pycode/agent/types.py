@@ -68,6 +68,7 @@ class AgentStopReason(StrEnum):
 class RuntimeConfig:
     max_turns: int = 8
     plan_only: bool = False
+    use_llm_planner: bool = True
     enable_trace: bool = True
     enable_memory: bool = True
     enable_memory_extraction: bool = True
@@ -95,6 +96,8 @@ class AgentResult:
     todos: list[TodoItem] = field(default_factory=list)
     memory: MemoryRunInfo | None = None
     context: AgentContext | None = None
+    planner_source: str = "rule"
+    planner_error: str | None = None
 
     @property
     def ok(self) -> bool:

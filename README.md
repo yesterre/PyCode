@@ -1,8 +1,75 @@
 # PyCode
 
-PyCode 是一个 Python 代码库理解与改动影响分析 Agent 项目。当前已完成阶段五：Agent 内核增强与可观测化。
+PyCode 是一个 Python 代码库理解与改动影响分析 Agent 项目。当前已进入阶段六：可视化和产品化展示。
 
-现阶段项目在阶段一索引、阶段二代码图谱、阶段三 LLM 问答和阶段四轻量 Agent 工作流的基础上，补齐了 trace、todo、Task DAG、memory 和分层 Context Builder。Agent 会先规划工具调用，再读取 git diff、搜索代码、查询图谱或按权限运行测试，最后基于工具证据和分层上下文输出总结。当前不自动修改代码，不自动提交 git，也不做多 Agent。
+现阶段项目在阶段一索引、阶段二代码图谱、阶段三 LLM 问答、阶段四轻量 Agent 工作流和阶段五可观测 Agent 内核的基础上，新增了 Rich 终端展示和 Streamlit Web Demo。Agent 默认优先使用 LLM Planner 生成结构化工具计划，规则 planner 作为无 LLM 或 LLM 失败时的兜底；随后读取 git diff、搜索代码、查询图谱或按权限运行测试，最后基于工具证据、trace、todo、memory 和分层 context 输出总结。当前不自动修改代码，不自动提交 git，也不做多 Agent。
+
+## 阶段六展示能力
+
+- Rich CLI：用表格、树形结构和分区输出展示 index、graph、query、Agent trace、todo、memory、context 和 evidence。
+- Streamlit Demo：用 Web 页面展示项目概览、文件树、代码图谱、Agent 运行结果、项目记忆和 Task DAG。
+- 产品化材料：补充示例问题、演示脚本、截图目录说明、架构图和局限性说明。
+
+## 快速演示
+
+建议先进入项目根目录，并使用虚拟环境中的 Python。
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pycode.cli index .\examples\demo_project
+.\.venv\Scripts\python.exe -m pycode.cli graph .\examples\demo_project
+.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "这个项目的入口在哪里？" --plan-only --show-context
+.\.venv\Scripts\streamlit.exe run .\ui\streamlit_app.py
+```
+
+如果需要旧式文本输出，可以在主要 CLI 命令后追加 `--plain`：
+
+```powershell
+.\.venv\Scripts\python.exe -m pycode.cli graph .\examples\demo_project --plain
+```
+
+如果想离线查看规则 planner 的兜底计划，可以使用：
+
+```powershell
+.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "这个项目的入口在哪里？" --plan-only --show-context --rule-plan
+```
+
+## 示例问题
+
+- 这个项目的入口在哪里？
+- 给我一个新手阅读顺序。
+- 修改 `services/user_service.py` 会影响哪里？
+- 这次 git diff 有什么风险？
+- 哪些工具被 Agent 调用了，分别产生了什么证据？
+
+## 架构图
+
+```mermaid
+flowchart LR
+    Scanner[scanner.py] --> Parser[parser.py]
+    Parser --> Index[index.json]
+    Index --> Graph[code_graph.json]
+    Graph --> Retriever[retriever.py]
+    Retriever --> Agent[agent/runtime.py]
+    Agent --> Trace[trace]
+    Agent --> Todo[todos]
+    Agent --> Memory[memory]
+    Agent --> Context[context sections]
+    Trace --> Rich[Rich CLI]
+    Todo --> Rich
+    Memory --> Rich
+    Context --> Rich
+    Graph --> Streamlit[Streamlit UI]
+    Agent --> Streamlit
+```
+
+## 当前局限
+
+- 当前主要支持 Python 项目。
+- 函数调用关系基于静态 AST 分析，无法完全覆盖动态调用。
+- Agent 默认不自动修改代码、不自动提交 git。
+- Web UI 是展示型 Demo，不是完整 IDE。
+- Streamlit 页面运行真实 Agent 总结时需要配置 OpenAI 环境变量；`plan-only` 模式不需要。
 
 ## 已完成功能
 
@@ -57,6 +124,16 @@ PyCode 是一个 Python 代码库理解与改动影响分析 Agent 项目。当�
 - 支持 `.pclens/memory/` 轻量项目记忆，包含索引、相关记忆加载和可选自动提取。
 - 支持 Prompt / Context 分层组装，`AgentResult.context` 可展示 identity、tools、policy、plan、tool evidence、trace、todo、tasks、memory 等 section。
 - `agent --show-context` 可以查看 context section 摘要，不打印完整 prompt。
+- 阶段五增强：支持 LLM Planner 优先生成结构化工具计划，规则 planner 作为离线和失败兜底。
+- `agent --plan-only` 的语义是只生成计划、不执行工具；如果提供 LLM client，则会尝试用 LLM 生成计划。
+- `agent --rule-plan` 可以强制使用规则 planner。
+
+### 阶段六：可视化和产品化展示
+
+- 支持 Rich CLI 展示 index、graph、query 和 Agent 运行结果。
+- 支持 `--plain` 回退旧式文本输出，方便脚本化和测试断言。
+- 新增 Streamlit Web Demo，展示项目概览、文件树、代码图谱、Agent 结果、memory 和 Task DAG。
+- 新增 `docs/assets/` 截图目录说明和 `docs/stage6_demo_script.md` 演示脚本。
 
 ## 项目结构
 
@@ -73,6 +150,7 @@ pycode/
   retriever.py
   prompt_builder.py
   llm_client.py
+  rich_output.py
   tools/
     base.py
     read_file.py
@@ -95,6 +173,12 @@ pycode/
     todo.py
     task_dag.py
     memory.py
+
+ui/
+  __init__.py
+  data_loader.py
+  components.py
+  streamlit_app.py
 
 examples/
   demo_project/
@@ -126,11 +210,14 @@ tests/
   test_agent_*.py
 
 docs/
+  assets/
   stage1_development_record.md
   stage2_development_record.md
   stage3_development_record.md
   stage4_development_record.md
   stage5_development_record.md
+  stage6_development_record.md
+  stage6_demo_script.md
 ```
 
 ### Stage 4 enhanced runtime loop

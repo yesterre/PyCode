@@ -100,15 +100,19 @@ def test_query_project_graph_requires_target_for_targeted_queries(
 def test_build_parser_accepts_stage_two_commands() -> None:
     parser = build_parser()
 
-    graph_args = parser.parse_args(["graph", "demo_project", "-o", "graph.json"])
-    query_args = parser.parse_args(["query", "calls", "demo_project", "func:main.py:main"])
+    graph_args = parser.parse_args(["graph", "demo_project", "-o", "graph.json", "--plain"])
+    query_args = parser.parse_args(
+        ["query", "calls", "demo_project", "func:main.py:main", "--plain"]
+    )
 
     assert graph_args.command == "graph"
     assert graph_args.project_path == Path("demo_project")
     assert graph_args.output_path == Path("graph.json")
+    assert graph_args.plain is True
     assert query_args.command == "query"
     assert query_args.query_type == "calls"
     assert query_args.target == "func:main.py:main"
+    assert query_args.plain is True
 
 
 def test_stage_three_commands_use_mock_llm_and_print_evidence(
@@ -194,7 +198,7 @@ def test_llm_answer_print_handles_unencodable_console_text(
 def test_build_parser_accepts_stage_three_commands() -> None:
     parser = build_parser()
 
-    ask_args = parser.parse_args(["ask", "demo_project", "入口在哪里？"])
+    ask_args = parser.parse_args(["ask", "demo_project", "入口在哪里？", "--plain"])
     explain_args = parser.parse_args(
         ["explain", "demo_project", "main.py", "--model", "gpt-5.5"]
     )
@@ -204,6 +208,7 @@ def test_build_parser_accepts_stage_three_commands() -> None:
     assert ask_args.command == "ask"
     assert ask_args.project_path == Path("demo_project")
     assert ask_args.question == "入口在哪里？"
+    assert ask_args.plain is True
     assert explain_args.command == "explain"
     assert explain_args.file_path == "main.py"
     assert explain_args.model == "gpt-5.5"
@@ -229,6 +234,8 @@ def test_build_parser_accepts_stage_four_agent_command() -> None:
             "--no-memory",
             "--no-memory-extract",
             "--show-context",
+            "--rule-plan",
+            "--plain",
         ]
     )
 
@@ -243,6 +250,8 @@ def test_build_parser_accepts_stage_four_agent_command() -> None:
     assert agent_args.no_memory is True
     assert agent_args.no_memory_extract is True
     assert agent_args.show_context is True
+    assert agent_args.rule_plan is True
+    assert agent_args.plain is True
 
 
 def test_build_parser_accepts_stage_five_task_command() -> None:
@@ -420,6 +429,7 @@ def test_agent_project_plan_only_does_not_call_llm_or_tools(
         project_path,
         "检查 services/user_service.py 的改动影响",
         plan_only=True,
+        rule_plan=True,
         llm_client=llm,
         tools={
             "changed_files": ToolSpec(
@@ -434,6 +444,7 @@ def test_agent_project_plan_only_does_not_call_llm_or_tools(
     assert result.answer is None
     assert result.tool_results == []
     assert llm.prompts == []
+    assert result.planner_source == "rule"
     assert "1. changed_files: planned" in captured.out
     assert "Todos:" in captured.out
     assert "pending=6" in captured.out

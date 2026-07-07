@@ -1593,3 +1593,91 @@ Context:
 - 后续可以为 `memory_index` 和动态 section 引入更明确的 token 预算和截断策略。
 - 后续可以把 context warnings 展示到阶段六可视化页面中。
 - 后续错误恢复阶段可参考 `CCLearning NO.3` 中的 prompt_too_long、max_tokens 和瞬态错误分类策略。
+
+## 14. 阶段五增强：LLM Planner 与最小循环 Agent
+
+### 2026-07-07：引入 LLM Planner 优先、规则 Planner 兜底
+
+本次增强的背景是：阶段四/五已有的 `planner_enhanced.py` 本质上是规则型 planner，会根据关键词和任务类型套预设工具步骤。这个能力适合离线演示和稳定兜底，但不符合“LLM 根据任务动态决定该查什么、调用什么工具”的理想 Agent 形态。
+
+本次增强内容：
+
+- 新增 `pycode/agent/llm_planner.py`：
+  - 根据用户任务、工具注册表、项目 index/graph 摘要、权限边界、memory index 和 relevant memories 生成 planner prompt。
+  - LLM 只负责输出结构化工具计划，不回答用户问题，不声称工具已执行。
+  - LLM 输出 JSON 数组，元素包含 `tool`、`arguments`、`reason`、`required`。
+  - 解析时只接受已注册工具，过滤未知工具。
+  - 如果 `task.allow_tests=False`，过滤 `run_tests`。
+  - 被过滤的未知工具或未授权 `run_tests` 会作为 planner warning 写入 trace event 数据。
+  - 如果计划为空或 JSON 不可解析，抛出错误交给 runtime 兜底。
+
+- 修改 `pycode/agent/runtime.py`：
+  - 新增 `build_runtime_plan()`，统一选择 LLM planner 或规则 planner。
+  - 默认有 `llm_client` 且未禁用 LLM planner 时，优先尝试 LLM planner。
+  - 无 `llm_client`、禁用 LLM planner 或 LLM planner 失败时，使用 `planner_enhanced.py` 的规则计划。
+  - trace 中记录 `LLMPlanGenerated`、`LLMPlanFallback` 或 `PlannerSelected`。
+  - `plan-only=True` 的新语义是“只生成计划，不执行工具”；如果提供 LLM client，会调用 LLM planner 生成计划。
+
+- 修改 `pycode/agent/types.py`：
+  - `RuntimeConfig` 新增 `use_llm_planner`。
+  - `AgentResult` 新增 `planner_source` 和 `planner_error`。
+
+- 修改 `pycode/agent/executor.py`：
+  - `run_agent_task()` 新增 `use_llm_planner` 参数。
+
+- 修改 CLI / UI 展示：
+  - `pycode/cli.py` 的 `agent` 命令新增 `--rule-plan`，用于强制使用规则 planner。
+  - `--plan-only` 文案调整为只生成计划、不执行工具。
+  - CLI 和 Rich 输出展示 planner 来源。
+  - Streamlit 页面增加 `rule-plan` 选项，并展示 planner 来源。
+
+本次边界：
+
+- 不删除规则 planner，它继续作为离线演示、单元测试和 LLM 失败兜底。
+- 不引入多 Agent。
+- 不让 LLM 绕过工具权限策略。
+- 不让 LLM 自动修改源码或提交 git。
+- 不由 Codex 运行 pytest，只提供命令给用户自行运行。
+
+### 阶段五增强运行方法
+
+使用 LLM planner 生成计划但不执行工具：
+
+```powershell
+.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "这个项目的入口在哪里？" --plan-only --show-context
+```
+
+强制使用规则 planner 生成计划：
+
+```powershell
+.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "这个项目的入口在哪里？" --plan-only --show-context --rule-plan
+```
+
+使用 LLM planner 生成计划并执行工具：
+
+```powershell
+.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "修改 services/user_service.py 会影响哪里？" --show-context
+```
+
+### 阶段五增强测试方法
+
+本次开发按照要求未由 Codex 运行 pytest。建议手动运行：
+
+本次只做了只读静态 / smoke 检查：
+
+- AST 检查结果：`AST OK`。
+- CLI 参数解析检查：`agent --plan-only --rule-plan` 可以正确解析。
+- LLM planner 解析检查：JSON plan 可以解析为 `retrieve_context` step。
+- 最小 plan-only smoke check：LLM planner 生成 `retrieve_context` 计划，`tool_results` 数量为 0，符合“不执行工具”的语义。
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_agent_llm_planner.py --basetemp=.pytest_tmp_llm_planner -o cache_dir=.pytest_tmp_llm_planner\.pytest_cache
+```
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_agent_runtime.py tests\test_cli.py --basetemp=.pytest_tmp_llm_planner_runtime -o cache_dir=.pytest_tmp_llm_planner_runtime\.pytest_cache
+```
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_agent_planner.py tests\test_agent_executor.py tests\test_agent_context.py tests\test_agent_trace.py tests\test_agent_todo.py --basetemp=.pytest_tmp_llm_planner_agent -o cache_dir=.pytest_tmp_llm_planner_agent\.pytest_cache
+```

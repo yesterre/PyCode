@@ -56,7 +56,7 @@ def test_runtime_plan_only_skips_tools_and_llm() -> None:
     )
     result = run_agent_runtime(
         task,
-        RuntimeConfig(plan_only=True),
+        RuntimeConfig(plan_only=True, use_llm_planner=False),
         tools={"retrieve_context": ToolSpec("retrieve_context", raising_tool, True)},
         llm_client=_MockLLM("should not be called"),
     )
@@ -181,8 +181,8 @@ def test_runtime_injects_relevant_memories_and_extracts_after_answer(
     assert result.context is not None
     assert "memory_index" in result.context.section_names()
     assert "relevant_memories" in result.context.section_names()
-    assert "Project memory index:" in llm.prompts[1]
-    assert "<relevant_memories>" in llm.prompts[1]
+    assert "Project memory index:" in llm.prompts[2]
+    assert "<relevant_memories>" in llm.prompts[2]
     assert (project_path / ".pclens" / "memory" / "no-auto-tests.md").exists()
 
 

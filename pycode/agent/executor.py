@@ -75,6 +75,7 @@ def run_agent_task(
     tools: dict[str, ToolSpec] | None = None,
     max_steps: int = 8,
     plan_only: bool = False,
+    use_llm_planner: bool = True,
     enable_memory: bool = True,
     enable_memory_extraction: bool = True,
 ) -> AgentResult:
@@ -94,6 +95,7 @@ def run_agent_task(
         RuntimeConfig(
             max_turns=max_steps,
             plan_only=plan_only,
+            use_llm_planner=use_llm_planner,
             enable_memory=enable_memory,
             enable_memory_extraction=enable_memory_extraction,
         ),

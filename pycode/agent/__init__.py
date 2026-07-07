@@ -14,6 +14,12 @@ from pycode.agent.memory import (
     MemoryStore,
     MemoryType,
 )
+from pycode.agent.llm_planner import (
+    LLMPlannerResult,
+    build_llm_planner_prompt,
+    parse_llm_plan,
+    plan_task_with_llm,
+)
 from pycode.agent.planner import classify_task, plan_task
 from pycode.agent.prompts import (
     build_agent_summary_context,
@@ -61,7 +67,11 @@ __all__ = [
     "MemoryRunInfo",
     "MemoryStore",
     "MemoryType",
+    "LLMPlannerResult",
     "plan_task",
+    "plan_task_with_llm",
+    "build_llm_planner_prompt",
+    "parse_llm_plan",
     "RuntimeConfig",
     "AgentContext",
     "render_agent_prompt",
