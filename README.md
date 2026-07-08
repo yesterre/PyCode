@@ -1,24 +1,36 @@
 # PyCode
 
-PyCode 是一个 Python 代码库理解与改动影响分析 Agent 项目。当前已进入阶段六：可视化和产品化展示。
+PyCode 是一个面向 Python 项目的代码库理解与改动影响分析 Agent。它不会把整个仓库直接丢给大模型，而是先用静态分析生成结构化索引和代码图谱，再根据问题选择有限上下文，最后让 LLM 或轻量 Agent 基于证据回答问题、分析影响范围和展示执行过程。
 
-现阶段项目在阶段一索引、阶段二代码图谱、阶段三 LLM 问答、阶段四轻量 Agent 工作流和阶段五可观测 Agent 内核的基础上，新增了 Rich 终端展示和 Streamlit Web Demo。Agent 默认优先使用 LLM Planner 生成结构化工具计划，规则 planner 作为无 LLM 或 LLM 失败时的兜底；随后读取 git diff、搜索代码、查询图谱或按权限运行测试，最后基于工具证据、trace、todo、memory 和分层 context 输出总结。当前不自动修改代码，不自动提交 git，也不做多 Agent。
+这个项目的重点不是做一个简单聊天壳，而是实现一层自己的代码理解中间层：文件扫描、AST 解析、图谱构建、上下文检索、工具调用、权限控制、执行轨迹、项目记忆和可视化展示都由项目本身管理。当前版本主要支持 Python 项目，适合用于学习代码分析、Agent 工程化和项目级上下文管理。
 
-## 阶段六展示能力
+## 核心能力
 
-- Rich CLI：用表格、树形结构和分区输出展示 index、graph、query、Agent trace、todo、memory、context 和 evidence。
-- Streamlit Demo：用 Web 页面展示项目概览、文件树、代码图谱、Agent 运行结果、项目记忆和 Task DAG。
-- 产品化材料：补充示例问题、演示脚本、截图目录说明、架构图和局限性说明。
+- 代码索引：递归扫描 Python 文件，提取 import、class、function 和方法信息，生成 `.pclens/index.json`。
+- 代码图谱：把文件、类、函数和方法建模为节点，把包含、导入和调用关系建模为边，生成 `.pclens/code_graph.json`。
+- 图谱查询：支持查询文件导入、反向依赖、函数调用和入口候选文件。
+- 代码库问答：基于 index 和 graph 检索相关上下文，支持 `ask`、`explain`、`onboard`、`impact` 等命令。
+- 开发任务 Agent：围绕 git diff、改动影响、测试覆盖等任务规划工具调用，收集证据并生成总结。
+- 可观测 Agent 内核：记录 Trace、Todo、Memory、Task DAG 和 Context Section，方便解释 Agent 做了什么、依据来自哪里。
+- 展示层：支持 Rich 终端输出和 Streamlit Web Demo，便于演示项目结构、图谱和 Agent 运行过程。
 
-## 快速演示
+## 快速开始
 
-建议先进入项目根目录，并使用虚拟环境中的 Python。
+建议在项目根目录使用虚拟环境中的 Python。
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m pycode.cli index .\examples\demo_project
 .\.venv\Scripts\python.exe -m pycode.cli graph .\examples\demo_project
-.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "这个项目的入口在哪里？" --plan-only --show-context
+.\.venv\Scripts\python.exe -m pycode.cli query entry .\examples\demo_project
+.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "这个项目的入口在哪里？阅读顺序应该是怎样的？" --plan-only --show-context --rule-plan
+```
+
+前两条命令会在示例项目下生成 `.pclens/index.json` 和 `.pclens/code_graph.json`。`query entry` 会基于静态线索查找入口候选文件。最后一条命令使用离线规则 planner 展示 Agent 计划、Todo 和 Context 摘要，不需要配置 LLM API。
+
+如果想查看 Web Demo，可以启动 Streamlit：
+
+```powershell
 .\.venv\Scripts\streamlit.exe run .\ui\streamlit_app.py
 ```
 
@@ -28,481 +40,142 @@ PyCode 是一个 Python 代码库理解与改动影响分析 Agent 项目。当�
 .\.venv\Scripts\python.exe -m pycode.cli graph .\examples\demo_project --plain
 ```
 
-如果想离线查看规则 planner 的兜底计划，可以使用：
+## LLM 配置
 
-```powershell
-.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "这个项目的入口在哪里？" --plan-only --show-context --rule-plan
-```
-
-## 示例问题
-
-- 这个项目的入口在哪里？
-- 给我一个新手阅读顺序。
-- 修改 `services/user_service.py` 会影响哪里？
-- 这次 git diff 有什么风险？
-- 哪些工具被 Agent 调用了，分别产生了什么证据？
-
-## 架构图
-
-```mermaid
-flowchart LR
-    Scanner[scanner.py] --> Parser[parser.py]
-    Parser --> Index[index.json]
-    Index --> Graph[code_graph.json]
-    Graph --> Retriever[retriever.py]
-    Retriever --> Agent[agent/runtime.py]
-    Agent --> Trace[trace]
-    Agent --> Todo[todos]
-    Agent --> Memory[memory]
-    Agent --> Context[context sections]
-    Trace --> Rich[Rich CLI]
-    Todo --> Rich
-    Memory --> Rich
-    Context --> Rich
-    Graph --> Streamlit[Streamlit UI]
-    Agent --> Streamlit
-```
-
-## 当前局限
-
-- 当前主要支持 Python 项目。
-- 函数调用关系基于静态 AST 分析，无法完全覆盖动态调用。
-- Agent 默认不自动修改代码、不自动提交 git。
-- Web UI 是展示型 Demo，不是完整 IDE。
-- Streamlit 页面运行真实 Agent 总结时需要配置 OpenAI 环境变量；`plan-only` 模式不需要。
-
-## 已完成功能
-
-### 阶段一：代码结构索引 MVP
-
-- 递归扫描指定项目目录下的 `.py` 文件。
-- 忽略 `.git`、`.venv`、`venv`、`__pycache__`、`node_modules` 等目录。
-- 使用 Python 标准库 `ast` 解析代码结构。
-- 提取每个文件中的 `import`、`class`、`function`。
-- 使用 `ProjectIndex`、`FileInfo`、`ClassInfo` 组织索引数据。
-- 将索引保存为 `.pclens/index.json`。
-- 支持从 JSON 文件读取索引。
-- 提供 CLI 命令输出项目结构摘要。
-
-### 阶段二：代码关系图谱
-
-- 新增 `GraphNode`、`GraphEdge`、`CodeGraph` 图谱数据结构。
-- 提取函数和方法内部的简单调用关系。
-- 识别 `if __name__ == "__main__"` 入口线索。
-- 将文件、类、函数、方法转换为图谱节点。
-- 将包含、导入、调用关系转换为图谱边。
-- 将图谱保存为 `.pclens/code_graph.json`。
-- 支持读取图谱 JSON 并还原为 dataclass。
-- 支持查询文件 imports。
-- 支持查询文件被谁 import。
-- 支持查询函数或方法 calls。
-- 支持初步判断入口候选文件。
-- 提供 `examples/demo_project` 示例项目用于阶段二验证。
-- 提供 parser、graph_builder、query、storage、cli 等单元测试。
-
-### 阶段三：代码库问答
-
-- 基于 `index.json` 和 `code_graph.json` 选择有限上下文。
-- 支持自然语言问答、文件解释、新手阅读顺序和初步影响分析。
-- 使用 OpenAI Responses API 做第一版 LLM 接入。
-- 回答输出会附带文件路径、节点或图谱关系作为依据位置。
-
-### 阶段四：Agent 化增强
-
-- 新增 `pycode/tools/` 工具层，支持安全读文件、搜索代码、查询图谱、读取 git diff 和受控运行 pytest。
-- 工具层复用阶段三 `retriever.py`，可通过 `retrieve_context` 选择 index/graph 上下文作为 Agent 证据。
-- 新增 `pycode/agent/` 编排层，支持“规划 -> 调工具 -> 汇总证据 -> LLM 总结”的开发任务分析流程。
-- 新增 `agent` CLI 命令，支持分析 git diff、改动影响、测试覆盖和测试失败等开发场景。
-- 默认不运行测试，只有显式传入 `--run-tests` 才允许受控 pytest。
-- 支持 `--plan-only` 只展示 Agent 计划，不调用工具和 LLM。
-
-### 阶段五：Agent 内核增强与可观测化
-
-- 支持 Hook + Trace，记录用户任务、工具调用、权限拒绝、耗时、错误和结果摘要。
-- 支持 TodoWrite，将 planned steps 映射为运行时执行清单，并返回到 `AgentResult.todos`。
-- 支持基于 `.pclens/tasks/*.json` 的 Task DAG，用 `blocked_by` 表达跨会话任务依赖。
-- 支持 `.pclens/memory/` 轻量项目记忆，包含索引、相关记忆加载和可选自动提取。
-- 支持 Prompt / Context 分层组装，`AgentResult.context` 可展示 identity、tools、policy、plan、tool evidence、trace、todo、tasks、memory 等 section。
-- `agent --show-context` 可以查看 context section 摘要，不打印完整 prompt。
-- 阶段五增强：支持 LLM Planner 优先生成结构化工具计划，规则 planner 作为离线和失败兜底。
-- `agent --plan-only` 的语义是只生成计划、不执行工具；如果提供 LLM client，则会尝试用 LLM 生成计划。
-- `agent --rule-plan` 可以强制使用规则 planner。
-
-### 阶段六：可视化和产品化展示
-
-- 支持 Rich CLI 展示 index、graph、query 和 Agent 运行结果。
-- 支持 `--plain` 回退旧式文本输出，方便脚本化和测试断言。
-- 新增 Streamlit Web Demo，展示项目概览、文件树、代码图谱、Agent 结果、memory 和 Task DAG。
-- 新增 `docs/assets/` 截图目录说明和 `docs/stage6_demo_script.md` 演示脚本。
-
-## 项目结构
-
-```text
-pycode/
-  __init__.py
-  cli.py
-  scanner.py
-  parser.py
-  models.py
-  storage.py
-  graph_builder.py
-  query.py
-  retriever.py
-  prompt_builder.py
-  llm_client.py
-  rich_output.py
-  tools/
-    base.py
-    read_file.py
-    search_code.py
-    retrieve_context.py
-    query_graph.py
-    git_tools.py
-    test_runner.py
-  agent/
-    types.py
-    planner.py
-    planner_enhanced.py
-    executor.py
-    runtime.py
-    policy.py
-    prompts.py
-    context.py
-    prompt_sections.py
-    trace.py
-    todo.py
-    task_dag.py
-    memory.py
-
-ui/
-  __init__.py
-  data_loader.py
-  components.py
-  streamlit_app.py
-
-examples/
-  demo_project/
-    main.py
-    controllers/
-      user_controller.py
-    services/
-      user_service.py
-    models/
-      user.py
-    utils/
-      formatting.py
-    tests/
-      test_user_service.py
-    .pclens/
-      index.json
-      code_graph.json
-
-tests/
-  test_cli.py
-  test_graph_builder.py
-  test_parser.py
-  test_prompt_builder.py
-  test_query.py
-  test_retriever.py
-  test_scanner.py
-  test_storage.py
-  test_tools_*.py
-  test_agent_*.py
-
-docs/
-  assets/
-  stage1_development_record.md
-  stage2_development_record.md
-  stage3_development_record.md
-  stage4_development_record.md
-  stage5_development_record.md
-  stage6_development_record.md
-  stage6_demo_script.md
-```
-
-### Stage 4 enhanced runtime loop
-
-The `agent` command now uses a lightweight Agent runtime loop instead of only a
-one-shot plan executor. The loop keeps a message history, executes one planned
-tool call per turn, records tool observations, and then builds the final LLM
-summary prompt from the collected evidence.
-
-The unified `agent` entry can reuse stage-3 retrieval for project questions such
-as entry-point lookup, newcomer reading order, file explanation, dependency
-questions, impact analysis, and general codebase questions.
-
-```powershell
-.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "这个项目的入口在哪？阅读顺序应该是怎样的？"
-```
-
-Use `--plan-only` to inspect the runtime tool calls without executing tools or
-calling the LLM.
-
-## 安装依赖
-
-建议先进入项目根目录，并使用虚拟环境中的 Python。
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-如果已经激活虚拟环境，也可以执行：
-
-```powershell
-python -m pip install -r requirements.txt
-```
-
-## 生成索引
-
-扫描示例项目，并生成阶段一索引：
-
-```powershell
-.\.venv\Scripts\python.exe -m pycode.cli index .\examples\demo_project
-```
-
-默认输出位置：
-
-```text
-examples/demo_project/.pclens/index.json
-```
-
-命令完成后会输出类似摘要：
-
-```text
-PyCode index completed.
-Project path: examples\demo_project
-Python files: 9
-Imports: 17
-Classes: 5
-Functions: 9
-Index file: examples\demo_project\.pclens\index.json
-```
-
-## 生成代码图谱
-
-扫描示例项目，并生成阶段二代码图谱：
-
-```powershell
-.\.venv\Scripts\python.exe -m pycode.cli graph .\examples\demo_project
-```
-
-默认输出位置：
-
-```text
-examples/demo_project/.pclens/code_graph.json
-```
-
-命令完成后会输出类似摘要：
-
-```text
-PyCode graph completed.
-Project path: examples\demo_project
-Nodes: 55
-Edges: 76
-File nodes: 9
-Class nodes: 5
-Function nodes: 27
-Method nodes: 10
-Import edges: 11
-Call edges: 41
-Graph file: examples\demo_project\.pclens\code_graph.json
-```
-
-## 查询代码图谱
-
-查询 `main.py` 导入了哪些目标：
-
-```powershell
-.\.venv\Scripts\python.exe -m pycode.cli query imports .\examples\demo_project main.py
-```
-
-查询 `services/user_service.py` 被哪些文件导入：
-
-```powershell
-.\.venv\Scripts\python.exe -m pycode.cli query imported-by .\examples\demo_project services/user_service.py
-```
-
-查询 `main.py` 中的 `main` 函数调用了哪些目标：
-
-```powershell
-.\.venv\Scripts\python.exe -m pycode.cli query calls .\examples\demo_project func:main.py:main
-```
-
-查询入口候选文件：
-
-```powershell
-.\.venv\Scripts\python.exe -m pycode.cli query entry .\examples\demo_project
-```
-
-## 指定输出路径
-
-生成索引时可以使用 `--output` 或 `-o` 指定输出文件：
-
-```powershell
-.\.venv\Scripts\python.exe -m pycode.cli index .\examples\demo_project --output .\examples\demo_project\.pclens\index.json
-```
-
-生成图谱时也可以指定输出文件：
-
-```powershell
-.\.venv\Scripts\python.exe -m pycode.cli graph .\examples\demo_project --output .\examples\demo_project\.pclens\code_graph.json
-```
-
-查询时如果图谱文件不在默认位置，可以使用 `--graph` 指定：
-
-```powershell
-.\.venv\Scripts\python.exe -m pycode.cli query imports .\examples\demo_project main.py --graph .\examples\demo_project\.pclens\code_graph.json
-```
-
-## 阶段三：代码库问答
-
-阶段三命令需要先生成索引和图谱：
-
-```powershell
-.\.venv\Scripts\python.exe -m pycode.cli index .\examples\demo_project
-.\.venv\Scripts\python.exe -m pycode.cli graph .\examples\demo_project
-```
-
-真实调用 LLM 前需要设置 OpenAI API Key：
+`ask`、`explain`、`onboard`、`impact` 以及普通 Agent 总结需要 LLM。项目通过环境变量或 `.env` 读取配置，可以复制 `.env.example` 为 `.env` 后填写自己的 API Key。
 
 ```powershell
 $env:OPENAI_API_KEY="你的 API Key"
 ```
 
-也可以复制 `.env.example` 为 `.env`，在 `.env` 中配置模型、API Key 和 base URL：
-
-```text
-OPENAI_API_KEY=你的 API Key
-OPENAI_MODEL=gpt-4.1-mini
-OPENAI_API_TYPE=responses
-OPENAI_BASE_URL=https://api.openai.com/v1
-```
-
-如果使用 DeepSeek、Qwen 或其它 OpenAI-compatible 网关，遇到不支持 `/responses` 的错误时，将 API 类型改为 chat：
-
-```text
-OPENAI_MODEL=deepseek-v4-pro-202606
-OPENAI_API_TYPE=chat
-OPENAI_BASE_URL=https://你的兼容网关/v1
-```
-
-配置优先级为：终端环境变量优先于 `.env`，命令行 `--model` 优先于 `OPENAI_MODEL`。
-
-自然语言问答：
+常用命令示例：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pycode.cli ask .\examples\demo_project "这个项目的入口在哪里？"
-```
-
-解释单个文件：
-
-```powershell
 .\.venv\Scripts\python.exe -m pycode.cli explain .\examples\demo_project main.py
-```
-
-生成新手阅读顺序：
-
-```powershell
 .\.venv\Scripts\python.exe -m pycode.cli onboard .\examples\demo_project
-```
-
-初步影响分析：
-
-```powershell
 .\.venv\Scripts\python.exe -m pycode.cli impact .\examples\demo_project services/user_service.py
 ```
 
-指定模型：
+如果使用 OpenAI-compatible 网关，并且该网关不支持 Responses API，可以在 `.env` 中把 `OPENAI_API_TYPE` 设置为 `chat`。命令行的 `--model` 会优先于环境变量中的 `OPENAI_MODEL`。
 
-```powershell
-.\.venv\Scripts\python.exe -m pycode.cli ask .\examples\demo_project "这个项目的入口在哪里？" --model gpt-5.5
-```
+## Agent 与项目状态
 
-## 阶段四：Agent 开发任务分析
-
-Agent 命令会根据任务文本自动规划工具调用，并把工具结果交给 LLM 总结。真实调用前同样需要配置 `OPENAI_API_KEY`。
-CLI 输出会展示每一步工具状态，并单独列出 `Evidence` 依据位置。
-
-分析当前 git diff：
+Agent 命令面向开发分析任务，不默认修改代码、不默认提交 git，也不默认运行测试。只有显式传入 `--run-tests` 时，Agent 才会运行受控 pytest 命令。
 
 ```powershell
 .\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "分析当前 git diff 是否影响用户服务逻辑"
-```
-
-分析某个文件的改动影响：
-
-```powershell
-.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "检查 services/user_service.py 的改动影响"
-```
-
-默认不运行测试。若确认允许 Agent 运行受控 pytest：
-
-```powershell
+.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "检查 services/user_service.py 的测试覆盖" --no-tests
 .\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "分析当前改动并运行相关测试" --run-tests
 ```
 
-明确只分析、不运行测试：
+阶段五之后，AgentResult 中会包含 trace、todos、memory 和 context。它们不是额外的装饰，而是为了让结果能够追溯：哪些工具被调用、哪些步骤完成了、哪些项目记忆被注入、最终结论依据了哪些文件或图谱关系。
+
+项目还提供了轻量的项目记忆和 Task DAG 管理命令：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "检查 services/user_service.py 的测试覆盖" --no-tests
+.\.venv\Scripts\python.exe -m pycode.cli memory .\examples\demo_project list
+.\.venv\Scripts\python.exe -m pycode.cli task .\examples\demo_project list
 ```
 
-只查看 Agent 计划，不运行工具、不调用 LLM：
+## 架构概览
 
-```powershell
-.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "检查 services/user_service.py 的改动影响" --plan-only
+```mermaid
+flowchart LR
+    Source[Python Project] --> Scanner[scanner.py]
+    Scanner --> Parser[parser.py]
+    Parser --> Index[index.json]
+    Index --> GraphBuilder[graph_builder.py]
+    GraphBuilder --> Graph[code_graph.json]
+    Graph --> Query[query.py]
+    Graph --> Retriever[retriever.py]
+    Index --> Retriever
+    Retriever --> Prompt[prompt_builder.py]
+    Prompt --> LLM[llm_client.py]
+    Retriever --> Agent[agent/runtime.py]
+    Agent --> Tools[pycode/tools]
+    Tools --> Evidence[Evidence]
+    Agent --> Trace[Trace / Todo / Memory / Context]
+    Evidence --> Rich[Rich CLI]
+    Trace --> Rich
+    Graph --> UI[Streamlit Demo]
+    Trace --> UI
 ```
 
-示例项目中包含一个小型 pytest 样例，可用于展示测试覆盖检查和受控测试运行：
+核心流程可以理解为：先把代码变成可查询的数据，再把数据变成有限上下文，最后让问答或 Agent 基于这些上下文工作。这样做的好处是边界清楚、证据可追溯，也能避免 LLM 自己无约束地读取整个仓库。
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest .\examples\demo_project\tests -q -o cache_dir=.pytest_tmp\.pytest_cache
+## 技术栈
+
+项目主体使用 Python，代码解析依赖标准库 `ast`，CLI 使用 `argparse`，测试使用 `pytest`。LLM 接入通过 OpenAI SDK 封装，终端展示使用 Rich，Web Demo 使用 Streamlit。图谱和记忆数据暂时使用 JSON / Markdown 文件保存，没有引入 Neo4j 或其它外部数据库。
+
+## 项目结构
+
+```text
+pycode/
+  cli.py                 # CLI 入口
+  scanner.py             # Python 文件扫描
+  parser.py              # AST 解析
+  models.py              # 索引和图谱数据结构
+  storage.py             # index / graph 读写
+  graph_builder.py       # 代码图谱构建
+  query.py               # 图谱查询
+  retriever.py           # 上下文检索
+  prompt_builder.py      # 阶段三问答 prompt
+  llm_client.py          # LLM 客户端封装
+  rich_output.py         # Rich 终端展示
+  tools/                 # Agent 可调用工具
+  agent/                 # planner / executor / runtime / trace / memory / context
+
+ui/
+  data_loader.py
+  components.py
+  streamlit_app.py
+
+examples/demo_project/
+  main.py
+  controllers/
+  services/
+  models/
+  utils/
+  tests/
+
+docs/
+  technical_overview.md
+  demo_guide.md
+  assets/
+
+tests/
+  test_scanner.py
+  test_parser.py
+  test_storage.py
+  test_graph_builder.py
+  test_retriever.py
+  test_agent_*.py
+  test_tools_*.py
 ```
 
-指定模型或图谱文件：
+## 能力演进摘要
 
-```powershell
-.\.venv\Scripts\python.exe -m pycode.cli agent .\examples\demo_project "检查 services/user_service.py 的改动影响" --model gpt-5.5 --graph .\examples\demo_project\.pclens\code_graph.json
-```
+PyCode 从最小可行的代码扫描器开始，先完成 Python 文件扫描、AST 解析和索引保存；随后引入代码图谱，把文件、类、函数、方法和关系统一成 nodes / edges；第三阶段加入 LLM，但让 LLM 解释检索到的上下文，而不是直接读取整个仓库；第四阶段开始做单 Agent + 多工具的开发分析流程；第五阶段补齐 trace、todo、task、memory 和 context；第六阶段加入 Rich CLI 和 Streamlit Demo；第七阶段主要整理 README、技术文档、演示指南和项目边界，让项目更适合 GitHub 展示和面试讲解。
 
 ## 运行测试
 
-运行全部测试：
+项目已有覆盖 scanner、parser、storage、graph_builder、retriever、Agent、tools、Rich 输出和 UI 数据加载等模块的 pytest 测试。完整回归命令如下：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests --basetemp=.pytest_tmp --cache-clear
 ```
 
-如果已经激活虚拟环境，也可以执行：
-
-```powershell
-python -m pytest tests --basetemp=.pytest_tmp --cache-clear
-```
-
-正常通过时会看到类似：
-
-```text
-48 passed
-```
-
 ## 当前局限
 
-- 当前主要支持 Python 项目。
-- 函数调用关系基于静态 AST 分析，无法完全覆盖动态调用。
-- 当前不做复杂类型推断，所以 `runner.run()`、`self.service.get_user()` 这类变量方法调用不一定能精确解析到真实方法节点。
-- 当前 import 解析以常见项目内部导入为主，对标准库和第三方库只建立外部节点。
-- 当前入口判断属于初步判断，主要依据文件名和顶层 `main` 函数。
-- 当前 LLM 只解释 PyCode 选择出的有限上下文。
-- 当前不自动修改代码。
-- 当前不让 LLM 自己读取整个仓库。
-- 当前 Agent 只做开发任务分析和建议，不自动提交 git。
-- 当前 Agent 默认不运行测试，必须显式使用 `--run-tests`。
-- 当前不使用 Neo4j 等图数据库，图谱先保存为 JSON。
+- 当前主要支持 Python 项目，暂未支持跨语言代码库。
+- 调用关系基于静态 AST 分析，无法完全覆盖动态调用、反射、运行时注入和复杂类型推断。
+- 当前不使用图数据库，代码图谱保存为 JSON，适合学习和小型项目演示。
+- LLM 只解释 PyCode 选择出的有限上下文，不会自动读取整个仓库。
+- Agent 默认不自动修改代码、不自动提交 git，也不默认运行测试。
+- Streamlit 页面是展示型 Demo，不是完整 IDE。
+- 入口判断、影响分析和测试覆盖判断都属于静态分析辅助结果，需要人工结合项目语义确认。
 
 ## 后续计划
 
-- 阶段四：继续增强 Agent planner、工具结果筛选和 CLI 输出质量。
-- 增强调用关系解析，把更多方法调用解析到准确的类方法节点。
-- 将 `has_main_guard` 等入口线索写入图谱，提高入口判断准确度。
-- 优化 CLI 查询输出，展示更友好的文件路径、节点名称和关系说明。
-- 后续再考虑影响分析、Agent 工具调用和可视化展示。
+后续可以继续增强调用关系解析，尤其是类实例方法、跨文件符号解析和更复杂的 import 解析；可以为 Streamlit 图谱页增加更直观的交互式关系图；也可以把 Agent 运行结果导出为 Markdown 报告，方便代码评审和面试展示。更长期的方向是引入更精细的上下文预算、记忆合并策略和多项目分析能力，但这些都应该建立在当前静态分析和证据追踪能力稳定的基础上。

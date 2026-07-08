@@ -50,6 +50,9 @@ class ToolSpec:
     handler: Callable[..., ToolResult]
     read_only: bool = True
     writes_internal_state: bool = False
+    description: str = ""
+    input_schema: dict[str, Any] = field(default_factory=dict)
+    examples: list[dict[str, Any]] = field(default_factory=list)
 
 
 def success(tool: str, summary: str, **data: Any) -> ToolResult:
@@ -58,6 +61,34 @@ def success(tool: str, summary: str, **data: Any) -> ToolResult:
 
 def failure(tool: str, summary: str, error: str, **data: Any) -> ToolResult:
     return ToolResult(tool=tool, ok=False, summary=summary, error=error, data=data)
+
+
+def validate_tool_arguments(spec: ToolSpec, arguments: dict[str, Any]) -> str | None:
+    """Validate model-planned tool arguments against the registered schema."""
+    schema = spec.input_schema or {}
+    properties = schema.get("properties", {})
+    required = schema.get("required", [])
+
+    if not isinstance(properties, dict):
+        properties = {}
+    if not isinstance(required, list):
+        required = []
+
+    missing = [
+        str(name)
+        for name in required
+        if isinstance(name, str) and name not in arguments
+    ]
+    if missing:
+        return f"Missing required argument(s): {', '.join(missing)}"
+
+    if properties:
+        allowed = {str(name) for name in properties}
+        unknown = sorted(set(arguments) - allowed)
+        if unknown:
+            return f"Unknown argument(s): {', '.join(unknown)}"
+
+    return None
 
 
 def truncate_text(text: str, max_chars: int) -> tuple[str, bool]:

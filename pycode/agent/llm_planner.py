@@ -11,6 +11,7 @@ from pycode.agent.types import AgentStep, AgentTask
 from pycode.llm_client import LLMClient
 from pycode.storage import load_graph, load_index
 from pycode.tools import ToolSpec
+from pycode.tools.base import validate_tool_arguments
 
 
 PLANNER_SOURCE_LLM = "llm"
@@ -99,6 +100,15 @@ def build_llm_planner_prompt(
             "Use only registered tools from the provided catalog.",
             "Do not plan source-code writes, git commits, deletion commands, or dangerous operations.",
             "Only plan run_tests when allow_tests is true.",
+            "Each tool arguments object must strictly use property names from that tool's input_schema.properties.",
+            "Do not invent argument aliases. For read_file use file_path, not path.",
+            (
+                "Memory is supporting context, not current code evidence. For code-fact tasks "
+                "about project functionality, core files, entry points, dependencies, impact, "
+                "or implementation details, do not plan only memory; include at least one "
+                "current-code evidence tool such as retrieve_context, query_graph, search_code, "
+                "git_diff, changed_files, or read_file."
+            ),
             "Return only a JSON array. Do not wrap it in Markdown.",
             "Each JSON item must use this shape:",
             '{"tool": "query_graph", "arguments": {"query_type": "entry"}, "reason": "why this tool is useful", "required": false}',
@@ -127,6 +137,11 @@ def parse_llm_plan(
         arguments = item.get("arguments", {})
         if not isinstance(arguments, dict):
             arguments = {}
+        argument_error = validate_tool_arguments(tools[tool], arguments)
+        if argument_error is not None:
+            raise ValueError(
+                f"LLM planner returned invalid arguments for {tool}: {argument_error}"
+            )
         reason = str(item.get("reason") or f"LLM planner selected {tool}.")
         required = item.get("required", False)
         steps.append(
@@ -185,6 +200,9 @@ def _tool_catalog(tools: dict[str, ToolSpec]) -> list[dict[str, Any]]:
     return [
         {
             "name": spec.name,
+            "description": spec.description,
+            "input_schema": spec.input_schema,
+            "examples": spec.examples,
             "read_only": spec.read_only,
             "writes_internal_state": spec.writes_internal_state,
         }

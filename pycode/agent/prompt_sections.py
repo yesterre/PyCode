@@ -46,6 +46,9 @@ def tools_section(tools: dict[str, "ToolSpec"]) -> ContextSection:
         rows.append(
             {
                 "name": spec.name,
+                "description": spec.description,
+                "required": _schema_required(spec.input_schema),
+                "optional": _schema_optional(spec.input_schema),
                 "read_only": spec.read_only,
                 "writes_internal_state": spec.writes_internal_state,
             }
@@ -300,6 +303,23 @@ def _format_data(data: Any) -> str:
     if data in ({}, [], None):
         return "N/A" if data in ({}, None) else "[]"
     return json.dumps(data, ensure_ascii=False, indent=2, default=str)
+
+
+def _schema_required(schema: dict[str, Any]) -> list[str]:
+    required = schema.get("required", []) if isinstance(schema, dict) else []
+    if not isinstance(required, list):
+        return []
+    return [str(item) for item in required]
+
+
+def _schema_optional(schema: dict[str, Any]) -> list[str]:
+    if not isinstance(schema, dict):
+        return []
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict):
+        return []
+    required = set(_schema_required(schema))
+    return [str(name) for name in properties if str(name) not in required]
 
 
 def _extract_evidence(tool_results: list["ToolResult"]) -> list[str]:

@@ -753,6 +753,31 @@ TypeError: build_agent_summary_prompt() got an unexpected keyword argument 'memo
 - 工具层模块不要在顶层导入 `pycode.agent` 聚合入口或会触发聚合入口的子模块。
 - 涉及 agent 内部状态的工具优先使用 `TYPE_CHECKING` + 函数内懒加载，避免工具注册阶段拉起整个 Agent 层。
 
+### 2026-07-07：LLM Planner 缺少工具参数 schema 导致 read_file 参数错误
+
+现象：
+
+- 用户运行 Agent 问“这个项目的主要功能是什么？其核心文件有哪些？”时，LLM Planner 生成了多个 `read_file` 步骤。
+- `query_graph` 和 `memory` 工具成功执行，但所有 `read_file` 步骤失败。
+- 错误为：
+
+```text
+TypeError: read_file() got an unexpected keyword argument 'path'
+```
+
+原因：
+
+- 当前 `ToolSpec` 只有工具名、handler、只读标记和内部状态写入标记。
+- LLM Planner 看到的工具目录缺少 `description` 和 `input_schema`，不知道 `read_file` 的真实参数名是 `file_path`。
+- Agent executor 使用 `handler(**arguments)` 调用工具，模型生成的参数名必须和 Python handler 签名匹配；`path` 不是 `read_file()` 支持的参数。
+
+处理：
+
+- 为 `ToolSpec` 增加模型可读的 `description`、`input_schema` 和示例。
+- 为当前注册工具补齐参数 schema。
+- LLM Planner prompt 明确要求严格使用 `input_schema.properties` 中的字段名，不允许发明别名。
+- 在 LLM Planner 解析阶段和 executor 执行前增加参数校验，避免错误参数继续进入 Python handler。
+
 ## 7. 当前测试命令
 
 建议优先运行 5A 核心测试：
@@ -1638,6 +1663,50 @@ Context:
 - 不让 LLM 绕过工具权限策略。
 - 不让 LLM 自动修改源码或提交 git。
 - 不由 Codex 运行 pytest，只提供命令给用户自行运行。
+
+### 2026-07-07：补齐 Agent 工具定义与参数 schema
+
+本次增强基于一次真实 Agent 运行问题：LLM Planner 因缺少工具参数说明，把 `read_file` 的参数规划为 `path`，而真实工具签名需要 `file_path`。这说明当前工具注册表对程序足够，但对模型不够。
+
+本次实现内容：
+
+- 扩展 `ToolSpec`：
+  - 新增 `description`，用于说明工具用途和使用边界。
+  - 新增 `input_schema`，采用轻量 JSON Schema 风格描述参数名、必填字段和含义。
+  - 新增 `examples`，给 LLM Planner 提供少量正确调用样例。
+  - 保持旧构造方式兼容，现有 `ToolSpec("name", handler, True)` 仍可使用。
+- 为当前 `TOOLS` 中的 `read_file`、`search_code`、`retrieve_context`、`query_graph`、`git_diff`、`changed_files`、`run_tests`、`todo_write`、`task_dag`、`memory` 补齐工具说明和参数 schema。
+- 修改 `pycode/agent/llm_planner.py`：
+  - `_tool_catalog()` 输出工具描述、输入 schema 和示例。
+  - planner prompt 明确要求 `arguments` 只能使用 schema 中的字段名，例如 `read_file` 必须使用 `file_path`，不能使用 `path`。
+  - 解析 LLM plan 时校验已注册工具的参数；发现未知参数或缺少必填参数时，判定 LLM plan 不可用，交给规则 planner 兜底。
+- 修改 `pycode/agent/executor.py`：
+  - 执行工具前再次校验参数，作为 runtime 兜底。
+  - 非法参数返回结构化 `ToolResult`，不再直接触发 Python `TypeError`。
+- 修改 `pycode/agent/prompt_sections.py`：
+  - `tools_section()` 展示工具描述、必填参数和可选参数摘要。
+  - summary prompt 不注入完整大段 schema，只保留可读的工具目录摘要。
+
+本次边界：
+
+- 不新增工具。
+- 不修改 CLI 对外参数。
+- 不修改 `.pclens` 文件格式。
+- 不把 `path` 兼容成 `file_path`，避免工具 schema 和 handler 签名长期分裂。
+- 不由 Codex 运行 pytest，只提供命令给用户自行运行。
+
+### 2026-07-07：限制 LLM Planner 只依赖 memory 回答代码事实问题
+
+用户再次运行“这个项目的主要功能是什么？其核心文件有哪些？”后，LLM Planner 没有再触发 `read_file(path=...)` 参数错误，但它只规划了 `memory` 工具，并直接基于历史项目记忆回答。该行为没有工具失败，但对代码库理解 Agent 来说证据边界不够稳，因为 memory 只能作为辅助上下文，不能替代当前代码事实。
+
+本次处理：
+
+- 在 `pycode/agent/llm_planner.py` 的 planner prompt 中新增规则：
+  - memory 是辅助上下文，不是当前代码证据。
+  - 对项目功能、核心文件、入口、依赖、影响范围和实现细节这类代码事实问题，不能只规划 `memory`。
+  - 至少应包含一个当前代码证据工具，例如 `retrieve_context`、`query_graph`、`search_code`、`git_diff`、`changed_files` 或 `read_file`。
+- 保持实现边界：不强制每次都调用 `read_file`，允许 planner 根据问题选择更合适的当前代码证据工具。
+- 本次不由 Codex 运行 pytest，只提供命令给用户自行验证。
 
 ### 阶段五增强运行方法
 

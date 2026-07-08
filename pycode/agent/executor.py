@@ -6,7 +6,7 @@ from pycode.agent.prompts import build_agent_summary_prompt
 from pycode.agent.types import AgentResult, AgentStep, AgentTask, RuntimeConfig, ToolCall
 from pycode.llm_client import LLMClient
 from pycode.tools import TOOLS, ToolContext, ToolResult, ToolSpec
-from pycode.tools.base import failure
+from pycode.tools.base import failure, validate_tool_arguments
 
 
 def execute_tool_call(
@@ -30,6 +30,15 @@ def execute_tool_call(
     denied = authorize_tool_call(tool_call.name, spec, tool_context)
     if denied is not None:
         return denied
+
+    argument_error = validate_tool_arguments(spec, tool_call.arguments)
+    if argument_error is not None:
+        return failure(
+            tool_call.name,
+            "Tool arguments are invalid.",
+            argument_error,
+            arguments=tool_call.arguments,
+        )
 
     try:
         return spec.handler(tool_context, **tool_call.arguments)
