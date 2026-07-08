@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pycode.constants import DEFAULT_ARTIFACT_DIR, DEFAULT_GRAPH_FILE, DEFAULT_INDEX_FILE
 from pycode.retriever import (
     RetrievalResult,
     retrieve_explain,
@@ -24,10 +25,10 @@ def retrieve_context(
     """Reuse stage-3 retrieval to select code context for an Agent task."""
     try:
         resolved_index_path = context.resolve_in_project(
-            index_path or ".pclens/index.json"
+            index_path or f"{DEFAULT_ARTIFACT_DIR}/{DEFAULT_INDEX_FILE}"
         )
         resolved_graph_path = context.resolve_in_project(
-            graph_path or ".pclens/code_graph.json"
+            graph_path or f"{DEFAULT_ARTIFACT_DIR}/{DEFAULT_GRAPH_FILE}"
         )
     except PermissionError as exc:
         return failure("retrieve_context", "Artifact path denied.", str(exc))

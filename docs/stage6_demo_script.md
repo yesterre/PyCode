@@ -8,6 +8,8 @@
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
+说明：`requirements.txt` 会以可编辑模式安装当前项目，并安装 CLI、Rich、Streamlit 和测试相关依赖。
+
 ## 2. 生成示例项目索引
 
 ```powershell

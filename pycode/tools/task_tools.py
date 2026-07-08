@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from pycode.constants import DEFAULT_TASK_DIR
 from pycode.tools.base import ToolContext, ToolResult, failure, success
 
 if TYPE_CHECKING:
@@ -140,12 +141,12 @@ def task_dag(
 def _store_from_context(context: ToolContext) -> TaskDAGStore:
     from pycode.agent.task_dag import TaskDAGStore
 
-    tasks_dir = context.resolve_in_project(".pclens/tasks")
+    tasks_dir = context.resolve_in_project(DEFAULT_TASK_DIR)
     return TaskDAGStore(context.project_root, tasks_dir=tasks_dir)
 
 
 def _relative_storage_dir(context: ToolContext) -> str:
-    return ".pclens/tasks"
+    return DEFAULT_TASK_DIR
 
 
 def _normalize_blocked_by(value: list[str] | str | None) -> list[str]:
@@ -166,7 +167,7 @@ def _require_task(store: TaskDAGStore, task_id: str | None) -> ToolResult | Any:
             TOOL_NAME,
             "Task lookup failed.",
             str(exc),
-            storage_dir=".pclens/tasks",
+            storage_dir=DEFAULT_TASK_DIR,
         )
 
 
@@ -175,5 +176,5 @@ def _task_id_required() -> ToolResult:
         TOOL_NAME,
         "Task id is required.",
         "This operation requires task_id.",
-        storage_dir=".pclens/tasks",
+        storage_dir=DEFAULT_TASK_DIR,
     )

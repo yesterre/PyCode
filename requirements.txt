@@ -1,5 +1,1 @@
-typer
-pytest
-openai
-rich
-streamlit
+-e .[dev]

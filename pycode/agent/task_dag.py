@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from pycode.agent._time_utils import format_timestamp, utc_now
+from pycode.constants import DEFAULT_TASK_DIR
+from pycode.utils import ensure_directory
 
-DEFAULT_TASK_DIR = ".pclens/tasks"
 TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 GENERATED_TASK_ID_PATTERN = re.compile(r"^task_(\d+)$")
 
@@ -35,8 +36,8 @@ class TaskNode:
     status: str = TaskStatus.PENDING
     owner: str | None = None
     blocked_by: list[str] = field(default_factory=list)
-    created_at: str = field(default_factory=lambda: _format_timestamp(_utc_now()))
-    updated_at: str = field(default_factory=lambda: _format_timestamp(_utc_now()))
+    created_at: str = field(default_factory=lambda: format_timestamp(utc_now()))
+    updated_at: str = field(default_factory=lambda: format_timestamp(utc_now()))
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -64,8 +65,8 @@ class TaskNode:
             status=status,
             owner=data.get("owner"),
             blocked_by=[str(item) for item in data.get("blocked_by", [])],
-            created_at=str(data.get("created_at") or _format_timestamp(_utc_now())),
-            updated_at=str(data.get("updated_at") or _format_timestamp(_utc_now())),
+            created_at=str(data.get("created_at") or format_timestamp(utc_now())),
+            updated_at=str(data.get("updated_at") or format_timestamp(utc_now())),
             metadata=dict(data.get("metadata", {})),
         )
 
@@ -220,7 +221,7 @@ class TaskDAGStore:
         self._validate_task_id(task.id)
         if task.status not in TaskStatus.ALL:
             raise ValueError(f"Unsupported task status: {task.status}")
-        self.tasks_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.tasks_dir)
         self._task_path(task.id).write_text(
             json.dumps(task.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -253,12 +254,4 @@ class TaskDAGStore:
 
     @staticmethod
     def _touch(task: TaskNode) -> None:
-        task.updated_at = _format_timestamp(_utc_now())
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _format_timestamp(value: datetime) -> str:
-    return value.isoformat()
+        task.updated_at = format_timestamp(utc_now())

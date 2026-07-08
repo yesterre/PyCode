@@ -3,16 +3,16 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from pycode.agent._time_utils import format_timestamp, utc_now
+from pycode.constants import DEFAULT_MEMORY_DIR
 from pycode.tools.base import ToolResult
-from pycode.utils import dedupe_preserve_order
+from pycode.utils import dedupe_preserve_order, ensure_directory, parse_json_array_response
 
 
-DEFAULT_MEMORY_DIR = ".pclens/memory"
 MEMORY_INDEX_FILE = "MEMORY.md"
 MEMORY_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 MAX_RELEVANT_MEMORIES = 5
@@ -59,8 +59,8 @@ class MemoryItem:
     body: str
     tags: list[str] = field(default_factory=list)
     source: str = "manual"
-    created_at: str = field(default_factory=lambda: _format_timestamp(_utc_now()))
-    updated_at: str = field(default_factory=lambda: _format_timestamp(_utc_now()))
+    created_at: str = field(default_factory=lambda: format_timestamp(utc_now()))
+    updated_at: str = field(default_factory=lambda: format_timestamp(utc_now()))
     path: str = ""
 
     def to_index_entry(self) -> MemoryIndexEntry:
@@ -156,7 +156,7 @@ class MemoryStore:
             actual_name = self._unique_name(actual_name)
 
         existing = self._memory_path(actual_name)
-        created_at = _format_timestamp(_utc_now())
+        created_at = format_timestamp(utc_now())
         if allow_existing and existing.exists():
             old = self.load_memory(actual_name)
             created_at = old.created_at
@@ -174,7 +174,7 @@ class MemoryStore:
             tags=[str(tag) for tag in tags or []],
             source=source,
             created_at=created_at,
-            updated_at=_format_timestamp(_utc_now()),
+            updated_at=format_timestamp(utc_now()),
             path=f"{actual_name}.md",
         )
         self._save_memory(item)
@@ -237,7 +237,7 @@ class MemoryStore:
         return entries
 
     def _write_index(self, entries: list[MemoryIndexEntry]) -> None:
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.memory_dir)
         sorted_entries = sorted(entries, key=lambda entry: (entry.type, entry.name))
         lines = [
             "# PyCode Memory Index",
@@ -285,15 +285,15 @@ class MemoryStore:
             body=body.strip(),
             tags=[str(tag) for tag in metadata.get("tags", [])],
             source=str(metadata.get("source") or "manual"),
-            created_at=str(metadata.get("created_at") or _format_timestamp(_utc_now())),
-            updated_at=str(metadata.get("updated_at") or _format_timestamp(_utc_now())),
+            created_at=str(metadata.get("created_at") or format_timestamp(utc_now())),
+            updated_at=str(metadata.get("updated_at") or format_timestamp(utc_now())),
             path=path.name,
         )
 
     def _save_memory(self, item: MemoryItem) -> None:
         self._validate_memory_name(item.name)
         self._validate_memory_type(item.type)
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.memory_dir)
         self._memory_path(item.name).write_text(_format_memory_file(item), encoding="utf-8")
 
     def _unique_name(self, base_name: str) -> str:
@@ -570,28 +570,13 @@ def _parse_memory_file(text: str) -> tuple[dict[str, Any], str]:
 
 
 def _parse_selected_memory_names(response: str) -> list[str]:
-    data = _loads_json_array(response)
+    data = parse_json_array_response(response, allow_empty=True)
     return [str(item) for item in data if isinstance(item, str)]
 
 
 def _parse_extracted_memory_items(response: str) -> list[dict[str, Any]]:
-    data = _loads_json_array(response)
+    data = parse_json_array_response(response, allow_empty=True)
     return [item for item in data if isinstance(item, dict)]
-
-
-def _loads_json_array(response: str) -> list[Any]:
-    text = response.strip()
-    if not text:
-        return []
-    if not text.startswith("["):
-        match = re.search(r"\[[\s\S]*\]", text)
-        if not match:
-            raise ValueError("LLM response did not contain a JSON array.")
-        text = match.group(0)
-    data = json.loads(text)
-    if not isinstance(data, list):
-        raise ValueError("LLM response JSON was not an array.")
-    return data
 
 
 def _recent_message_text(
@@ -634,11 +619,3 @@ def _memory_fingerprints(store: MemoryStore) -> set[str]:
 def _fingerprint(memory_type: str, description: str, body: str) -> str:
     normalized = " ".join(f"{memory_type} {description} {body}".lower().split())
     return normalized[:500]
-
-
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _format_timestamp(value: datetime) -> str:
-    return value.isoformat()

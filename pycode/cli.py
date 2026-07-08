@@ -3,8 +3,10 @@ import sys
 from pathlib import Path
 
 from pycode.agent import AgentResult, run_agent_task
+from pycode.agent.evidence import collect_agent_evidence
 from pycode.agent.memory import MemoryIndexEntry, MemoryItem, MemoryStore
 from pycode.agent.task_dag import TaskDAGStore, TaskNode
+from pycode.constants import DEFAULT_ARTIFACT_DIR, DEFAULT_GRAPH_FILE, DEFAULT_INDEX_FILE
 from pycode.graph_builder import build_code_graph
 from pycode.llm_client import LLMClient, OpenAIResponsesClient
 from pycode.models import CodeGraph, GraphEdge, GraphNode, ProjectIndex
@@ -27,12 +29,9 @@ from pycode import rich_output as rich_render
 from pycode.scanner import scan_python_files
 from pycode.storage import load_graph, load_index, save_graph, save_index
 from pycode.tools import ToolSpec
-from pycode.utils import dedupe_preserve_order
+from pycode.utils import count_by_type
 
 
-DEFAULT_INDEX_DIR = ".pclens"
-DEFAULT_INDEX_FILE = "index.json"
-DEFAULT_GRAPH_FILE = "code_graph.json"
 _CONFIGURED_STDOUT_ID: int | None = None
 
 
@@ -44,7 +43,7 @@ def index_project(
 ) -> ProjectIndex:
     """Scan a Python project, parse file structures, and save an index file."""
     if output_path is None:
-        output_path = project_path / DEFAULT_INDEX_DIR / DEFAULT_INDEX_FILE
+        output_path = project_path / DEFAULT_ARTIFACT_DIR / DEFAULT_INDEX_FILE
 
     project_index = build_project_index(project_path)
     save_index(project_index, output_path)
@@ -74,7 +73,7 @@ def graph_project(
 ) -> CodeGraph:
     """Build and save a code graph for a Python project."""
     if output_path is None:
-        output_path = project_path / DEFAULT_INDEX_DIR / DEFAULT_GRAPH_FILE
+        output_path = project_path / DEFAULT_ARTIFACT_DIR / DEFAULT_GRAPH_FILE
 
     project_index = build_project_index(project_path)
     graph = build_code_graph(project_index)
@@ -94,7 +93,7 @@ def query_project_graph(
 ) -> list[GraphEdge] | list[GraphNode]:
     """Load a saved code graph and run a graph query."""
     if graph_path is None:
-        graph_path = project_path / DEFAULT_INDEX_DIR / DEFAULT_GRAPH_FILE
+        graph_path = project_path / DEFAULT_ARTIFACT_DIR / DEFAULT_GRAPH_FILE
 
     graph = load_graph(graph_path)
     if query_type == "imports":
@@ -437,8 +436,8 @@ def _print_index_summary(index: ProjectIndex, output_path: Path) -> None:
 
 
 def _print_graph_summary(graph: CodeGraph, output_path: Path) -> None:
-    node_counts = _count_by_type(graph.nodes)
-    edge_counts = _count_by_type(graph.edges)
+    node_counts = count_by_type(graph.nodes)
+    edge_counts = count_by_type(graph.edges)
 
     print("PyCode graph completed.")
     print(f"Project path: {graph.project_path}")
@@ -474,8 +473,8 @@ def _print_query_result(
 
 
 def _load_project_artifacts(project_path: Path) -> tuple[ProjectIndex, CodeGraph]:
-    index_path = project_path / DEFAULT_INDEX_DIR / DEFAULT_INDEX_FILE
-    graph_path = project_path / DEFAULT_INDEX_DIR / DEFAULT_GRAPH_FILE
+    index_path = project_path / DEFAULT_ARTIFACT_DIR / DEFAULT_INDEX_FILE
+    graph_path = project_path / DEFAULT_ARTIFACT_DIR / DEFAULT_GRAPH_FILE
     missing: list[str] = []
     if not index_path.exists():
         missing.append(str(index_path))
@@ -567,7 +566,7 @@ def _print_agent_result(result: AgentResult, *, show_context: bool = False) -> N
         _print_context_summary(result)
 
     print("Evidence:")
-    evidence = _agent_evidence(result)
+    evidence = collect_agent_evidence(result)
     if not evidence:
         print("- N/A")
     else:
@@ -686,49 +685,6 @@ def _print_context_summary(result: AgentResult) -> None:
             _safe_print(f"- {warning}")
 
 
-def _agent_evidence(result: AgentResult) -> list[str]:
-    evidence: list[str] = []
-    if result.memory is not None:
-        for item in result.memory.relevant_memories:
-            if item.path:
-                evidence.append(f".pclens/memory/{item.path}")
-        for item in result.memory.extracted_memories:
-            if item.path:
-                evidence.append(f".pclens/memory/{item.path}")
-    for tool_result in result.tool_results:
-        data = tool_result.data
-        for item in data.get("evidence", []):
-            evidence.append(str(item))
-        for item in data.get("files", []):
-            evidence.append(str(item))
-        if data.get("path"):
-            evidence.append(str(data["path"]))
-        for item in data.get("matches", []):
-            path = item.get("path")
-            line_number = item.get("line_number")
-            if path and line_number:
-                evidence.append(f"{path}:{line_number}")
-            elif path:
-                evidence.append(str(path))
-        for item in data.get("items", []):
-            path = item.get("path")
-            if path:
-                evidence.append(str(path))
-            evidence.extend(str(node_id) for node_id in item.get("node_ids", []))
-            evidence.extend(str(edge) for edge in item.get("edges", []))
-        for edge in data.get("edges", []):
-            source = edge.get("source")
-            edge_type = edge.get("type")
-            target = edge.get("target")
-            if source and edge_type and target:
-                evidence.append(f"{source} --{edge_type}--> {target}")
-        for node in data.get("nodes", []):
-            node_id = node.get("id")
-            if node_id:
-                evidence.append(str(node_id))
-    return dedupe_preserve_order(evidence)
-
-
 def _safe_print(text: str) -> None:
     global _CONFIGURED_STDOUT_ID
     stdout_id = id(sys.stdout)
@@ -747,13 +703,6 @@ def _safe_print(text: str) -> None:
     print(safe_text)
 
 
-def _count_by_type(items: list[GraphNode] | list[GraphEdge]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for item in items:
-        counts[item.type] = counts.get(item.type, 0) + 1
-    return counts
-
-
 def _require_target(query_type: str, target: str | None) -> None:
     if target is None:
         raise ValueError(f"Query '{query_type}' requires a target argument.")
@@ -765,7 +714,20 @@ def build_parser() -> argparse.ArgumentParser:
         description="PyCode: Python code structure indexing tool.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    _add_index_subparser(subparsers)
+    _add_graph_subparser(subparsers)
+    _add_query_subparser(subparsers)
+    _add_ask_subparser(subparsers)
+    _add_explain_subparser(subparsers)
+    _add_onboard_subparser(subparsers)
+    _add_impact_subparser(subparsers)
+    _add_agent_subparser(subparsers)
+    _add_memory_subparser(subparsers)
+    _add_task_subparser(subparsers)
+    return parser
 
+
+def _add_index_subparser(subparsers: argparse._SubParsersAction) -> None:
     index_parser = subparsers.add_parser(
         "index",
         help="Scan a Python project and generate index.json.",
@@ -785,6 +747,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_plain_argument(index_parser)
 
+
+def _add_graph_subparser(subparsers: argparse._SubParsersAction) -> None:
     graph_parser = subparsers.add_parser(
         "graph",
         help="Scan a Python project and generate code_graph.json.",
@@ -804,6 +768,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_plain_argument(graph_parser)
 
+
+def _add_query_subparser(subparsers: argparse._SubParsersAction) -> None:
     query_parser = subparsers.add_parser(
         "query",
         help="Query a generated code graph.",
@@ -832,6 +798,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_plain_argument(query_parser)
 
+
+def _add_ask_subparser(subparsers: argparse._SubParsersAction) -> None:
     ask_parser = subparsers.add_parser(
         "ask",
         help="Ask a natural-language question about a generated project graph.",
@@ -848,6 +816,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_model_argument(ask_parser)
     _add_plain_argument(ask_parser)
 
+
+def _add_explain_subparser(subparsers: argparse._SubParsersAction) -> None:
     explain_parser = subparsers.add_parser(
         "explain",
         help="Explain one project file using indexed context.",
@@ -864,6 +834,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_model_argument(explain_parser)
     _add_plain_argument(explain_parser)
 
+
+def _add_onboard_subparser(subparsers: argparse._SubParsersAction) -> None:
     onboard_parser = subparsers.add_parser(
         "onboard",
         help="Generate a newcomer reading order for the project.",
@@ -876,6 +848,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_model_argument(onboard_parser)
     _add_plain_argument(onboard_parser)
 
+
+def _add_impact_subparser(subparsers: argparse._SubParsersAction) -> None:
     impact_parser = subparsers.add_parser(
         "impact",
         help="Analyze likely impact of changing one file.",
@@ -892,6 +866,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_model_argument(impact_parser)
     _add_plain_argument(impact_parser)
 
+
+def _add_agent_subparser(subparsers: argparse._SubParsersAction) -> None:
     agent_parser = subparsers.add_parser(
         "agent",
         help="Run the stage-4 Agent workflow for a development-analysis task.",
@@ -951,6 +927,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_model_argument(agent_parser)
     _add_plain_argument(agent_parser)
 
+
+def _add_memory_subparser(subparsers: argparse._SubParsersAction) -> None:
     memory_parser = subparsers.add_parser(
         "memory",
         help="Manage project-local persistent memories.",
@@ -1014,6 +992,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_plain_argument(memory_parser)
 
+
+def _add_task_subparser(subparsers: argparse._SubParsersAction) -> None:
     task_parser = subparsers.add_parser(
         "task",
         help="Manage project-local Task DAG files.",
@@ -1061,8 +1041,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Task owner for create or claim.",
     )
     _add_plain_argument(task_parser)
-
-    return parser
 
 
 def _add_model_argument(parser: argparse.ArgumentParser) -> None:

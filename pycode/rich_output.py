@@ -4,8 +4,9 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from pycode.agent import AgentResult
+from pycode.agent.evidence import collect_agent_evidence
 from pycode.models import CodeGraph, GraphEdge, GraphNode, ProjectIndex
-from pycode.utils import dedupe_preserve_order
+from pycode.utils import count_by_type
 
 try:  # pragma: no cover - exercised when the optional dependency is absent.
     from rich import box
@@ -68,8 +69,8 @@ def print_graph_summary_rich(
     if not RICH_AVAILABLE:
         return False
     console = console or make_console()
-    node_counts = _count_by_type(graph.nodes)
-    edge_counts = _count_by_type(graph.edges)
+    node_counts = count_by_type(graph.nodes)
+    edge_counts = count_by_type(graph.edges)
     table = Table(title="PyCode Graph Completed", box=box.SIMPLE_HEAVY)
     table.add_column("Metric", style="cyan", no_wrap=True)
     table.add_column("Value", style="green")
@@ -175,7 +176,7 @@ def print_agent_result_rich(
     _print_trace(console, result)
     if show_context:
         _print_context(console, result)
-    _print_evidence(console, _agent_evidence(result))
+    _print_evidence(console, collect_agent_evidence(result))
     console.print(
         Panel(
             result.answer
@@ -379,53 +380,3 @@ def _print_evidence(console: Any, evidence: list[str]) -> None:
     for item in evidence or ["N/A"]:
         table.add_row(format_code_location(item))
     console.print(table)
-
-
-def _agent_evidence(result: AgentResult) -> list[str]:
-    evidence: list[str] = []
-    if result.memory is not None:
-        for item in result.memory.relevant_memories:
-            if item.path:
-                evidence.append(f".pclens/memory/{item.path}")
-        for item in result.memory.extracted_memories:
-            if item.path:
-                evidence.append(f".pclens/memory/{item.path}")
-    for tool_result in result.tool_results:
-        data = tool_result.data
-        for item in data.get("evidence", []):
-            evidence.append(str(item))
-        for item in data.get("files", []):
-            evidence.append(str(item))
-        if data.get("path"):
-            evidence.append(str(data["path"]))
-        for item in data.get("matches", []):
-            path = item.get("path")
-            line_number = item.get("line_number")
-            if path and line_number:
-                evidence.append(f"{path}:{line_number}")
-            elif path:
-                evidence.append(str(path))
-        for item in data.get("items", []):
-            path = item.get("path")
-            if path:
-                evidence.append(str(path))
-            evidence.extend(str(node_id) for node_id in item.get("node_ids", []))
-            evidence.extend(str(edge) for edge in item.get("edges", []))
-        for edge in data.get("edges", []):
-            source = edge.get("source")
-            edge_type = edge.get("type")
-            target = edge.get("target")
-            if source and edge_type and target:
-                evidence.append(f"{source} --{edge_type}--> {target}")
-        for node in data.get("nodes", []):
-            node_id = node.get("id")
-            if node_id:
-                evidence.append(str(node_id))
-    return dedupe_preserve_order(evidence)
-
-
-def _count_by_type(items: list[GraphNode] | list[GraphEdge]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for item in items:
-        counts[item.type] = counts.get(item.type, 0) + 1
-    return counts

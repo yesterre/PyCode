@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
+from pycode.agent._time_utils import format_timestamp, utc_now
 from pycode.agent.types import AgentTask, ToolCall
 from pycode.tools import ToolResult
 
@@ -13,14 +14,6 @@ from pycode.tools import ToolResult
 MAX_SUMMARY_CHARS = 500
 MAX_DATA_VALUE_CHARS = 200
 MAX_DATA_ITEMS = 8
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def format_timestamp(value: datetime) -> str:
-    return value.isoformat()
 
 
 @dataclass

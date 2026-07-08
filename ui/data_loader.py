@@ -6,13 +6,10 @@ from typing import Any
 
 from pycode.agent.memory import MemoryIndexEntry, MemoryStore
 from pycode.agent.task_dag import TaskDAGStore, TaskNode
+from pycode.constants import DEFAULT_ARTIFACT_DIR, DEFAULT_GRAPH_FILE, DEFAULT_INDEX_FILE
 from pycode.models import CodeGraph, GraphEdge, ProjectIndex
 from pycode.storage import load_graph, load_index
-
-
-DEFAULT_INDEX_DIR = ".pclens"
-DEFAULT_INDEX_FILE = "index.json"
-DEFAULT_GRAPH_FILE = "code_graph.json"
+from pycode.utils import count_by_type
 
 
 @dataclass
@@ -33,8 +30,8 @@ class ProjectUIData:
 
 def load_project_ui_data(project_path: str | Path) -> ProjectUIData:
     root = Path(project_path).expanduser()
-    index_path = root / DEFAULT_INDEX_DIR / DEFAULT_INDEX_FILE
-    graph_path = root / DEFAULT_INDEX_DIR / DEFAULT_GRAPH_FILE
+    index_path = root / DEFAULT_ARTIFACT_DIR / DEFAULT_INDEX_FILE
+    graph_path = root / DEFAULT_ARTIFACT_DIR / DEFAULT_GRAPH_FILE
     data = ProjectUIData(
         project_path=root,
         index_path=index_path,
@@ -163,21 +160,15 @@ def build_task_rows(tasks: list[TaskNode]) -> list[dict[str, Any]]:
 
 
 def graph_edge_type_counts(graph: CodeGraph | None) -> dict[str, int]:
-    counts: dict[str, int] = {}
     if graph is None:
-        return counts
-    for edge in graph.edges:
-        counts[edge.type] = counts.get(edge.type, 0) + 1
-    return counts
+        return {}
+    return count_by_type(graph.edges)
 
 
 def graph_node_type_counts(graph: CodeGraph | None) -> dict[str, int]:
-    counts: dict[str, int] = {}
     if graph is None:
-        return counts
-    for node in graph.nodes:
-        counts[node.type] = counts.get(node.type, 0) + 1
-    return counts
+        return {}
+    return count_by_type(graph.nodes)
 
 
 def _edge_row(edge: GraphEdge) -> dict[str, str]:

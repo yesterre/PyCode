@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from pycode.agent.memory import MemoryItem
 from pycode.agent.types import AgentStep, AgentTask
+from pycode.constants import DEFAULT_ARTIFACT_DIR, DEFAULT_GRAPH_FILE, DEFAULT_INDEX_FILE
 from pycode.llm_client import LLMClient
 from pycode.storage import load_graph, load_index
 from pycode.tools import ToolSpec
 from pycode.tools.base import validate_tool_arguments
+from pycode.utils import parse_json_array_response
 
 
 PLANNER_SOURCE_LLM = "llm"
@@ -124,7 +125,7 @@ def parse_llm_plan(
     task: AgentTask,
     tools: dict[str, ToolSpec],
 ) -> list[AgentStep]:
-    data = _loads_json_array(response)
+    data = parse_json_array_response(response)
     steps: list[AgentStep] = []
     for item in data:
         if not isinstance(item, dict):
@@ -159,21 +160,6 @@ def parse_llm_plan(
     return steps
 
 
-def _loads_json_array(response: str) -> list[Any]:
-    text = response.strip()
-    if not text:
-        raise ValueError("LLM planner response was empty.")
-    if not text.startswith("["):
-        match = re.search(r"\[[\s\S]*\]", text)
-        if not match:
-            raise ValueError("LLM planner response did not contain a JSON array.")
-        text = match.group(0)
-    data = json.loads(text)
-    if not isinstance(data, list):
-        raise ValueError("LLM planner JSON was not an array.")
-    return data
-
-
 def _planner_warnings(
     response: str,
     *,
@@ -182,7 +168,7 @@ def _planner_warnings(
 ) -> list[str]:
     warnings: list[str] = []
     try:
-        data = _loads_json_array(response)
+        data = parse_json_array_response(response)
     except ValueError:
         return warnings
     for item in data:
@@ -216,11 +202,11 @@ def _project_summary(task: AgentTask) -> dict[str, Any]:
         "index_loaded": False,
         "graph_loaded": False,
     }
-    index_path = project_path / ".pclens" / "index.json"
+    index_path = project_path / DEFAULT_ARTIFACT_DIR / DEFAULT_INDEX_FILE
     graph_path = (
         Path(task.graph_path)
         if task.graph_path is not None
-        else project_path / ".pclens" / "code_graph.json"
+        else project_path / DEFAULT_ARTIFACT_DIR / DEFAULT_GRAPH_FILE
     )
     try:
         index = load_index(index_path)

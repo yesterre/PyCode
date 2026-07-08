@@ -2,6 +2,7 @@ import fnmatch
 import re
 from pathlib import Path
 
+from pycode.constants import DEFAULT_ARTIFACT_DIR
 from pycode.tools.base import ToolContext, failure, success
 
 DEFAULT_EXCLUDED_DIRS = {
@@ -10,7 +11,7 @@ DEFAULT_EXCLUDED_DIRS = {
     "venv",
     "__pycache__",
     "node_modules",
-    ".pclens",
+    DEFAULT_ARTIFACT_DIR,
     ".pytest_tmp",
     ".pytest_cache",
 }

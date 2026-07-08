@@ -20,6 +20,11 @@ PyCode 是一个面向 Python 项目的代码库理解与改动影响分析 Agen
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+`requirements.txt` 会以可编辑模式安装当前项目，因此 CLI 和 Streamlit 页面都可以直接导入 `pycode` 包。
+
+```powershell
 .\.venv\Scripts\python.exe -m pycode.cli index .\examples\demo_project
 .\.venv\Scripts\python.exe -m pycode.cli graph .\examples\demo_project
 .\.venv\Scripts\python.exe -m pycode.cli query entry .\examples\demo_project
@@ -78,6 +83,8 @@ Agent 命令面向开发分析任务，不默认修改代码、不默认提交 g
 .\.venv\Scripts\python.exe -m pycode.cli task .\examples\demo_project list
 ```
 
+`examples/demo_project` 默认不携带 `.git` 目录，因此 `git_diff` / `changed_files` 在这个示例目录里通常不会产生真实 diff。需要展示这两个工具时，建议在真实 Git 仓库根目录运行 Agent，或复制示例项目后手动初始化 Git 并制造一处改动。
+
 ## 架构概览
 
 ```mermaid
@@ -100,6 +107,20 @@ flowchart LR
     Trace --> Rich
     Graph --> UI[Streamlit Demo]
     Trace --> UI
+```
+
+阶段五可观测链路可以单独理解为：
+
+```mermaid
+flowchart LR
+    Agent[Agent Runtime] --> Hook[Hook Lifecycle]
+    Hook --> Trace[Trace Events]
+    Agent --> Todo[Todo Progress]
+    Agent --> Memory[Project Memory]
+    Trace --> Context[Context Builder]
+    Todo --> Context
+    Memory --> Context
+    Context --> Prompt[Prompt / Answer]
 ```
 
 核心流程可以理解为：先把代码变成可查询的数据，再把数据变成有限上下文，最后让问答或 Agent 基于这些上下文工作。这样做的好处是边界清楚、证据可追溯，也能避免 LLM 自己无约束地读取整个仓库。
@@ -165,6 +186,8 @@ PyCode 从最小可行的代码扫描器开始，先完成 Python 文件扫描�
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests --basetemp=.pytest_tmp --cache-clear
 ```
+
+Windows 环境如果遇到 pytest 临时目录权限问题，继续优先使用项目内 `.pytest_tmp*` 目录，并换一个新的 `--basetemp` 名称重试。已有命令中如果显式带了 `--basetemp`，不需要再额外配置全局 pytest `addopts`。
 
 ## 当前局限
 

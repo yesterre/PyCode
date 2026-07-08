@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pycode.constants import DEFAULT_ARTIFACT_DIR, DEFAULT_GRAPH_FILE
 from pycode.query import (
     find_entry_candidates,
     get_file_imported_by,
@@ -20,7 +21,7 @@ def query_code_graph(
     graph_path: str | Path | None = None,
 ):
     """Query the stage-2 code graph through a stable tool wrapper."""
-    graph_file = graph_path or ".pclens/code_graph.json"
+    graph_file = graph_path or f"{DEFAULT_ARTIFACT_DIR}/{DEFAULT_GRAPH_FILE}"
     try:
         resolved_graph_path = context.resolve_in_project(graph_file)
     except PermissionError as exc:

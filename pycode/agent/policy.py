@@ -1,3 +1,4 @@
+from pycode.constants import DEFAULT_ARTIFACT_DIR
 from pycode.tools import ToolContext, ToolSpec, ToolResult
 from pycode.tools.base import failure
 
@@ -12,7 +13,7 @@ def authorize_tool_call(
         return None
     if spec.writes_internal_state:
         try:
-            context.resolve_in_project(".pclens")
+            context.resolve_in_project(DEFAULT_ARTIFACT_DIR)
         except PermissionError as exc:
             return failure(
                 tool_name,

@@ -1,13 +1,13 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from pycode.models import CodeGraph, GraphEdge, GraphNode, ProjectIndex
+from pycode.models import CodeGraph, FileInfo, GraphEdge, GraphNode, ProjectIndex
 from pycode.query import (
     find_entry_candidates,
     get_file_imported_by,
     get_file_imports,
 )
-from pycode.utils import dedupe_preserve_order, normalize_path
+from pycode.utils import dedupe_preserve_order, normalize_path, safe_read_text
 
 
 MAX_SNIPPET_LINES = 80
@@ -306,7 +306,7 @@ def _read_snippet(project_path: Path, relative_path: str) -> str:
     if not file_path.exists() or not file_path.is_file():
         return ""
 
-    lines = file_path.read_text(encoding="utf-8-sig").splitlines()
+    lines = safe_read_text(file_path).splitlines()
     return "\n".join(
         f"{line_number}: {line}"
         for line_number, line in enumerate(lines[:MAX_SNIPPET_LINES], start=1)
@@ -343,11 +343,11 @@ def _file_path_from_node_id(node_id: str) -> str | None:
     return node_id.removeprefix("file:")
 
 
-def _file_by_path(index: ProjectIndex):
+def _file_by_path(index: ProjectIndex) -> dict[str, FileInfo]:
     return {normalize_path(file_info.path): file_info for file_info in index.files}
 
 
-def _file_summary(file_info) -> str:
+def _file_summary(file_info: FileInfo) -> str:
     class_names = [class_info.name for class_info in file_info.classes]
     return (
         f"索引摘要：imports={len(file_info.imports)}, "

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from pycode.constants import DEFAULT_MEMORY_DIR
 from pycode.tools.base import ToolContext, ToolResult, failure, success
 
 if TYPE_CHECKING:
@@ -56,7 +57,7 @@ def memory(
             TOOL_NAME,
             f"Memory {item.name} created.",
             memory=item.to_dict(),
-            evidence=[f".pclens/memory/{item.path}"],
+            evidence=[f"{DEFAULT_MEMORY_DIR}/{item.path}"],
             storage_dir=_relative_storage_dir(),
         )
 
@@ -88,7 +89,7 @@ def memory(
             TOOL_NAME,
             f"Found {len(items)} matching memories.",
             memories=[item.to_dict() for item in items],
-            evidence=[f".pclens/memory/{item.path}" for item in items],
+            evidence=[f"{DEFAULT_MEMORY_DIR}/{item.path}" for item in items],
             storage_dir=_relative_storage_dir(),
         )
 
@@ -108,7 +109,7 @@ def memory(
             TOOL_NAME,
             f"Memory {item.name} loaded.",
             memory=item.to_dict(),
-            evidence=[f".pclens/memory/{item.path}"],
+            evidence=[f"{DEFAULT_MEMORY_DIR}/{item.path}"],
             storage_dir=_relative_storage_dir(),
         )
 
@@ -118,7 +119,7 @@ def memory(
             TOOL_NAME,
             f"Memory index rebuilt with {len(entries)} entries.",
             memories=[entry.to_dict() for entry in entries],
-            evidence=[".pclens/memory/MEMORY.md"],
+            evidence=[f"{DEFAULT_MEMORY_DIR}/MEMORY.md"],
             storage_dir=_relative_storage_dir(),
         )
 
@@ -133,12 +134,12 @@ def memory(
 def _store_from_context(context: ToolContext) -> MemoryStore:
     from pycode.agent.memory import MemoryStore
 
-    memory_dir = context.resolve_in_project(".pclens/memory")
+    memory_dir = context.resolve_in_project(DEFAULT_MEMORY_DIR)
     return MemoryStore(context.project_root, memory_dir=memory_dir)
 
 
 def _relative_storage_dir() -> str:
-    return ".pclens/memory"
+    return DEFAULT_MEMORY_DIR
 
 
 def _normalize_tags(value: list[str] | str | None) -> list[str]:

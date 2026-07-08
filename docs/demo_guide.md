@@ -8,6 +8,11 @@
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+`requirements.txt` 会以可编辑模式安装当前项目。启动 Web Demo 前也需要先执行这一步，避免 Streamlit 入口找不到 `pycode` 包。
+
+```powershell
 .\.venv\Scripts\python.exe -m pycode.cli index .\examples\demo_project
 .\.venv\Scripts\python.exe -m pycode.cli graph .\examples\demo_project
 .\.venv\Scripts\python.exe -m pycode.cli query entry .\examples\demo_project
