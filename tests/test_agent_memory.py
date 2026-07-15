@@ -16,18 +16,23 @@ def test_memory_store_adds_lists_loads_and_rebuilds_index(tmp_path: Path) -> Non
     store = MemoryStore(project_path)
 
     item = store.add_memory(
-        name="Project Entry",
+        memory_id="Project Entry",
         memory_type=MemoryType.PROJECT,
-        description="Project entry lives in main.py.",
+        title="Project Entry",
+        summary="Project entry lives in main.py.",
         body="Use `main.py` as the first file to inspect.",
         tags=["entry"],
+        confidence=0.9,
+        related_files=["main.py"],
     )
     entries = store.list_memories()
-    loaded = store.load_memory(item.name)
+    loaded = store.load_memory(item.id)
 
-    assert item.name == "project-entry"
-    assert entries[0].name == "project-entry"
+    assert item.id == "project-entry"
+    assert entries[0].id == "project-entry"
     assert entries[0].type == MemoryType.PROJECT
+    assert entries[0].confidence == 0.9
+    assert entries[0].related_files == ["main.py"]
     assert loaded.body == "Use `main.py` as the first file to inspect."
     assert (project_path / ".pclens" / "memory" / "project-entry.md").exists()
     index_text = (project_path / ".pclens" / "memory" / "MEMORY.md").read_text(
@@ -43,9 +48,10 @@ def test_memory_store_validates_memory_type(tmp_path: Path) -> None:
 
     try:
         store.add_memory(
-            name="bad",
-            memory_type="workflow",
-            description="bad",
+            memory_id="bad",
+            memory_type="legacy",
+            title="bad",
+            summary="bad",
             body="bad",
         )
     except ValueError as exc:
@@ -60,20 +66,22 @@ def test_memory_store_generates_unique_names(tmp_path: Path) -> None:
     store = MemoryStore(project_path)
 
     first = store.add_memory(
-        name="Test Command",
-        memory_type=MemoryType.REFERENCE,
-        description="pytest command",
+        memory_id="Test Command",
+        memory_type=MemoryType.WORKFLOW,
+        title="Test Command",
+        summary="pytest command",
         body="Run pytest.",
     )
     second = store.add_memory(
-        name="Test Command",
-        memory_type=MemoryType.REFERENCE,
-        description="pytest command 2",
+        memory_id="Test Command",
+        memory_type=MemoryType.WORKFLOW,
+        title="Test Command",
+        summary="pytest command 2",
         body="Run targeted pytest.",
     )
 
-    assert first.name == "test-command"
-    assert second.name == "test-command-2"
+    assert first.id == "test-command"
+    assert second.id == "test-command-2"
 
 
 def test_load_relevant_memories_uses_keyword_fallback_when_llm_fails(
@@ -83,9 +91,10 @@ def test_load_relevant_memories_uses_keyword_fallback_when_llm_fails(
     project_path.mkdir()
     store = MemoryStore(project_path)
     store.add_memory(
-        name="Project Entry",
+        memory_id="Project Entry",
         memory_type=MemoryType.PROJECT,
-        description="入口 main.py",
+        title="Project Entry",
+        summary="入口 main.py",
         body="入口文件是 main.py。",
     )
 
@@ -96,7 +105,7 @@ def test_load_relevant_memories_uses_keyword_fallback_when_llm_fails(
         llm_client=_FailingLLM(),
     )
 
-    assert [memory.name for memory in memories] == ["project-entry"]
+    assert [memory.id for memory in memories] == ["project-entry"]
     assert "Memory selection LLM failed: RuntimeError" in (error or "")
 
 
@@ -107,9 +116,10 @@ def test_load_relevant_memories_reports_parse_failure_and_uses_fallback(
     project_path.mkdir()
     store = MemoryStore(project_path)
     store.add_memory(
-        name="Project Entry",
+        memory_id="Project Entry",
         memory_type=MemoryType.PROJECT,
-        description="entry main.py",
+        title="Project Entry",
+        summary="entry main.py",
         body="Entry file is main.py.",
     )
 
@@ -120,7 +130,7 @@ def test_load_relevant_memories_reports_parse_failure_and_uses_fallback(
         llm_client=_BadJsonLLM(),
     )
 
-    assert [memory.name for memory in memories] == ["project-entry"]
+    assert [memory.id for memory in memories] == ["project-entry"]
     assert "Memory selection parse failed: ValueError" in (error or "")
 
 
@@ -147,7 +157,7 @@ def test_extract_memories_writes_new_items_and_skips_duplicates(tmp_path: Path) 
     )
 
     assert error is None
-    assert [item.type for item in created] == [MemoryType.FEEDBACK]
+    assert [item.type for item in created] == [MemoryType.PREFERENCE]
     assert created_again == []
     assert error_again is None
 
@@ -161,10 +171,11 @@ def test_memory_extraction_prompt_contains_four_types() -> None:
         entries=[],
     )
 
-    assert "user" in prompt
-    assert "feedback" in prompt
     assert "project" in prompt
-    assert "reference" in prompt
+    assert "workflow" in prompt
+    assert "analysis" in prompt
+    assert "preference" in prompt
+    assert "limitation" in prompt
 
 
 class _FailingLLM:
@@ -182,10 +193,13 @@ class _MemoryExtractionLLM:
         return """
         [
           {
-            "name": "no-auto-tests",
-            "type": "feedback",
-            "description": "Do not run tests automatically.",
+            "id": "no-auto-tests",
+            "type": "preference",
+            "title": "No Auto Tests",
+            "summary": "Do not run tests automatically.",
             "body": "The user prefers receiving test commands instead of automatic test execution.",
+            "confidence": 1.0,
+            "related_files": [],
             "tags": ["tests"]
           }
         ]

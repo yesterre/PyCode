@@ -16,11 +16,14 @@ def memory(
     context: ToolContext,
     *,
     operation: str,
-    name: str | None = None,
+    id: str | None = None,
     memory_type: str | None = None,
-    description: str = "",
+    title: str = "",
+    summary: str = "",
     body: str | None = None,
     tags: list[str] | str | None = None,
+    confidence: float = 1.0,
+    related_files: list[str] | str | None = None,
     query: str = "",
     limit: int = 5,
 ) -> ToolResult:
@@ -31,19 +34,22 @@ def memory(
         return failure(TOOL_NAME, "Memory storage denied.", str(exc))
 
     if operation == "add":
-        if not name:
-            return _missing(operation, "name")
+        if not id:
+            return _missing(operation, "id")
         if not memory_type:
             return _missing(operation, "memory_type")
         if body is None:
             return _missing(operation, "body")
         try:
             item = store.add_memory(
-                name=name,
+                memory_id=id,
                 memory_type=memory_type,
-                description=description,
+                title=title,
+                summary=summary,
                 body=body,
                 tags=_normalize_tags(tags),
+                confidence=confidence,
+                related_files=_normalize_list(related_files),
                 source="manual",
             )
         except (PermissionError, ValueError) as exc:
@@ -55,7 +61,7 @@ def memory(
             )
         return success(
             TOOL_NAME,
-            f"Memory {item.name} created.",
+            f"Memory {item.id} created.",
             memory=item.to_dict(),
             evidence=[f"{DEFAULT_MEMORY_DIR}/{item.path}"],
             storage_dir=_relative_storage_dir(),
@@ -94,10 +100,10 @@ def memory(
         )
 
     if operation == "load":
-        if not name:
-            return _missing(operation, "name")
+        if not id:
+            return _missing(operation, "id")
         try:
-            item = store.load_memory(name)
+            item = store.load_memory(id)
         except (FileNotFoundError, PermissionError, ValueError) as exc:
             return failure(
                 TOOL_NAME,
@@ -107,7 +113,7 @@ def memory(
             )
         return success(
             TOOL_NAME,
-            f"Memory {item.name} loaded.",
+            f"Memory {item.id} loaded.",
             memory=item.to_dict(),
             evidence=[f"{DEFAULT_MEMORY_DIR}/{item.path}"],
             storage_dir=_relative_storage_dir(),
@@ -143,6 +149,10 @@ def _relative_storage_dir() -> str:
 
 
 def _normalize_tags(value: list[str] | str | None) -> list[str]:
+    return _normalize_list(value)
+
+
+def _normalize_list(value: list[str] | str | None) -> list[str]:
     if value is None:
         return []
     if isinstance(value, str):

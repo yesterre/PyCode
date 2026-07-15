@@ -42,10 +42,13 @@ def test_load_project_ui_data_reads_artifacts_memory_and_tasks(tmp_path: Path) -
     save_index(index, project_path / ".pclens" / "index.json")
     save_graph(graph, project_path / ".pclens" / "code_graph.json")
     MemoryStore(project_path).add_memory(
-        name="Project Entry",
+        memory_id="Project Entry",
         memory_type="project",
-        description="Entry point",
+        title="Project Entry",
+        summary="Entry point",
         body="main.py is the entry point.",
+        confidence=0.9,
+        related_files=["main.py"],
     )
     TaskDAGStore(project_path).create_task(
         task_id="task_001",
@@ -63,8 +66,13 @@ def test_load_project_ui_data_reads_artifacts_memory_and_tasks(tmp_path: Path) -
     assert overview["tasks"] == 1
     assert build_file_tree_rows(data.index)[0]["path"] == "main.py"
     assert build_graph_edge_rows(data.graph)[0]["type"] == "imports"
-    assert build_memory_rows(data.memories)[0]["name"] == "project-entry"
-    assert build_task_rows(data.tasks)[0]["id"] == "task_001"
+    assert build_memory_rows(data.memories)[0]["id"] == "project-entry"
+    assert build_memory_rows(data.memories)[0]["confidence"] == 0.9
+    task_row = build_task_rows(data.tasks)[0]
+    assert task_row["id"] == "task_001"
+    assert task_row["schema_version"] == "1.0"
+    assert task_row["can_start"] is True
+    assert task_row["missing_dependencies"] == ""
 
 
 def test_load_project_ui_data_reports_missing_artifacts(tmp_path: Path) -> None:

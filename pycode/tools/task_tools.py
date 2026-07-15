@@ -21,6 +21,9 @@ def task_dag(
     description: str = "",
     owner: str | None = None,
     blocked_by: list[str] | str | None = None,
+    source: str = "manual",
+    run_id: str | None = None,
+    parent_run_id: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> ToolResult:
     """Manage project-local Task DAG files under .pclens/tasks."""
@@ -44,6 +47,9 @@ def task_dag(
                 description=description,
                 owner=owner,
                 blocked_by=_normalize_blocked_by(blocked_by),
+                source=source,
+                run_id=run_id,
+                parent_run_id=parent_run_id,
                 metadata=metadata,
             )
         except (FileExistsError, PermissionError, ValueError) as exc:

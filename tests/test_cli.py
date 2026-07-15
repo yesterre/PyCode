@@ -254,6 +254,51 @@ def test_build_parser_accepts_stage_four_agent_command() -> None:
     assert agent_args.plain is True
 
 
+def test_build_parser_accepts_v1_demo_commands_and_no_tests_boundary() -> None:
+    parser = build_parser()
+
+    query_args = parser.parse_args(["query", "entry", "demo_project"])
+    offline_agent_args = parser.parse_args(
+        [
+            "agent",
+            "demo_project",
+            "这个项目的入口在哪里？阅读顺序应该是怎样的？",
+            "--plan-only",
+            "--show-context",
+            "--rule-plan",
+            "--plain",
+        ]
+    )
+    no_tests_args = parser.parse_args(
+        [
+            "agent",
+            "demo_project",
+            "检查 services/user_service.py 的测试覆盖",
+            "--no-tests",
+            "--show-context",
+            "--rule-plan",
+        ]
+    )
+    run_tests_args = parser.parse_args(
+        [
+            "agent",
+            "demo_project",
+            "分析当前改动并运行相关测试",
+            "--run-tests",
+        ]
+    )
+
+    assert query_args.command == "query"
+    assert query_args.query_type == "entry"
+    assert offline_agent_args.plan_only is True
+    assert offline_agent_args.show_context is True
+    assert offline_agent_args.rule_plan is True
+    assert no_tests_args.no_tests is True
+    assert no_tests_args.run_tests is False
+    assert run_tests_args.run_tests is True
+    assert run_tests_args.no_tests is False
+
+
 def test_build_parser_accepts_stage_five_task_command() -> None:
     parser = build_parser()
 
@@ -270,6 +315,12 @@ def test_build_parser_accepts_stage_five_task_command() -> None:
             "task_000",
             "--owner",
             "codex",
+            "--source",
+            "manual",
+            "--run-id",
+            "run-1",
+            "--parent-run-id",
+            "parent-1",
         ]
     )
     claim_args = parser.parse_args(["task", "demo_project", "claim", "task_001"])
@@ -281,6 +332,9 @@ def test_build_parser_accepts_stage_five_task_command() -> None:
     assert create_args.title == "Build index"
     assert create_args.blocked_by == ["task_000"]
     assert create_args.owner == "codex"
+    assert create_args.source == "manual"
+    assert create_args.run_id == "run-1"
+    assert create_args.parent_run_id == "parent-1"
     assert claim_args.operation == "claim"
     assert claim_args.task_id == "task_001"
 
@@ -293,16 +347,22 @@ def test_build_parser_accepts_stage_five_memory_command() -> None:
             "memory",
             "demo_project",
             "add",
-            "--name",
+            "--id",
             "Project Entry",
             "--type",
             "project",
-            "--description",
+            "--title",
+            "Project Entry",
+            "--summary",
             "Entry point",
             "--content",
             "main.py is the entry point.",
             "--tag",
             "entry",
+            "--confidence",
+            "0.9",
+            "--related-file",
+            "main.py",
         ]
     )
     load_args = parser.parse_args(["memory", "demo_project", "load", "project-entry"])
@@ -310,10 +370,14 @@ def test_build_parser_accepts_stage_five_memory_command() -> None:
     assert add_args.command == "memory"
     assert add_args.project_path == Path("demo_project")
     assert add_args.operation == "add"
-    assert add_args.explicit_name == "Project Entry"
+    assert add_args.explicit_memory_id == "Project Entry"
     assert add_args.memory_type == "project"
+    assert add_args.title == "Project Entry"
+    assert add_args.summary == "Entry point"
     assert add_args.tags == ["entry"]
-    assert load_args.name == "project-entry"
+    assert add_args.confidence == 0.9
+    assert add_args.related_files == ["main.py"]
+    assert load_args.memory_id == "project-entry"
 
 
 def test_task_project_cli_functions_print_task_status(
@@ -359,20 +423,23 @@ def test_memory_project_cli_functions_print_memory_status(
     memory_project(
         project_path,
         "add",
-        name="Project Entry",
+        memory_id="Project Entry",
         memory_type="project",
-        description="Entry point",
+        title="Project Entry",
+        summary="Entry point",
         body="main.py is the entry point.",
         tags=["entry"],
+        confidence=0.9,
+        related_files=["main.py"],
     )
     memory_project(project_path, "list")
     memory_project(project_path, "search", query="entry")
-    memory_project(project_path, "load", name="project-entry")
+    memory_project(project_path, "load", memory_id="project-entry")
 
     captured = capsys.readouterr()
     assert "PyCode Memory created." in captured.out
     assert "PyCode Memory list." in captured.out
-    assert "- project-entry: project - Entry point" in captured.out
+    assert "- project-entry: project - Project Entry: Entry point" in captured.out
     assert "main.py is the entry point." in captured.out
 
 
@@ -501,7 +568,7 @@ def test_agent_project_answers_entry_and_onboard_question_through_runtime(
     assert result.answer == "entry and onboard answer"
     assert result.task.task_type == "onboard-question"
     assert [step.arguments["intent"] for step in result.steps] == ["entry", "onboard"]
-    assert "Runtime turns: 2" in captured.out
+    assert "Runtime turns: 3" in captured.out
     assert "Runtime:" in captured.out
     assert "Trace:" in captured.out
     assert "tools=2" in captured.out

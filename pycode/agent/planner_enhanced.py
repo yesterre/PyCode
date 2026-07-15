@@ -1,6 +1,13 @@
 import re
 
-from pycode.agent.types import AgentStep, AgentTask
+from pycode.agent.types import (
+    AgentAction,
+    AgentStep,
+    AgentTask,
+    AgentTurn,
+    ToolCall,
+)
+from pycode.tools.base import ToolResult
 from pycode.utils import dedupe_preserve_order, normalize_path
 
 
@@ -162,6 +169,39 @@ def plan_task(task: AgentTask) -> list[AgentStep]:
     return steps[: task.max_steps]
 
 
+def decide_next_action(
+    task: AgentTask,
+    steps: list[AgentStep],
+    turns: list[AgentTurn],
+    tool_results: list[ToolResult],
+    turn_index: int,
+) -> AgentAction:
+    """Choose the next runtime action from the current Agent state."""
+    failed_required = _first_failed_required_step(steps, tool_results)
+    if failed_required is not None:
+        return AgentAction.final(
+            reason=(
+                "A required tool step failed; stop tool execution and summarize "
+                "the evidence collected so far."
+            )
+        )
+
+    executed_tool_turns = [
+        turn for turn in turns if turn.tool_call is not None and turn.tool_result is not None
+    ]
+    next_step_index = len(executed_tool_turns)
+    if next_step_index >= len(steps):
+        return AgentAction.final(
+            reason="All planned tool steps have been observed; prepare the final answer."
+        )
+
+    step = steps[next_step_index]
+    return AgentAction.tool(
+        ToolCall.from_step(step),
+        reason=step.reason or f"Execute planned step {next_step_index + 1}.",
+    )
+
+
 def classify_task(description: str) -> str:
     text = description.lower()
     if _mentions_tests(text) and _contains_any(text, TEST_FAILURE_WORDS):
@@ -313,3 +353,13 @@ def _extract_search_keyword(description: str) -> str | None:
 
 def _contains_any(text: str, words: tuple[str, ...]) -> bool:
     return any(word in text for word in words)
+
+
+def _first_failed_required_step(
+    steps: list[AgentStep],
+    tool_results: list[ToolResult],
+) -> AgentStep | None:
+    for step, result in zip(steps, tool_results):
+        if step.required and not result.ok:
+            return step
+    return None

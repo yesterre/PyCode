@@ -49,6 +49,57 @@ class ToolCall:
         )
 
 
+class AgentActionType(StrEnum):
+    TOOL_CALL = "tool_call"
+    FINAL_ANSWER = "final_answer"
+    STOP_WITH_ERROR = "stop_with_error"
+    NO_OP = "no_op"
+
+
+@dataclass
+class AgentAction:
+    type: str
+    tool_call: ToolCall | None = None
+    reason: str = ""
+    answer: str | None = None
+    error: str | None = None
+    stop_reason: str | None = None
+
+    @classmethod
+    def tool(cls, tool_call: ToolCall, reason: str = "") -> "AgentAction":
+        return cls(
+            type=AgentActionType.TOOL_CALL,
+            tool_call=tool_call,
+            reason=reason or tool_call.reason,
+        )
+
+    @classmethod
+    def final(cls, reason: str = "", answer: str | None = None) -> "AgentAction":
+        return cls(
+            type=AgentActionType.FINAL_ANSWER,
+            reason=reason,
+            answer=answer,
+            stop_reason=AgentStopReason.FINAL,
+        )
+
+    @classmethod
+    def stop_error(cls, error: str, reason: str = "") -> "AgentAction":
+        return cls(
+            type=AgentActionType.STOP_WITH_ERROR,
+            reason=reason,
+            error=error,
+            stop_reason=AgentStopReason.ERROR,
+        )
+
+    @classmethod
+    def no_op(cls, reason: str = "") -> "AgentAction":
+        return cls(
+            type=AgentActionType.NO_OP,
+            reason=reason,
+            stop_reason=AgentStopReason.NO_ACTION,
+        )
+
+
 @dataclass
 class AgentMessage:
     role: str
@@ -62,6 +113,7 @@ class AgentStopReason(StrEnum):
     PLAN_ONLY = "plan_only"
     MAX_TURNS = "max_turns"
     ERROR = "error"
+    NO_ACTION = "no_action"
 
 
 @dataclass
@@ -76,10 +128,23 @@ class RuntimeConfig:
 
 
 @dataclass
+class AgentObservation:
+    turn_index: int
+    action_type: str
+    tool_result: ToolResult | None = None
+    summary: str = ""
+    ok: bool = True
+    error: str | None = None
+
+
+@dataclass
 class AgentTurn:
     index: int
-    tool_call: ToolCall
-    tool_result: ToolResult
+    tool_call: ToolCall | None = None
+    tool_result: ToolResult | None = None
+    action: AgentAction | None = None
+    observation: AgentObservation | None = None
+    status: str = "observed"
 
 
 @dataclass
@@ -91,6 +156,7 @@ class AgentResult:
     answer: str | None = None
     messages: list[AgentMessage] = field(default_factory=list)
     turns: list[AgentTurn] = field(default_factory=list)
+    observations: list[AgentObservation] = field(default_factory=list)
     stop_reason: str = AgentStopReason.FINAL
     trace: AgentTrace | None = None
     todos: list[TodoItem] = field(default_factory=list)

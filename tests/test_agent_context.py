@@ -31,11 +31,14 @@ def test_context_assembler_builds_sections_from_runtime_state() -> None:
         memory_index="- [project-entry](project-entry.md) - Entry point",
         relevant_memories=[
             MemoryItem(
-                name="project-entry",
+                id="project-entry",
                 type=MemoryType.PROJECT,
-                description="Entry point",
+                title="Project Entry",
+                summary="Entry point",
                 body="main.py is the entry point.",
                 path="project-entry.md",
+                confidence=0.9,
+                related_files=["main.py"],
             )
         ],
         todos=todos,
@@ -48,18 +51,21 @@ def test_context_assembler_builds_sections_from_runtime_state() -> None:
         "tools",
         "policy",
         "project",
-        "output_rules",
+        "response_contract",
+        "memory_index",
         "plan",
         "tool_results",
-        "retrieval_evidence",
+        "evidence",
         "todo",
         "tasks",
-        "memory_index",
-        "relevant_memories",
+        "memory",
     ]
     assert context.sections[0].placement == "system"
     assert context.sections[-1].placement == "user"
-    assert "main.py" in context.to_dict()["sections"][6]["content"]
+    assert "main.py" in context.to_dict()["sections"][7]["content"]
+    assert context.sections[0].included is True
+    assert context.sections[0].size_estimate > 0
+    assert context.skipped_sections
 
 
 def test_context_render_key_is_deterministic() -> None:

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from pycode.agent._time_utils import format_timestamp, utc_now
 from pycode.agent.types import AgentStep
 
 
@@ -32,6 +33,9 @@ class TodoItem:
     error: str | None = None
     step_index: int | None = None
     required: bool = True
+    source: str = "plan"
+    created_at: str = field(default_factory=lambda: format_timestamp(utc_now()))
+    updated_at: str = field(default_factory=lambda: format_timestamp(utc_now()))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -43,6 +47,9 @@ class TodoItem:
             "error": self.error,
             "step_index": self.step_index,
             "required": self.required,
+            "source": self.source,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
         }
 
 
@@ -126,6 +133,7 @@ class TodoManager:
             )
         item.status = TodoStatus.IN_PROGRESS
         item.error = None
+        self._touch(item)
         return item
 
     def complete(self, todo_id: str) -> TodoItem:
@@ -133,6 +141,7 @@ class TodoManager:
         self._ensure_valid_transition(item, TodoStatus.COMPLETED)
         item.status = TodoStatus.COMPLETED
         item.error = None
+        self._touch(item)
         return item
 
     def fail(self, todo_id: str, error: str | None = None) -> TodoItem:
@@ -140,6 +149,7 @@ class TodoManager:
         self._ensure_valid_transition(item, TodoStatus.FAILED)
         item.status = TodoStatus.FAILED
         item.error = error
+        self._touch(item)
         return item
 
     def set_status(
@@ -161,6 +171,7 @@ class TodoManager:
         self._ensure_valid_transition(item, TodoStatus.PENDING)
         item.status = TodoStatus.PENDING
         item.error = None
+        self._touch(item)
         return item
 
     def to_dict(self) -> list[dict[str, Any]]:
@@ -176,6 +187,10 @@ class TodoManager:
             raise ValueError(f"Completed todo cannot move to {next_status}: {item.id}")
         if next_status == TodoStatus.PENDING and item.status != TodoStatus.PENDING:
             raise ValueError(f"Todo cannot return to pending: {item.id}")
+
+    @staticmethod
+    def _touch(item: TodoItem) -> None:
+        item.updated_at = format_timestamp(utc_now())
 
 
 def _title_for_step(step: AgentStep, index: int) -> str:

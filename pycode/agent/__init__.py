@@ -15,12 +15,17 @@ from pycode.agent.memory import (
     MemoryType,
 )
 from pycode.agent.llm_planner import (
+    LLMNextActionResult,
     LLMPlannerResult,
     build_llm_planner_prompt,
+    build_llm_next_action_prompt,
+    parse_llm_next_action,
     parse_llm_plan,
+    plan_next_action_with_llm,
     plan_task_with_llm,
 )
 from pycode.agent.planner import classify_task, plan_task
+from pycode.agent.planner import decide_next_action
 from pycode.agent.prompts import (
     build_agent_summary_context,
     build_agent_summary_prompt,
@@ -31,7 +36,10 @@ from pycode.agent.task_dag import CanStartResult, TaskDAGStore, TaskNode, TaskSt
 from pycode.agent.todo import TodoItem, TodoList, TodoManager, TodoStatus
 from pycode.agent.trace import AgentTrace, ToolTrace, TraceEvent, TraceRecorder
 from pycode.agent.types import (
+    AgentAction,
+    AgentActionType,
     AgentMessage,
+    AgentObservation,
     AgentResult,
     AgentStep,
     AgentStopReason,
@@ -43,6 +51,9 @@ from pycode.agent.types import (
 
 __all__ = [
     "AgentMessage",
+    "AgentAction",
+    "AgentActionType",
+    "AgentObservation",
     "AgentResult",
     "AgentStep",
     "AgentStopReason",
@@ -53,6 +64,7 @@ __all__ = [
     "build_agent_summary_context",
     "CanStartResult",
     "classify_task",
+    "decide_next_action",
     "create_default_hook_registry",
     "ContextAssembler",
     "ContextSection",
@@ -68,10 +80,14 @@ __all__ = [
     "MemoryStore",
     "MemoryType",
     "LLMPlannerResult",
+    "LLMNextActionResult",
     "plan_task",
     "plan_task_with_llm",
+    "plan_next_action_with_llm",
     "build_llm_planner_prompt",
+    "build_llm_next_action_prompt",
     "parse_llm_plan",
+    "parse_llm_next_action",
     "RuntimeConfig",
     "AgentContext",
     "render_agent_prompt",

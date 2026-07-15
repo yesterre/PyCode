@@ -53,6 +53,11 @@ class ToolSpec:
     description: str = ""
     input_schema: dict[str, Any] = field(default_factory=dict)
     examples: list[dict[str, Any]] = field(default_factory=list)
+    requires_confirmation: bool = False
+    destructive: bool = False
+    allowed_in_plan_only: bool = True
+    category: str = "general"
+    output_summary_policy: str = "summary"
 
 
 def success(tool: str, summary: str, **data: Any) -> ToolResult:

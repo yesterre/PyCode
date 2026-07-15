@@ -4,7 +4,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from pycode.llm_client import LLMClient, OpenAIResponsesClient, load_llm_settings
+from pycode.llm_client import (
+    LLM_ERROR_AUTH_FAILED,
+    LLM_ERROR_MISSING_CONFIG,
+    LLM_ERROR_RATE_LIMITED,
+    LLM_ERROR_TIMEOUT,
+    LLM_ERROR_UNSUPPORTED_API_TYPE,
+    LLMClient,
+    LLMError,
+    OpenAIResponsesClient,
+    classify_llm_error,
+    load_llm_settings,
+)
 
 
 def test_openai_responses_client_requires_api_key(
@@ -17,8 +28,9 @@ def test_openai_responses_client_requires_api_key(
     monkeypatch.delenv("OPENAI_API_TYPE", raising=False)
     client = OpenAIResponsesClient(env_file=tmp_path / ".env")
 
-    with pytest.raises(RuntimeError, match="Missing OPENAI_API_KEY"):
+    with pytest.raises(LLMError, match="Missing OPENAI_API_KEY") as exc_info:
         client.generate("hello")
+    assert exc_info.value.category == LLM_ERROR_MISSING_CONFIG
 
 
 def test_llm_client_protocol_is_runtime_checkable() -> None:
@@ -37,8 +49,9 @@ def test_openai_responses_client_requires_model(
     env_path.write_text("OPENAI_API_KEY=env-file-key\n", encoding="utf-8")
     client = OpenAIResponsesClient(env_file=env_path)
 
-    with pytest.raises(RuntimeError, match="Missing OPENAI_MODEL"):
+    with pytest.raises(LLMError, match="Missing OPENAI_MODEL") as exc_info:
         client.generate("hello")
+    assert exc_info.value.category == LLM_ERROR_MISSING_CONFIG
 
 
 def test_load_llm_settings_reads_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -189,8 +202,15 @@ def test_openai_client_rejects_unknown_api_type(
     fake_openai = _FakeOpenAIModule()
     monkeypatch.setitem(sys.modules, "openai", fake_openai)
 
-    with pytest.raises(RuntimeError, match="Unsupported OPENAI_API_TYPE"):
+    with pytest.raises(LLMError, match="Unsupported OPENAI_API_TYPE") as exc_info:
         OpenAIResponsesClient(env_file=env_path).generate("hello")
+    assert exc_info.value.category == LLM_ERROR_UNSUPPORTED_API_TYPE
+
+
+def test_classify_llm_error_maps_common_openai_failures() -> None:
+    assert classify_llm_error(_StatusError(401, "bad key")) == LLM_ERROR_AUTH_FAILED
+    assert classify_llm_error(_StatusError(429, "too many")) == LLM_ERROR_RATE_LIMITED
+    assert classify_llm_error(TimeoutError("timed out")) == LLM_ERROR_TIMEOUT
 
 
 class _FakeOpenAIModule:
@@ -229,3 +249,9 @@ class _FakeOpenAIClient:
 class _RuntimeLLM:
     def generate(self, prompt: str) -> str:
         return prompt
+
+
+class _StatusError(Exception):
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code

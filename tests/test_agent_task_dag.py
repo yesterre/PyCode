@@ -22,7 +22,9 @@ def test_task_dag_creates_and_loads_task_files() -> None:
         loaded = store.get_task("task_001")
 
         assert created.id == "task_001"
+        assert created.schema_version == "1.0"
         assert loaded.title == "Build index"
+        assert loaded.schema_version == "1.0"
         assert (project_path / ".pclens" / "tasks" / "task_001.json").exists()
     finally:
         _cleanup(workspace)
@@ -172,6 +174,20 @@ def test_task_dag_blocks_storage_outside_project() -> None:
 
         with pytest.raises(PermissionError, match="outside the project"):
             TaskDAGStore(project_path, tasks_dir=outside)
+    finally:
+        _cleanup(workspace)
+
+
+def test_task_dag_rejects_dependency_cycles() -> None:
+    workspace = _workspace()
+    try:
+        project_path = workspace / "project"
+        project_path.mkdir()
+        store = TaskDAGStore(project_path)
+        store.create_task(task_id="task_001", title="First", blocked_by=["task_002"])
+
+        with pytest.raises(ValueError, match="cycle"):
+            store.create_task(task_id="task_002", title="Second", blocked_by=["task_001"])
     finally:
         _cleanup(workspace)
 

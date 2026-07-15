@@ -257,10 +257,15 @@ def _print_runtime(console: Any, result: AgentResult) -> None:
     table.add_column("Status", style="green")
     table.add_column("Summary")
     for turn in result.turns:
+        if turn.tool_result is None:
+            action_type = turn.action.type if turn.action is not None else "unknown"
+            table.add_row(str(turn.index), str(action_type), turn.status, "")
+            continue
+        tool_name = turn.tool_call.name if turn.tool_call is not None else turn.tool_result.tool
         status = "ok" if turn.tool_result.ok else "failed"
         table.add_row(
             str(turn.index),
-            turn.tool_call.name,
+            tool_name,
             status,
             turn.tool_result.summary,
         )
@@ -308,9 +313,17 @@ def _print_memory(console: Any, result: AgentResult) -> None:
     if result.memory.extraction_error:
         table.add_row("extraction_error", result.memory.extraction_error)
     for item in result.memory.relevant_memories:
-        table.add_row("relevant", f"{item.name} ({item.type}) - {item.description}")
+        table.add_row(
+            "relevant",
+            f"{item.id} ({item.type}, confidence={item.confidence}) - "
+            f"{item.title}: {item.summary}",
+        )
     for item in result.memory.extracted_memories:
-        table.add_row("extracted", f"{item.name} ({item.type}) - {item.description}")
+        table.add_row(
+            "extracted",
+            f"{item.id} ({item.type}, confidence={item.confidence}) - "
+            f"{item.title}: {item.summary}",
+        )
     console.print(table)
 
 
@@ -351,6 +364,32 @@ def _print_trace(console: Any, result: AgentResult) -> None:
             summary_text,
         )
     console.print(table)
+    planner_events = [
+        event
+        for event in trace.events
+        if event.event_type.startswith("LLMNextAction")
+        or event.event_type == "NextActionDecided"
+    ]
+    if planner_events:
+        event_table = Table(title="Planner Events", box=box.SIMPLE)
+        event_table.add_column("Event", style="cyan")
+        event_table.add_column("Status", style="green")
+        event_table.add_column("Planner", style="magenta")
+        event_table.add_column("Detail")
+        for event in planner_events:
+            data = event.data
+            detail = ""
+            if data.get("fallback_used"):
+                detail = "fallback=True"
+            if data.get("schema_error"):
+                detail = f"{detail} schema_error={data.get('schema_error')}".strip()
+            event_table.add_row(
+                event.event_type,
+                event.status or "N/A",
+                str(data.get("planner_source") or "N/A"),
+                detail,
+            )
+        console.print(event_table)
 
 
 def _print_context(console: Any, result: AgentResult) -> None:
@@ -361,15 +400,28 @@ def _print_context(console: Any, result: AgentResult) -> None:
     table.add_column("Name", style="cyan")
     table.add_column("Placement", style="green")
     table.add_column("Source", style="magenta")
-    table.add_column("Chars", justify="right")
+    table.add_column("Priority", justify="right")
+    table.add_column("Included")
+    table.add_column("Size", justify="right")
+    table.add_column("Reason")
     for section in context.sections:
         table.add_row(
             section.name,
             section.placement,
             section.source,
-            str(len(section.content)),
+            str(section.priority),
+            str(section.included),
+            str(section.size_estimate),
+            section.reason,
         )
     console.print(table)
+    if context.skipped_sections:
+        skipped = Table(title="Skipped Context Sections", box=box.SIMPLE)
+        skipped.add_column("Name", style="cyan")
+        skipped.add_column("Reason")
+        for section in context.skipped_sections:
+            skipped.add_row(section.name, section.reason)
+        console.print(skipped)
     if context.warnings:
         console.print(Panel("\n".join(context.warnings), title="Context Warnings"))
 

@@ -36,6 +36,8 @@ def identity_section() -> ContextSection:
         placement=PLACEMENT_SYSTEM,
         content="You are the PyCode project-understanding Agent.",
         metadata={"static": True},
+        priority=10,
+        reason="Core Agent identity.",
     )
 
 
@@ -51,6 +53,9 @@ def tools_section(tools: dict[str, "ToolSpec"]) -> ContextSection:
                 "optional": _schema_optional(spec.input_schema),
                 "read_only": spec.read_only,
                 "writes_internal_state": spec.writes_internal_state,
+                "requires_confirmation": spec.requires_confirmation,
+                "destructive": spec.destructive,
+                "category": spec.category,
             }
         )
     content = "Available tools:\n" + _format_data(rows or [])
@@ -61,6 +66,8 @@ def tools_section(tools: dict[str, "ToolSpec"]) -> ContextSection:
         placement=PLACEMENT_SYSTEM,
         content=content,
         metadata={"static": True, "count": len(rows)},
+        priority=20,
+        reason="Tool metadata comes from the active ToolSpec registry.",
     )
 
 
@@ -79,6 +86,8 @@ def policy_section() -> ContextSection:
             ]
         ),
         metadata={"static": True},
+        priority=30,
+        reason="Policy rules constrain all tool calls and state usage.",
     )
 
 
@@ -98,18 +107,26 @@ def project_section(task: "AgentTask") -> ContextSection:
             ]
         ),
         metadata={"static": True},
+        priority=40,
+        reason="Project and user task identify the current run.",
     )
 
 
-def output_rules_section() -> ContextSection:
+def response_contract_section() -> ContextSection:
     return ContextSection(
-        name="output_rules",
-        title="Output Rules",
+        name="response_contract",
+        title="Response Contract",
         source="pycode.agent.prompt_sections.AGENT_SUMMARY_RULES",
         placement=PLACEMENT_SYSTEM,
         content=AGENT_SUMMARY_RULES,
         metadata={"static": True},
+        priority=50,
+        reason="Answer rules define the final response contract.",
     )
+
+
+def output_rules_section() -> ContextSection:
+    return response_contract_section()
 
 
 def plan_section(steps: list["AgentStep"]) -> ContextSection | None:
@@ -130,6 +147,8 @@ def plan_section(steps: list["AgentStep"]) -> ContextSection | None:
         placement=PLACEMENT_USER,
         content="\n".join(lines),
         metadata={"static": False, "steps": len(steps)},
+        priority=100,
+        reason="Initial plan is included as planned work, not as observed fact.",
     )
 
 
@@ -164,21 +183,29 @@ def tool_results_section(
             ["The following evidence came from Agent tool calls:", *blocks]
         ),
         metadata={"static": False, "results": len(tool_results)},
+        priority=200,
+        reason="Tool result summaries are observed runtime evidence.",
     )
 
 
-def retrieval_evidence_section(tool_results: list["ToolResult"]) -> ContextSection | None:
+def evidence_section(tool_results: list["ToolResult"]) -> ContextSection | None:
     evidence = _extract_evidence(tool_results)
     if not evidence:
         return None
     return ContextSection(
-        name="retrieval_evidence",
-        title="Retrieval Evidence",
+        name="evidence",
+        title="Evidence",
         source="tool_results.data",
         placement=PLACEMENT_USER,
         content="\n".join(f"- {item}" for item in evidence),
         metadata={"static": False, "items": len(evidence)},
+        priority=210,
+        reason="Evidence refs were extracted from tool result data.",
     )
+
+
+def retrieval_evidence_section(tool_results: list["ToolResult"]) -> ContextSection | None:
+    return evidence_section(tool_results)
 
 
 def trace_section(trace: "AgentTrace | None") -> ContextSection | None:
@@ -215,6 +242,8 @@ def trace_section(trace: "AgentTrace | None") -> ContextSection | None:
         placement=PLACEMENT_USER,
         content=content,
         metadata={"static": False, **summary},
+        priority=300,
+        reason="Trace summarizes what happened during this Agent run.",
     )
 
 
@@ -245,6 +274,8 @@ def todo_section(todos: list["TodoItem"]) -> ContextSection | None:
         placement=PLACEMENT_USER,
         content="\n".join(lines),
         metadata={"static": False, "total": len(todos), **counts},
+        priority=250,
+        reason="Todo state reflects current run progress.",
     )
 
 
@@ -256,9 +287,11 @@ def tasks_section(tasks: list["TaskNode"]) -> ContextSection | None:
     for task in tasks:
         counts[task.status] = counts.get(task.status, 0) + 1
         blocked_by = ", ".join(task.blocked_by) if task.blocked_by else "N/A"
+        missing = ", ".join(task.metadata.get("missing_dependencies", [])) or "N/A"
         lines.append(
             f"- {task.id}: {task.status} | title={task.title} | "
-            f"owner={task.owner or 'N/A'} | blocked_by={blocked_by}"
+            f"owner={task.owner or 'N/A'} | blocked_by={blocked_by} | "
+            f"missing={missing}"
         )
     return ContextSection(
         name="tasks",
@@ -267,6 +300,8 @@ def tasks_section(tasks: list["TaskNode"]) -> ContextSection | None:
         placement=PLACEMENT_USER,
         content="\n".join(lines),
         metadata={"static": False, "total": len(tasks), "counts": counts},
+        priority=260,
+        reason="Task DAG state reflects cross-session work.",
     )
 
 
@@ -280,6 +315,8 @@ def memory_index_section(memory_index: str) -> ContextSection | None:
         placement=PLACEMENT_SYSTEM,
         content="\n".join(["Project memory index:", memory_index]),
         metadata={"static": False},
+        priority=60,
+        reason="Memory index gives a compact project knowledge catalog.",
     )
 
 
@@ -290,12 +327,14 @@ def relevant_memories_section(
     if not formatted:
         return None
     return ContextSection(
-        name="relevant_memories",
-        title="Relevant Memories",
+        name="memory",
+        title="Memory",
         source=".pclens/memory/*.md",
         placement=PLACEMENT_USER,
         content="\n".join(["Relevant project memories:", formatted]),
         metadata={"static": False, "count": len(relevant_memories)},
+        priority=270,
+        reason="Relevant memory bodies are selected for this task.",
     )
 
 

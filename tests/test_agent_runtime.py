@@ -7,7 +7,7 @@ from pycode.agent import (
     run_agent_runtime,
 )
 from pycode.agent.memory import MemoryStore
-from pycode.agent.types import AgentStopReason, ToolCall
+from pycode.agent.types import AgentActionType, AgentStopReason, ToolCall
 from pycode.tools import ToolContext, ToolSpec
 from pycode.tools.base import failure, success
 
@@ -34,6 +34,11 @@ def test_runtime_executes_one_tool_per_turn_and_records_messages() -> None:
     assert calls[0]["intent"] == "entry"
     assert [message.role for message in result.messages] == ["user", "assistant", "tool"]
     assert result.tool_results[0].data["evidence"] == ["main.py"]
+    assert result.turns[0].action is not None
+    assert result.turns[0].action.type == AgentActionType.TOOL_CALL
+    assert result.turns[0].observation is not None
+    assert result.turns[0].observation.summary == "Selected context."
+    assert result.observations[0].tool_result == result.tool_results[0]
     assert result.trace is not None
     assert result.trace.tools[0].tool == "retrieve_context"
     assert result.trace.tools[0].status == "ok"
@@ -42,6 +47,15 @@ def test_runtime_executes_one_tool_per_turn_and_records_messages() -> None:
     ]
     assert result.steps[0].todo_id == "todo-1"
     assert "TodoStatusChanged" in [
+        event.event_type for event in result.trace.events
+    ]
+    assert "NextActionDecided" in [
+        event.event_type for event in result.trace.events
+    ]
+    assert "ContextAssembled" in [
+        event.event_type for event in result.trace.events
+    ]
+    assert "ObservationRecorded" in [
         event.event_type for event in result.trace.events
     ]
 
@@ -64,6 +78,7 @@ def test_runtime_plan_only_skips_tools_and_llm() -> None:
     assert result.stop_reason == AgentStopReason.PLAN_ONLY
     assert result.tool_results == []
     assert result.turns == []
+    assert result.observations == []
     assert [step.tool for step in result.steps] == ["retrieve_context"]
     assert result.trace is not None
     assert result.trace.tools == []
@@ -133,6 +148,7 @@ def test_runtime_marks_todo_failed_when_policy_denies_tool() -> None:
 
     assert result.tool_results[-1].ok is False
     assert result.tool_results[-1].data["denied_by"] == "policy"
+    assert result.observations[-1].tool_result == result.tool_results[-1]
     assert result.todos[-1].status == "failed"
 
 
@@ -157,10 +173,13 @@ def test_runtime_injects_relevant_memories_and_extracts_after_answer(
     project_path.mkdir()
     store = MemoryStore(project_path)
     store.add_memory(
-        name="Project Entry",
+        memory_id="Project Entry",
         memory_type="project",
-        description="入口 main.py",
+        title="Project Entry",
+        summary="入口 main.py",
         body="入口文件是 main.py。",
+        confidence=0.9,
+        related_files=["main.py"],
     )
 
     def retrieve_context(context: ToolContext, **kwargs):
@@ -176,11 +195,11 @@ def test_runtime_injects_relevant_memories_and_extracts_after_answer(
 
     assert result.answer == "final answer"
     assert result.memory is not None
-    assert [item.name for item in result.memory.relevant_memories] == ["project-entry"]
-    assert [item.name for item in result.memory.extracted_memories] == ["no-auto-tests"]
+    assert [item.id for item in result.memory.relevant_memories] == ["project-entry"]
+    assert [item.id for item in result.memory.extracted_memories] == ["no-auto-tests"]
     assert result.context is not None
     assert "memory_index" in result.context.section_names()
-    assert "relevant_memories" in result.context.section_names()
+    assert "memory" in result.context.section_names()
     assert "Project memory index:" in llm.prompts[2]
     assert "<relevant_memories>" in llm.prompts[2]
     assert (project_path / ".pclens" / "memory" / "no-auto-tests.md").exists()
@@ -205,6 +224,131 @@ def test_runtime_no_memory_extract_skips_automatic_write(tmp_path: Path) -> None
     assert not (project_path / ".pclens" / "memory" / "no-auto-tests.md").exists()
 
 
+def test_runtime_uses_llm_next_action_tool_then_final_answer() -> None:
+    def retrieve_context(context: ToolContext, **kwargs):
+        return success("retrieve_context", "Selected context.", evidence=["main.py"])
+
+    llm = _SequenceLLM(
+        [
+            "not an initial JSON plan",
+            """
+            {
+              "action_type": "tool_call",
+              "tool_name": "retrieve_context",
+              "arguments": {"intent": "general"},
+              "reason": "Need current evidence."
+            }
+            """,
+            """
+            {
+              "action_type": "final_answer",
+              "reason": "Evidence is sufficient.",
+              "final_answer": "入口在 main.py。"
+            }
+            """,
+        ]
+    )
+
+    result = run_agent_runtime(
+        AgentTask("入口在哪里？", Path(".")),
+        RuntimeConfig(max_turns=3, enable_memory=False),
+        tools={"retrieve_context": ToolSpec("retrieve_context", retrieve_context, True)},
+        llm_client=llm,
+    )
+
+    assert result.answer == "入口在 main.py。"
+    assert [turn.status for turn in result.turns] == ["observed", "final"]
+    assert result.tool_results[0].summary == "Selected context."
+    assert result.planner_source == "llm"
+    assert result.trace is not None
+    event_types = [event.event_type for event in result.trace.events]
+    assert "LLMNextActionStarted" in event_types
+    assert "LLMNextActionFinished" in event_types
+
+
+def test_runtime_llm_final_answer_can_stop_before_tools() -> None:
+    llm = _SequenceLLM(
+        [
+            "not an initial JSON plan",
+            """
+            {
+              "action_type": "final_answer",
+              "reason": "The context is already enough.",
+              "final_answer": "可以直接回答。"
+            }
+            """,
+        ]
+    )
+
+    result = run_agent_runtime(
+        AgentTask("入口在哪里？", Path(".")),
+        RuntimeConfig(max_turns=3, enable_memory=False),
+        tools={"retrieve_context": ToolSpec("retrieve_context", _raising_tool, True)},
+        llm_client=llm,
+    )
+
+    assert result.answer == "可以直接回答。"
+    assert result.tool_results == []
+    assert result.turns[-1].action is not None
+    assert result.turns[-1].action.type == AgentActionType.FINAL_ANSWER
+
+
+def test_runtime_llm_stop_with_error_stops_run() -> None:
+    llm = _SequenceLLM(
+        [
+            "not an initial JSON plan",
+            """
+            {
+              "action_type": "stop_with_error",
+              "reason": "No safe evidence path.",
+              "error": "No registered evidence tool can answer this."
+            }
+            """,
+        ]
+    )
+
+    result = run_agent_runtime(
+        AgentTask("入口在哪里？", Path(".")),
+        RuntimeConfig(max_turns=3, enable_memory=False),
+        tools={},
+        llm_client=llm,
+    )
+
+    assert result.stop_reason == AgentStopReason.ERROR
+    assert result.planner_error == "No registered evidence tool can answer this."
+    assert result.tool_results == []
+    assert result.turns[-1].status == "failed"
+
+
+def test_runtime_falls_back_when_llm_next_action_schema_is_invalid() -> None:
+    def retrieve_context(context: ToolContext, **kwargs):
+        return success("retrieve_context", "Selected context.")
+
+    llm = _SequenceLLM(
+        [
+            "not an initial JSON plan",
+            "not a next action",
+            "still not a next action",
+            "summary answer",
+        ]
+    )
+
+    result = run_agent_runtime(
+        AgentTask("入口在哪里？", Path(".")),
+        RuntimeConfig(max_turns=3, enable_memory=False),
+        tools={"retrieve_context": ToolSpec("retrieve_context", retrieve_context, True)},
+        llm_client=llm,
+    )
+
+    assert result.answer == "summary answer"
+    assert result.planner_source == "fallback"
+    assert result.planner_error is not None
+    assert result.trace is not None
+    event_types = [event.event_type for event in result.trace.events]
+    assert "LLMNextActionSchemaFailed" in event_types
+    assert "LLMNextActionFallback" in event_types
+
+
 class _MockLLM:
     def __init__(self, answer: str) -> None:
         self.answer = answer
@@ -227,12 +371,31 @@ class _MemoryAwareLLM:
             return """
             [
               {
-                "name": "no-auto-tests",
-                "type": "feedback",
-                "description": "Do not run tests automatically.",
+                "id": "no-auto-tests",
+                "type": "preference",
+                "title": "No Auto Tests",
+                "summary": "Do not run tests automatically.",
                 "body": "The user wants test commands instead of automatic test execution.",
+                "confidence": 1.0,
+                "related_files": [],
                 "tags": ["tests"]
               }
             ]
             """
         return "final answer"
+
+
+class _SequenceLLM:
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = list(responses)
+        self.prompts: list[str] = []
+
+    def generate(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        if self.responses:
+            return self.responses.pop(0)
+        return "[]"
+
+
+def _raising_tool(context: ToolContext, **kwargs):
+    raise AssertionError("tool should not run")

@@ -13,6 +13,7 @@ from pycode.utils import ensure_directory
 
 TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 GENERATED_TASK_ID_PATTERN = re.compile(r"^task_(\d+)$")
+TASK_SCHEMA_VERSION = "1.0"
 
 
 class TaskStatus(StrEnum):
@@ -32,10 +33,14 @@ TaskStatus.ALL = {
 class TaskNode:
     id: str
     title: str
+    schema_version: str = TASK_SCHEMA_VERSION
     description: str = ""
     status: str = TaskStatus.PENDING
     owner: str | None = None
     blocked_by: list[str] = field(default_factory=list)
+    source: str = "manual"
+    run_id: str | None = None
+    parent_run_id: str | None = None
     created_at: str = field(default_factory=lambda: format_timestamp(utc_now()))
     updated_at: str = field(default_factory=lambda: format_timestamp(utc_now()))
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -43,11 +48,15 @@ class TaskNode:
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
+            "schema_version": self.schema_version,
             "title": self.title,
             "description": self.description,
             "status": self.status,
             "owner": self.owner,
             "blocked_by": list(self.blocked_by),
+            "source": self.source,
+            "run_id": self.run_id,
+            "parent_run_id": self.parent_run_id,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "metadata": dict(self.metadata),
@@ -60,11 +69,15 @@ class TaskNode:
             raise ValueError(f"Unsupported task status: {status}")
         return cls(
             id=str(data["id"]),
+            schema_version=str(data.get("schema_version") or TASK_SCHEMA_VERSION),
             title=str(data.get("title", "")),
             description=str(data.get("description", "")),
             status=status,
             owner=data.get("owner"),
             blocked_by=[str(item) for item in data.get("blocked_by", [])],
+            source=str(data.get("source") or "manual"),
+            run_id=data.get("run_id"),
+            parent_run_id=data.get("parent_run_id"),
             created_at=str(data.get("created_at") or format_timestamp(utc_now())),
             updated_at=str(data.get("updated_at") or format_timestamp(utc_now())),
             metadata=dict(data.get("metadata", {})),
@@ -110,6 +123,9 @@ class TaskDAGStore:
         task_id: str | None = None,
         owner: str | None = None,
         blocked_by: list[str] | None = None,
+        source: str = "manual",
+        run_id: str | None = None,
+        parent_run_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> TaskNode:
         if not title:
@@ -119,14 +135,21 @@ class TaskDAGStore:
         task_path = self._task_path(actual_id)
         if task_path.exists():
             raise FileExistsError(f"Task already exists: {actual_id}")
+        dependencies = [str(item) for item in blocked_by or []]
+        for dependency_id in dependencies:
+            self._validate_task_id(dependency_id)
         node = TaskNode(
             id=actual_id,
             title=title,
             description=description,
             owner=owner,
-            blocked_by=[str(item) for item in blocked_by or []],
+            blocked_by=dependencies,
+            source=source,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
             metadata=dict(metadata or {}),
         )
+        self._validate_no_cycle(node)
         self._save_task(node)
         return node
 
@@ -180,6 +203,7 @@ class TaskDAGStore:
             )
         task.status = TaskStatus.IN_PROGRESS
         task.owner = owner if owner is not None else task.owner
+        self._annotate_can_start(task)
         self._touch(task)
         self._save_task(task)
         return task
@@ -191,6 +215,7 @@ class TaskDAGStore:
         if task.status != TaskStatus.IN_PROGRESS:
             raise ValueError(f"Task must be in progress before completion: {task_id}")
         task.status = TaskStatus.COMPLETED
+        self._annotate_can_start(task)
         self._touch(task)
         self._save_task(task)
         ready_tasks = [
@@ -221,6 +246,7 @@ class TaskDAGStore:
         self._validate_task_id(task.id)
         if task.status not in TaskStatus.ALL:
             raise ValueError(f"Unsupported task status: {task.status}")
+        self._validate_no_cycle(task)
         ensure_directory(self.tasks_dir)
         self._task_path(task.id).write_text(
             json.dumps(task.to_dict(), ensure_ascii=False, indent=2),
@@ -255,3 +281,33 @@ class TaskDAGStore:
     @staticmethod
     def _touch(task: TaskNode) -> None:
         task.updated_at = format_timestamp(utc_now())
+
+    def _annotate_can_start(self, task: TaskNode) -> None:
+        result = self.can_start(task)
+        task.metadata["can_start"] = result.can_start
+        task.metadata["active_blocks"] = list(result.blocked_by)
+        task.metadata["missing_dependencies"] = list(result.missing_dependencies)
+
+    def _validate_no_cycle(self, candidate: TaskNode) -> None:
+        graph = {
+            task.id: list(task.blocked_by)
+            for task in self.list_tasks()
+            if task.id != candidate.id
+        }
+        graph[candidate.id] = list(candidate.blocked_by)
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(task_id: str) -> None:
+            if task_id in visiting:
+                raise ValueError(f"Task dependency cycle detected at: {task_id}")
+            if task_id in visited:
+                return
+            visiting.add(task_id)
+            for dependency_id in graph.get(task_id, []):
+                if dependency_id in graph:
+                    visit(dependency_id)
+            visiting.remove(task_id)
+            visited.add(task_id)
+
+        visit(candidate.id)

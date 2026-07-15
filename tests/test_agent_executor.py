@@ -105,6 +105,19 @@ def test_execute_plan_records_unknown_tool() -> None:
     assert results[0].summary == "Unknown tool."
 
 
+def test_tool_spec_exposes_v1a_registry_metadata_defaults() -> None:
+    def demo_tool(context: ToolContext):
+        return success("demo", "ok")
+
+    spec = ToolSpec("demo", demo_tool)
+
+    assert spec.requires_confirmation is False
+    assert spec.destructive is False
+    assert spec.allowed_in_plan_only is True
+    assert spec.category == "general"
+    assert spec.output_summary_policy == "summary"
+
+
 def test_run_agent_task_builds_prompt_and_calls_optional_llm() -> None:
     def changed_files(context: ToolContext):
         return success("changed_files", "Found 1 changed files.", files=["main.py"])

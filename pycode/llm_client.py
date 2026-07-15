@@ -11,6 +11,41 @@ MODEL_ENV = "OPENAI_MODEL"
 API_TYPE_ENV = "OPENAI_API_TYPE"
 API_TYPE_RESPONSES = "responses"
 API_TYPE_CHAT = "chat"
+LLM_ERROR_MISSING_CONFIG = "missing_config"
+LLM_ERROR_UNSUPPORTED_API_TYPE = "unsupported_api_type"
+LLM_ERROR_DEPENDENCY_MISSING = "dependency_missing"
+LLM_ERROR_AUTH_FAILED = "auth_failed"
+LLM_ERROR_RATE_LIMITED = "rate_limited"
+LLM_ERROR_TIMEOUT = "timeout"
+LLM_ERROR_INVALID_RESPONSE = "invalid_response"
+LLM_ERROR_UNKNOWN = "unknown"
+
+
+class LLMError(RuntimeError):
+    def __init__(self, message: str, *, category: str = LLM_ERROR_UNKNOWN) -> None:
+        super().__init__(message)
+        self.category = category
+
+
+def classify_llm_error(exc: BaseException) -> str:
+    category = getattr(exc, "category", None)
+    if isinstance(category, str) and category:
+        return category
+
+    status_code = getattr(exc, "status_code", None)
+    name = type(exc).__name__.lower()
+    message = str(exc).lower()
+    combined = f"{name} {message}"
+
+    if status_code in {401, 403} or "auth" in combined or "unauthorized" in combined:
+        return LLM_ERROR_AUTH_FAILED
+    if status_code == 429 or "rate" in combined or "quota" in combined:
+        return LLM_ERROR_RATE_LIMITED
+    if "timeout" in combined or "timed out" in combined:
+        return LLM_ERROR_TIMEOUT
+    if "invalid response" in combined:
+        return LLM_ERROR_INVALID_RESPONSE
+    return LLM_ERROR_UNKNOWN
 
 
 @runtime_checkable
@@ -32,14 +67,16 @@ class OpenAIResponsesClient:
         settings = load_llm_settings(self.env_file)
         api_key = _setting(settings, self.api_key_env)
         if not api_key:
-            raise RuntimeError(
-                f"Missing {self.api_key_env}. Set it in your shell or .env before running PyCode LLM commands."
+            raise LLMError(
+                f"Missing {self.api_key_env}. Set it in your shell or .env before running PyCode LLM commands.",
+                category=LLM_ERROR_MISSING_CONFIG,
             )
         model = _explicit_model(self.model) or _setting(settings, self.model_env)
         if not model:
-            raise RuntimeError(
+            raise LLMError(
                 f"Missing {self.model_env}. Set it in your shell or .env, "
-                "or pass --model before running PyCode LLM commands."
+                "or pass --model before running PyCode LLM commands.",
+                category=LLM_ERROR_MISSING_CONFIG,
             )
         base_url = _setting(settings, self.base_url_env)
         api_type = (_setting(settings, self.api_type_env) or API_TYPE_RESPONSES).lower()
@@ -47,8 +84,9 @@ class OpenAIResponsesClient:
         try:
             from openai import OpenAI
         except ImportError as exc:
-            raise RuntimeError(
-                "Missing dependency 'openai'. Install project requirements first."
+            raise LLMError(
+                "Missing dependency 'openai'. Install project requirements first.",
+                category=LLM_ERROR_DEPENDENCY_MISSING,
             ) from exc
 
         client_kwargs = {"api_key": api_key}
@@ -56,26 +94,32 @@ class OpenAIResponsesClient:
             client_kwargs["base_url"] = base_url
         client = OpenAI(**client_kwargs)
 
-        if api_type == API_TYPE_CHAT:
-            response = client.chat.completions.create(
+        try:
+            if api_type == API_TYPE_CHAT:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                return response.choices[0].message.content or ""
+
+            if api_type != API_TYPE_RESPONSES:
+                raise LLMError(
+                    f"Unsupported {self.api_type_env}: {api_type}. Use 'responses' or 'chat'.",
+                    category=LLM_ERROR_UNSUPPORTED_API_TYPE,
+                )
+
+            response = client.responses.create(
                 model=model,
-                messages=[{"role": "user", "content": prompt}],
+                input=prompt,
             )
-            return response.choices[0].message.content or ""
-
-        if api_type != API_TYPE_RESPONSES:
-            raise RuntimeError(
-                f"Unsupported {self.api_type_env}: {api_type}. Use 'responses' or 'chat'."
-            )
-
-        response = client.responses.create(
-            model=model,
-            input=prompt,
-        )
-        output_text = getattr(response, "output_text", None)
-        if output_text:
-            return str(output_text)
-        return str(response)
+            output_text = getattr(response, "output_text", None)
+            if output_text:
+                return str(output_text)
+            return str(response)
+        except LLMError:
+            raise
+        except Exception as exc:
+            raise LLMError(str(exc), category=classify_llm_error(exc)) from exc
 
 
 def load_llm_settings(env_file: Path | None = None) -> dict[str, str]:

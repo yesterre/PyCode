@@ -67,7 +67,15 @@ def load_project_ui_data(project_path: str | Path) -> ProjectUIData:
         data.errors.append(f"Failed to load memories: {type(exc).__name__}: {exc}")
 
     try:
-        data.tasks = TaskDAGStore(root).list_tasks()
+        task_store = TaskDAGStore(root)
+        data.tasks = task_store.list_tasks()
+        for task in data.tasks:
+            can_start = task_store.can_start(task)
+            task.metadata["can_start"] = can_start.can_start
+            task.metadata["active_blocks"] = list(can_start.blocked_by)
+            task.metadata["missing_dependencies"] = list(
+                can_start.missing_dependencies
+            )
     except (OSError, PermissionError, ValueError) as exc:
         data.errors.append(f"Failed to load tasks: {type(exc).__name__}: {exc}")
 
@@ -135,9 +143,12 @@ def build_graph_edge_rows(graph: CodeGraph | None) -> list[dict[str, Any]]:
 def build_memory_rows(memories: list[MemoryIndexEntry]) -> list[dict[str, Any]]:
     return [
         {
-            "name": memory.name,
+            "id": memory.id,
             "type": memory.type,
-            "description": memory.description,
+            "title": memory.title,
+            "summary": memory.summary,
+            "confidence": memory.confidence,
+            "related_files": ", ".join(memory.related_files),
             "path": memory.path,
             "tags": ", ".join(memory.tags),
         }
@@ -149,10 +160,18 @@ def build_task_rows(tasks: list[TaskNode]) -> list[dict[str, Any]]:
     return [
         {
             "id": task.id,
+            "schema_version": task.schema_version,
             "title": task.title,
             "status": task.status,
             "owner": task.owner or "",
             "blocked_by": ", ".join(task.blocked_by),
+            "can_start": task.metadata.get("can_start", ""),
+            "active_blocks": ", ".join(task.metadata.get("active_blocks", [])),
+            "missing_dependencies": ", ".join(
+                task.metadata.get("missing_dependencies", [])
+            ),
+            "source": task.source,
+            "run_id": task.run_id or "",
             "updated_at": task.updated_at,
         }
         for task in tasks

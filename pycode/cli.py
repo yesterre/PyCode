@@ -222,11 +222,14 @@ def memory_project(
     project_path: Path,
     operation: str,
     *,
-    name: str | None = None,
+    memory_id: str | None = None,
     memory_type: str | None = None,
-    description: str = "",
+    title: str = "",
+    summary: str = "",
     body: str | None = None,
     tags: list[str] | None = None,
+    confidence: float = 1.0,
+    related_files: list[str] | None = None,
     query: str = "",
     limit: int = 5,
 ) -> list[MemoryIndexEntry] | list[MemoryItem] | MemoryItem:
@@ -234,18 +237,21 @@ def memory_project(
     store = MemoryStore(project_path)
 
     if operation == "add":
-        if not name:
-            raise ValueError("Memory operation 'add' requires --name.")
+        if not memory_id:
+            raise ValueError("Memory operation 'add' requires --id.")
         if not memory_type:
             raise ValueError("Memory operation 'add' requires --type.")
         if body is None:
             raise ValueError("Memory operation 'add' requires --content.")
         item = store.add_memory(
-            name=name,
+            memory_id=memory_id,
             memory_type=memory_type,
-            description=description,
+            title=title,
+            summary=summary,
             body=body,
             tags=tags or [],
+            confidence=confidence,
+            related_files=related_files or [],
             source="manual",
         )
         _print_memory_header("Memory created", project_path, store)
@@ -274,9 +280,9 @@ def memory_project(
         return items
 
     if operation == "load":
-        if not name:
-            raise ValueError("Memory operation 'load' requires name.")
-        item = store.load_memory(name)
+        if not memory_id:
+            raise ValueError("Memory operation 'load' requires id.")
+        item = store.load_memory(memory_id)
         _print_memory_header("Memory loaded", project_path, store)
         _print_memory_item(item, include_body=True)
         return item
@@ -301,6 +307,9 @@ def task_project(
     description: str = "",
     blocked_by: list[str] | None = None,
     owner: str | None = None,
+    source: str = "manual",
+    run_id: str | None = None,
+    parent_run_id: str | None = None,
 ) -> list[TaskNode] | TaskNode:
     """Manage project-local Task DAG state under .pclens/tasks."""
     store = TaskDAGStore(project_path)
@@ -312,6 +321,9 @@ def task_project(
             description=description,
             blocked_by=blocked_by or [],
             owner=owner,
+            source=source,
+            run_id=run_id,
+            parent_run_id=parent_run_id,
         )
         _print_task_header("Task created", project_path, store)
         _print_task_node(task, store)
@@ -386,9 +398,11 @@ def _print_task_node(task: TaskNode, store: TaskDAGStore) -> None:
     )
     _safe_print(
         f"- {task.id}: {task.status} - {task.title} "
-        f"(owner={task.owner or 'N/A'}, blocked_by={blocked_by}, "
+        f"(schema={task.schema_version}, source={task.source}, "
+        f"owner={task.owner or 'N/A'}, blocked_by={blocked_by}, "
         f"can_start={can_start.can_start}, active_blocks={blocked}, "
-        f"missing={missing})"
+        f"missing={missing}, run_id={task.run_id or 'N/A'}, "
+        f"parent_run_id={task.parent_run_id or 'N/A'})"
     )
 
 
@@ -400,17 +414,28 @@ def _print_memory_header(label: str, project_path: Path, store: MemoryStore) -> 
 
 def _print_memory_entry(entry: MemoryIndexEntry) -> None:
     tags = f", tags={','.join(entry.tags)}" if entry.tags else ""
+    related = (
+        f", related_files={','.join(entry.related_files)}"
+        if entry.related_files
+        else ""
+    )
     _safe_print(
-        f"- {entry.name}: {entry.type} - {entry.description} "
-        f"(path={entry.path}{tags})"
+        f"- {entry.id}: {entry.type} - {entry.title}: {entry.summary} "
+        f"(path={entry.path}, confidence={entry.confidence}{tags}{related})"
     )
 
 
 def _print_memory_item(item: MemoryItem, *, include_body: bool) -> None:
     tags = f", tags={','.join(item.tags)}" if item.tags else ""
+    related = (
+        f", related_files={','.join(item.related_files)}"
+        if item.related_files
+        else ""
+    )
     _safe_print(
-        f"- {item.name}: {item.type} - {item.description} "
-        f"(path={item.path}, source={item.source}{tags})"
+        f"- {item.id}: {item.type} - {item.title}: {item.summary} "
+        f"(path={item.path}, source={item.source}, "
+        f"confidence={item.confidence}{tags}{related})"
     )
     if include_body:
         _safe_print(item.body or "N/A")
@@ -553,6 +578,14 @@ def _print_agent_result(result: AgentResult, *, show_context: bool = False) -> N
     if result.turns:
         print("Runtime:")
         for turn in result.turns:
+            if turn.tool_result is None:
+                action_type = turn.action.type if turn.action is not None else "unknown"
+                reason = turn.action.reason if turn.action is not None else ""
+                _safe_print(
+                    f"- turn {turn.index}: {action_type} -> {turn.status} - "
+                    f"{reason or 'N/A'}"
+                )
+                continue
             status = "ok" if turn.tool_result.ok else "failed"
             _safe_print(
                 f"- turn {turn.index}: {turn.tool_call.name} -> "
@@ -632,9 +665,15 @@ def _print_memory_summary(result: AgentResult) -> None:
     if result.memory.extraction_error:
         _safe_print(f"- extraction_error: {result.memory.extraction_error}")
     for item in result.memory.relevant_memories:
-        _safe_print(f"- relevant: {item.name} ({item.type}) - {item.description}")
+        _safe_print(
+            f"- relevant: {item.id} ({item.type}, confidence={item.confidence}) - "
+            f"{item.title}: {item.summary}"
+        )
     for item in result.memory.extracted_memories:
-        _safe_print(f"- extracted: {item.name} ({item.type}) - {item.description}")
+        _safe_print(
+            f"- extracted: {item.id} ({item.type}, confidence={item.confidence}) - "
+            f"{item.title}: {item.summary}"
+        )
 
 
 def _print_trace_summary(result: AgentResult) -> None:
@@ -665,6 +704,23 @@ def _print_trace_summary(result: AgentResult) -> None:
         if tool_trace.error:
             detail += f" Error: {tool_trace.error}"
         _safe_print(detail)
+    planner_events = [
+        event
+        for event in trace.events
+        if event.event_type.startswith("LLMNextAction")
+        or event.event_type == "NextActionDecided"
+    ]
+    for event in planner_events:
+        data = event.data
+        detail = f"- event {event.event_type}: {event.status or 'N/A'}"
+        planner_source = data.get("planner_source")
+        if planner_source:
+            detail += f" planner={planner_source}"
+        if data.get("fallback_used"):
+            detail += " fallback=True"
+        if data.get("schema_error"):
+            detail += f" schema_error={data.get('schema_error')}"
+        _safe_print(detail)
 
 
 def _print_context_summary(result: AgentResult) -> None:
@@ -677,8 +733,14 @@ def _print_context_summary(result: AgentResult) -> None:
     for section in context.sections:
         _safe_print(
             f"- {section.name}: placement={section.placement}, "
-            f"source={section.source}, chars={len(section.content)}"
+            f"source={section.source}, priority={section.priority}, "
+            f"included={section.included}, size={section.size_estimate}, "
+            f"reason={section.reason}"
         )
+    if context.skipped_sections:
+        _safe_print(f"- skipped_sections: {len(context.skipped_sections)}")
+        for section in context.skipped_sections:
+            _safe_print(f"  - {section.name}: {section.reason}")
     if context.warnings:
         print("Context warnings:")
         for warning in context.warnings:
@@ -944,27 +1006,32 @@ def _add_memory_subparser(subparsers: argparse._SubParsersAction) -> None:
         help="Memory operation to run.",
     )
     memory_parser.add_argument(
-        "name",
+        "memory_id",
         nargs="?",
-        help="Memory name for load.",
+        help="Memory id for load.",
     )
     memory_parser.add_argument(
-        "--name",
-        dest="explicit_name",
+        "--id",
+        dest="explicit_memory_id",
         default=None,
-        help="Memory name for add.",
+        help="Memory id for add.",
     )
     memory_parser.add_argument(
         "--type",
         dest="memory_type",
         default=None,
-        choices=["user", "feedback", "project", "reference"],
+        choices=["project", "workflow", "analysis", "preference", "limitation"],
         help="Memory type for add/search.",
     )
     memory_parser.add_argument(
-        "--description",
+        "--title",
         default="",
-        help="Short memory description for add.",
+        help="Memory title for add.",
+    )
+    memory_parser.add_argument(
+        "--summary",
+        default="",
+        help="Short memory summary for add.",
     )
     memory_parser.add_argument(
         "--content",
@@ -978,6 +1045,19 @@ def _add_memory_subparser(subparsers: argparse._SubParsersAction) -> None:
         action="append",
         default=[],
         help="Memory tag. Can be provided multiple times.",
+    )
+    memory_parser.add_argument(
+        "--confidence",
+        type=float,
+        default=1.0,
+        help="Memory confidence between 0 and 1.",
+    )
+    memory_parser.add_argument(
+        "--related-file",
+        dest="related_files",
+        action="append",
+        default=[],
+        help="Related project file. Can be provided multiple times.",
     )
     memory_parser.add_argument(
         "--query",
@@ -1039,6 +1119,21 @@ def _add_task_subparser(subparsers: argparse._SubParsersAction) -> None:
         "--owner",
         default=None,
         help="Task owner for create or claim.",
+    )
+    task_parser.add_argument(
+        "--source",
+        default="manual",
+        help="Task source for create.",
+    )
+    task_parser.add_argument(
+        "--run-id",
+        default=None,
+        help="Agent run id that created this task.",
+    )
+    task_parser.add_argument(
+        "--parent-run-id",
+        default=None,
+        help="Parent Agent run id for future delegation metadata.",
     )
     _add_plain_argument(task_parser)
 
@@ -1120,11 +1215,18 @@ def _dispatch_command(args: argparse.Namespace) -> None:
         memory_project(
             args.project_path,
             args.operation,
-            name=args.explicit_name if args.operation == "add" else args.name,
+            memory_id=(
+                args.explicit_memory_id
+                if args.operation == "add"
+                else args.memory_id
+            ),
             memory_type=args.memory_type,
-            description=args.description,
+            title=args.title,
+            summary=args.summary,
             body=args.body,
             tags=args.tags,
+            confidence=args.confidence,
+            related_files=args.related_files,
             query=args.query,
             limit=args.limit,
         )
@@ -1137,6 +1239,9 @@ def _dispatch_command(args: argparse.Namespace) -> None:
             description=args.description,
             blocked_by=args.blocked_by,
             owner=args.owner,
+            source=args.source,
+            run_id=args.run_id,
+            parent_run_id=args.parent_run_id,
         )
 
 

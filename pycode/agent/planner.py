@@ -11,6 +11,7 @@ from pycode.agent.planner_enhanced import (
     TASK_TEST_COVERAGE,
     TASK_TEST_FAILURE,
     classify_task,
+    decide_next_action,
     plan_task,
 )
 
@@ -25,5 +26,6 @@ __all__ = [
     "TASK_TEST_COVERAGE",
     "TASK_TEST_FAILURE",
     "classify_task",
+    "decide_next_action",
     "plan_task",
 ]

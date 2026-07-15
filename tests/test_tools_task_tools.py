@@ -18,12 +18,19 @@ def test_task_dag_tool_creates_lists_and_gets_tasks() -> None:
             operation="create",
             task_id="task_001",
             title="Build index",
+            source="agent",
+            run_id="run-1",
+            parent_run_id="parent-1",
         )
         listed = task_dag(context, operation="list")
         loaded = task_dag(context, operation="get", task_id="task_001")
 
         assert created.ok is True
         assert created.data["task"]["id"] == "task_001"
+        assert created.data["task"]["schema_version"] == "1.0"
+        assert created.data["task"]["source"] == "agent"
+        assert created.data["task"]["run_id"] == "run-1"
+        assert created.data["task"]["parent_run_id"] == "parent-1"
         assert created.data["can_start"] is True
         assert listed.data["tasks"][0]["title"] == "Build index"
         assert loaded.data["task"]["id"] == "task_001"

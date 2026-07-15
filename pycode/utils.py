@@ -43,6 +43,26 @@ def parse_json_array_response(response: str, *, allow_empty: bool = False) -> li
     return data
 
 
+def parse_json_object_response(response: str) -> dict[str, Any]:
+    text = response.strip()
+    if not text:
+        raise ValueError("Response was empty.")
+    if text.startswith("["):
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            raise ValueError("Response JSON was not an object.")
+        return data
+    if not text.startswith("{"):
+        match = re.search(r"\{[\s\S]*\}", text)
+        if not match:
+            raise ValueError("Response did not contain a JSON object.")
+        text = match.group(0)
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("Response JSON was not an object.")
+    return data
+
+
 def count_by_type(items: Iterable[Any]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for item in items:

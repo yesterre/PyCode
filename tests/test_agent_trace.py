@@ -25,6 +25,13 @@ def test_trace_records_successful_tool_lifecycle() -> None:
     assert tool_trace.summary == "Selected context."
     assert tool_trace.result_data["evidence"] == ["main.py"]
     assert result.trace.to_dict()["tools"][0]["status"] == "ok"
+    event_types = [event.event_type for event in result.trace.events]
+    assert "TurnStarted" in event_types
+    assert "NextActionDecided" in event_types
+    assert "PolicyDecision" in event_types
+    assert "ObservationRecorded" in event_types
+    assert "TurnFinished" in event_types
+    assert "StopDecided" in event_types
 
 
 def test_trace_records_tool_exceptions_as_failures() -> None:
@@ -59,6 +66,10 @@ def test_trace_records_policy_denials() -> None:
     assert tool_trace.status == "denied"
     assert tool_trace.denied_by == "policy"
     assert result.tool_results[0].data["denied"] is True
+    policy_events = [
+        event for event in result.trace.events if event.event_type == "PolicyDecision"
+    ]
+    assert policy_events[-1].status == "denied"
 
 
 def test_trace_summarizes_large_arguments_and_results() -> None:
@@ -79,3 +90,44 @@ def test_trace_summarizes_large_arguments_and_results() -> None:
     assert tool_trace.arguments["question"].endswith("...[truncated]")
     assert len(tool_trace.result_data["content"]) < len(large_text)
     assert tool_trace.result_data["content"].endswith("...[truncated]")
+
+
+def test_trace_records_llm_next_action_fallback() -> None:
+    def retrieve_context(context: ToolContext, **kwargs):
+        return success("retrieve_context", "Selected context.")
+
+    result = run_agent_runtime(
+        AgentTask("Where is the entry point?", Path(".")),
+        RuntimeConfig(max_turns=3, enable_memory=False),
+        tools={"retrieve_context": ToolSpec("retrieve_context", retrieve_context, True)},
+        llm_client=_SequenceLLM(
+            [
+                "not an initial JSON plan",
+                "not a next action",
+                "still not a next action",
+                "summary answer",
+            ]
+        ),
+    )
+
+    assert result.trace is not None
+    events = {event.event_type: event for event in result.trace.events}
+    assert "LLMNextActionStarted" in events
+    assert "LLMNextActionSchemaFailed" in events
+    assert "LLMNextActionFallback" in events
+    next_action_events = [
+        event for event in result.trace.events if event.event_type == "NextActionDecided"
+    ]
+    assert next_action_events[0].data["planner_source"] == "fallback"
+    assert next_action_events[0].data["fallback_used"] is True
+    assert next_action_events[0].data["schema_error"]
+
+
+class _SequenceLLM:
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = list(responses)
+
+    def generate(self, prompt: str) -> str:
+        if self.responses:
+            return self.responses.pop(0)
+        return "[]"

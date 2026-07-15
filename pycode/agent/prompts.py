@@ -26,6 +26,7 @@ def build_agent_summary_context(
     tasks: list["TaskNode"] | None = None,
     tools: dict[str, "ToolSpec"] | None = None,
     load_tasks: bool = True,
+    turn_index: int | None = None,
 ) -> AgentContext:
     """Build the structured context used by the Agent summary prompt."""
     return ContextAssembler(
@@ -39,6 +40,7 @@ def build_agent_summary_context(
         tasks=tasks,
         tools=tools,
         load_tasks=load_tasks,
+        turn_index=turn_index,
     ).assemble()
 
 
@@ -90,6 +92,9 @@ def render_agent_prompt(context: AgentContext) -> str:
                 "## Tool Results",
                 "placement: user",
                 "source: pycode.tools.ToolResult",
+                "priority: 200",
+                "included: false",
+                "reason: No tools were executed.",
                 "",
                 "The following evidence came from Agent tool calls:",
                 "No tools were executed.",
@@ -112,8 +117,13 @@ def _render_section(section: ContextSection) -> str:
     return "\n".join(
         [
             f"## {section.title}",
+            f"name: {section.name}",
             f"placement: {section.placement}",
             f"source: {section.source}",
+            f"priority: {section.priority}",
+            f"included: {section.included}",
+            f"size_estimate: {section.size_estimate}",
+            f"reason: {section.reason}",
             "",
             section.content,
         ]

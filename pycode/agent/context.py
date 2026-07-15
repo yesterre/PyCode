@@ -28,10 +28,18 @@ class ContextSection:
     placement: str
     content: str
     metadata: dict[str, Any] = field(default_factory=dict)
+    priority: int = 100
+    size_estimate: int = 0
+    included: bool = True
+    reason: str = ""
 
     def __post_init__(self) -> None:
         if self.placement not in PLACEMENTS:
             raise ValueError(f"Unsupported context placement: {self.placement}")
+        if self.size_estimate <= 0:
+            self.size_estimate = len(self.content)
+        if not self.reason:
+            self.reason = "included" if self.included else "skipped"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -41,6 +49,10 @@ class ContextSection:
             "placement": self.placement,
             "content": self.content,
             "metadata": dict(self.metadata),
+            "priority": self.priority,
+            "size_estimate": self.size_estimate,
+            "included": self.included,
+            "reason": self.reason,
         }
 
 
@@ -48,10 +60,27 @@ class ContextSection:
 class AgentContext:
     task: AgentTask
     sections: list[ContextSection] = field(default_factory=list)
+    skipped_sections: list[ContextSection] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
     def section_names(self) -> list[str]:
         return [section.name for section in self.sections]
+
+    def all_sections(self) -> list[ContextSection]:
+        return [*self.sections, *self.skipped_sections]
+
+    def debug_dict(self) -> dict[str, Any]:
+        return {
+            "included": [
+                _section_debug(section)
+                for section in sorted(self.sections, key=lambda item: item.priority)
+            ],
+            "skipped": [
+                _section_debug(section)
+                for section in sorted(self.skipped_sections, key=lambda item: item.priority)
+            ],
+            "warnings": list(self.warnings),
+        }
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -64,6 +93,9 @@ class AgentContext:
                 "task_type": self.task.task_type,
             },
             "sections": [section.to_dict() for section in self.sections],
+            "skipped_sections": [
+                section.to_dict() for section in self.skipped_sections
+            ],
             "warnings": list(self.warnings),
         }
 
@@ -90,6 +122,7 @@ class ContextAssembler:
         tasks: list["TaskNode"] | None = None,
         tools: dict[str, "ToolSpec"] | None = None,
         load_tasks: bool = True,
+        turn_index: int | None = None,
     ) -> None:
         self.task = task
         self.steps = steps
@@ -101,6 +134,7 @@ class ContextAssembler:
         self.tasks = tasks
         self.tools = tools
         self.load_tasks = load_tasks
+        self.turn_index = turn_index
         self.warnings: list[str] = []
 
     def assemble(self) -> AgentContext:
@@ -111,24 +145,96 @@ class ContextAssembler:
             tasks = self._load_task_dag_summary()
 
         tool_registry = self.tools or self._default_tool_registry()
-        sections = [
-            prompt_sections.identity_section(),
-            prompt_sections.tools_section(tool_registry),
-            prompt_sections.policy_section(),
-            prompt_sections.project_section(self.task),
-            prompt_sections.output_rules_section(),
-            prompt_sections.plan_section(self.steps),
-            prompt_sections.tool_results_section(self.steps, self.tool_results),
-            prompt_sections.retrieval_evidence_section(self.tool_results),
-            prompt_sections.trace_section(self.trace),
-            prompt_sections.todo_section(self.todos),
-            prompt_sections.tasks_section(tasks or []),
-            prompt_sections.memory_index_section(self.memory_index),
-            prompt_sections.relevant_memories_section(self.relevant_memories),
+        candidates = [
+            (
+                "identity",
+                prompt_sections.identity_section(),
+                "Agent identity is always included.",
+            ),
+            (
+                "tools",
+                prompt_sections.tools_section(tool_registry),
+                "Tool registry is always included.",
+            ),
+            (
+                "policy",
+                prompt_sections.policy_section(),
+                "Policy rules are always included.",
+            ),
+            (
+                "project",
+                prompt_sections.project_section(self.task),
+                "Project and user task are always included.",
+            ),
+            (
+                "response_contract",
+                prompt_sections.response_contract_section(),
+                "Response contract is always included.",
+            ),
+            (
+                "plan",
+                prompt_sections.plan_section(self.steps),
+                "Initial plan is included when planned steps exist.",
+            ),
+            (
+                "tool_results",
+                prompt_sections.tool_results_section(self.steps, self.tool_results),
+                "Tool results are included after tools have run.",
+            ),
+            (
+                "evidence",
+                prompt_sections.evidence_section(self.tool_results),
+                "Evidence is included when tool results expose evidence refs.",
+            ),
+            (
+                "trace",
+                prompt_sections.trace_section(self.trace),
+                "Trace is included when tracing is enabled.",
+            ),
+            (
+                "todo",
+                prompt_sections.todo_section(self.todos),
+                "Todo state is included when todos exist.",
+            ),
+            (
+                "tasks",
+                prompt_sections.tasks_section(tasks or []),
+                "Task DAG state is included when tasks exist.",
+            ),
+            (
+                "memory_index",
+                prompt_sections.memory_index_section(self.memory_index),
+                "Memory index is included when it exists.",
+            ),
+            (
+                "memory",
+                prompt_sections.relevant_memories_section(self.relevant_memories),
+                "Relevant memory bodies are included when selected.",
+            ),
         ]
+        sections: list[ContextSection] = []
+        skipped_sections: list[ContextSection] = []
+        for name, section, reason in candidates:
+            if section is None:
+                skipped_sections.append(
+                    skipped_section(
+                        name,
+                        source="pycode.agent.context.ContextAssembler",
+                        reason=f"Skipped because no data was available. {reason}",
+                        turn_index=self.turn_index,
+                    )
+                )
+                continue
+            section.reason = reason
+            if self.turn_index is not None:
+                section.metadata.setdefault("turn_index", self.turn_index)
+            sections.append(section)
         context = AgentContext(
             task=self.task,
-            sections=[section for section in sections if section is not None],
+            sections=sorted(sections, key=lambda section: section.priority),
+            skipped_sections=sorted(
+                skipped_sections, key=lambda section: section.priority
+            ),
             warnings=list(self.warnings),
         )
         return context
@@ -137,7 +243,16 @@ class ContextAssembler:
         try:
             from pycode.agent.task_dag import TaskDAGStore
 
-            return TaskDAGStore(self.task.project_path).list_tasks()
+            store = TaskDAGStore(self.task.project_path)
+            tasks = store.list_tasks()
+            for task in tasks:
+                can_start = store.can_start(task)
+                task.metadata["can_start"] = can_start.can_start
+                task.metadata["active_blocks"] = list(can_start.blocked_by)
+                task.metadata["missing_dependencies"] = list(
+                    can_start.missing_dependencies
+                )
+            return tasks
         except (OSError, PermissionError, ValueError) as exc:
             self.warnings.append(f"Task DAG context unavailable: {type(exc).__name__}: {exc}")
             return []
@@ -154,3 +269,41 @@ class ContextAssembler:
 
 def relative_task_path(path: str | Path) -> str:
     return Path(path).as_posix()
+
+
+def skipped_section(
+    name: str,
+    *,
+    source: str,
+    reason: str,
+    turn_index: int | None = None,
+) -> ContextSection:
+    metadata: dict[str, Any] = {"static": False}
+    if turn_index is not None:
+        metadata["turn_index"] = turn_index
+    return ContextSection(
+        name=name,
+        title=name.replace("_", " ").title(),
+        source=source,
+        placement=PLACEMENT_USER,
+        content="",
+        metadata=metadata,
+        priority=999,
+        size_estimate=0,
+        included=False,
+        reason=reason,
+    )
+
+
+def _section_debug(section: ContextSection) -> dict[str, Any]:
+    return {
+        "name": section.name,
+        "title": section.title,
+        "source": section.source,
+        "placement": section.placement,
+        "priority": section.priority,
+        "included": section.included,
+        "reason": section.reason,
+        "size_estimate": section.size_estimate,
+        "metadata": dict(section.metadata),
+    }

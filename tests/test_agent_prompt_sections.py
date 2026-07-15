@@ -20,20 +20,24 @@ def test_relevant_memories_section_uses_user_placement_and_tags() -> None:
     section = relevant_memories_section(
         [
             MemoryItem(
-                name="project-entry",
+                id="project-entry",
                 type=MemoryType.PROJECT,
-                description="Entry point",
+                title="Project Entry",
+                summary="Entry point",
                 body="main.py is the entry point.",
                 path="project-entry.md",
+                confidence=0.9,
+                related_files=["main.py"],
             )
         ]
     )
 
     assert section is not None
-    assert section.name == "relevant_memories"
+    assert section.name == "memory"
     assert section.placement == "user"
     assert "<relevant_memories>" in section.content
     assert "main.py is the entry point." in section.content
+    assert "confidence: 0.9" in section.content
 
 
 def test_empty_dynamic_sections_are_not_rendered() -> None:

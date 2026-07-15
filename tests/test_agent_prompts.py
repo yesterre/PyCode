@@ -33,9 +33,10 @@ def test_build_agent_summary_prompt_contains_task_steps_and_tool_data() -> None:
         memory_index="- [project-entry](project-entry.md) - Entry point",
         relevant_memories=[
             MemoryItem(
-                name="project-entry",
+                id="project-entry",
                 type=MemoryType.PROJECT,
-                description="Entry point",
+                title="Project Entry",
+                summary="Entry point",
                 body="main.py is the entry point.",
                 path="project-entry.md",
             )

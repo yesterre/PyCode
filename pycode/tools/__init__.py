@@ -224,6 +224,9 @@ TOOLS = {
                 "title": {"type": ["string", "null"]},
                 "description": {"type": "string"},
                 "owner": {"type": ["string", "null"]},
+                "source": {"type": "string"},
+                "run_id": {"type": ["string", "null"]},
+                "parent_run_id": {"type": ["string", "null"]},
                 "blocked_by": {
                     "type": ["array", "string", "null"],
                     "items": {"type": "string"},
@@ -247,10 +250,19 @@ TOOLS = {
             "type": "object",
             "properties": {
                 "operation": {"type": "string", "enum": ["add", "list", "search", "load", "rebuild"]},
-                "name": {"type": ["string", "null"]},
-                "memory_type": {"type": ["string", "null"], "enum": ["user", "feedback", "project", "reference", None]},
-                "description": {"type": "string"},
+                "id": {"type": ["string", "null"]},
+                "memory_type": {
+                    "type": ["string", "null"],
+                    "enum": ["project", "workflow", "analysis", "preference", "limitation", None],
+                },
+                "title": {"type": "string"},
+                "summary": {"type": "string"},
                 "body": {"type": ["string", "null"]},
+                "confidence": {"type": "number"},
+                "related_files": {
+                    "type": ["array", "string", "null"],
+                    "items": {"type": "string"},
+                },
                 "tags": {
                     "type": ["array", "string", "null"],
                     "items": {"type": "string"},
@@ -262,6 +274,15 @@ TOOLS = {
         },
         examples=[
             {"operation": "search", "query": "entry point", "limit": 3},
+            {
+                "operation": "add",
+                "id": "project-entry",
+                "memory_type": "project",
+                "title": "Project Entry",
+                "summary": "Entry point location.",
+                "body": "main.py is the entry point.",
+                "confidence": 1.0,
+            },
             {"operation": "list"},
         ],
     ),

@@ -19,67 +19,92 @@ MAX_RELEVANT_MEMORIES = 5
 
 
 class MemoryType(StrEnum):
-    USER = "user"
-    FEEDBACK = "feedback"
     PROJECT = "project"
-    REFERENCE = "reference"
+    WORKFLOW = "workflow"
+    ANALYSIS = "analysis"
+    PREFERENCE = "preference"
+    LIMITATION = "limitation"
 
 
 MemoryType.ALL = {
-    MemoryType.USER,
-    MemoryType.FEEDBACK,
     MemoryType.PROJECT,
-    MemoryType.REFERENCE,
+    MemoryType.WORKFLOW,
+    MemoryType.ANALYSIS,
+    MemoryType.PREFERENCE,
+    MemoryType.LIMITATION,
 }
+
+MEMORY_TYPE_ORDER = [
+    MemoryType.PROJECT,
+    MemoryType.WORKFLOW,
+    MemoryType.ANALYSIS,
+    MemoryType.PREFERENCE,
+    MemoryType.LIMITATION,
+]
 
 
 @dataclass
 class MemoryIndexEntry:
-    name: str
+    id: str
     type: str
-    description: str = ""
+    title: str = ""
+    summary: str = ""
     path: str = ""
     tags: list[str] = field(default_factory=list)
+    confidence: float = 1.0
+    related_files: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "name": self.name,
+            "id": self.id,
             "type": self.type,
-            "description": self.description,
+            "title": self.title,
+            "summary": self.summary,
             "path": self.path,
             "tags": list(self.tags),
+            "confidence": self.confidence,
+            "related_files": list(self.related_files),
         }
 
 
 @dataclass
 class MemoryItem:
-    name: str
+    id: str
     type: str
-    description: str
+    title: str
+    summary: str
     body: str
     tags: list[str] = field(default_factory=list)
     source: str = "manual"
+    confidence: float = 1.0
+    related_files: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: format_timestamp(utc_now()))
     updated_at: str = field(default_factory=lambda: format_timestamp(utc_now()))
     path: str = ""
 
     def to_index_entry(self) -> MemoryIndexEntry:
         return MemoryIndexEntry(
-            name=self.name,
+            id=self.id,
             type=self.type,
-            description=self.description,
-            path=self.path or f"{self.name}.md",
+            title=self.title,
+            summary=self.summary,
+            path=self.path or f"{self.id}.md",
             tags=list(self.tags),
+            confidence=self.confidence,
+            related_files=list(self.related_files),
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "name": self.name,
+            "id": self.id,
             "type": self.type,
-            "description": self.description,
+            "title": self.title,
+            "summary": self.summary,
             "body": self.body,
             "tags": list(self.tags),
             "source": self.source,
+            "confidence": self.confidence,
+            "related_files": list(self.related_files),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "path": self.path,
@@ -137,45 +162,51 @@ class MemoryStore:
     def add_memory(
         self,
         *,
-        name: str,
+        memory_id: str,
         memory_type: str,
-        description: str,
+        title: str,
+        summary: str,
         body: str,
         tags: list[str] | None = None,
         source: str = "manual",
+        confidence: float = 1.0,
+        related_files: list[str] | None = None,
         allow_existing: bool = False,
     ) -> MemoryItem:
-        if not name:
-            raise ValueError("Memory name is required.")
+        if not memory_id:
+            raise ValueError("Memory id is required.")
         if not body:
             raise ValueError("Memory body is required.")
         self._validate_memory_type(memory_type)
 
-        actual_name = self._slugify(name)
+        actual_id = self._slugify(memory_id)
         if not allow_existing:
-            actual_name = self._unique_name(actual_name)
+            actual_id = self._unique_name(actual_id)
 
-        existing = self._memory_path(actual_name)
+        existing = self._memory_path(actual_id)
         created_at = format_timestamp(utc_now())
         if allow_existing and existing.exists():
-            old = self.load_memory(actual_name)
+            old = self.load_memory(actual_id)
             created_at = old.created_at
 
         entries = [
             entry
             for entry in self.list_memories()
-            if entry.name != actual_name
+            if entry.id != actual_id
         ]
         item = MemoryItem(
-            name=actual_name,
+            id=actual_id,
             type=memory_type,
-            description=description,
+            title=title or actual_id,
+            summary=summary,
             body=body,
             tags=[str(tag) for tag in tags or []],
             source=source,
+            confidence=_normalize_confidence(confidence),
+            related_files=[str(path) for path in related_files or []],
             created_at=created_at,
             updated_at=format_timestamp(utc_now()),
-            path=f"{actual_name}.md",
+            path=f"{actual_id}.md",
         )
         self._save_memory(item)
         entries.append(item.to_index_entry())
@@ -190,7 +221,7 @@ class MemoryStore:
             for path in self.memory_dir.glob("*.md")
             if path.is_file() and path.name != MEMORY_INDEX_FILE
         ]
-        return sorted(entries, key=lambda entry: (entry.type, entry.name))
+        return sorted(entries, key=lambda entry: (entry.type, entry.id))
 
     def search_memories(
         self,
@@ -207,13 +238,15 @@ class MemoryStore:
         for entry in self.list_memories():
             if memory_type and entry.type != memory_type:
                 continue
-            item = self.load_memory(entry.name)
+            item = self.load_memory(entry.id)
             haystack = " ".join(
                 [
-                    item.name,
+                    item.id,
                     item.type,
-                    item.description,
+                    item.title,
+                    item.summary,
                     " ".join(item.tags),
+                    " ".join(item.related_files),
                     item.body if include_body else "",
                 ]
             ).lower()
@@ -222,7 +255,7 @@ class MemoryStore:
                 score = 1
             if score > 0:
                 scored.append((score, item))
-        scored.sort(key=lambda pair: (-pair[0], pair[1].name))
+        scored.sort(key=lambda pair: (-pair[0], pair[1].id))
         return [item for _, item in scored[: max(limit, 0)]]
 
     def load_memory(self, name: str) -> MemoryItem:
@@ -238,22 +271,28 @@ class MemoryStore:
 
     def _write_index(self, entries: list[MemoryIndexEntry]) -> None:
         ensure_directory(self.memory_dir)
-        sorted_entries = sorted(entries, key=lambda entry: (entry.type, entry.name))
+        sorted_entries = sorted(entries, key=lambda entry: (entry.type, entry.id))
         lines = [
             "# PyCode Memory Index",
             "",
             "This file is generated from `.pclens/memory/*.md`.",
             "",
         ]
-        for memory_type in [MemoryType.USER, MemoryType.FEEDBACK, MemoryType.PROJECT, MemoryType.REFERENCE]:
+        for memory_type in MEMORY_TYPE_ORDER:
             typed_entries = [entry for entry in sorted_entries if entry.type == memory_type]
             if not typed_entries:
                 continue
             lines.append(f"## {memory_type}")
             for entry in typed_entries:
                 tags = f" tags={','.join(entry.tags)}" if entry.tags else ""
+                related = (
+                    f" related_files={','.join(entry.related_files)}"
+                    if entry.related_files
+                    else ""
+                )
                 lines.append(
-                    f"- [{entry.name}]({entry.path}) - {entry.description}{tags}"
+                    f"- [{entry.id}]({entry.path}) - {entry.title}: "
+                    f"{entry.summary} confidence={entry.confidence}{tags}{related}"
                 )
             lines.append("")
         self.index_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
@@ -276,25 +315,28 @@ class MemoryStore:
         metadata, body = _parse_memory_file(path.read_text(encoding="utf-8-sig"))
         memory_type = str(metadata.get("type", ""))
         self._validate_memory_type(memory_type)
-        name = str(metadata.get("name") or path.stem)
-        self._validate_memory_name(name)
+        memory_id = str(metadata.get("id") or path.stem)
+        self._validate_memory_name(memory_id)
         return MemoryItem(
-            name=name,
+            id=memory_id,
             type=memory_type,
-            description=str(metadata.get("description") or ""),
+            title=str(metadata.get("title") or ""),
+            summary=str(metadata.get("summary") or ""),
             body=body.strip(),
             tags=[str(tag) for tag in metadata.get("tags", [])],
             source=str(metadata.get("source") or "manual"),
+            confidence=_normalize_confidence(metadata.get("confidence", 1.0)),
+            related_files=[str(item) for item in metadata.get("related_files", [])],
             created_at=str(metadata.get("created_at") or format_timestamp(utc_now())),
             updated_at=str(metadata.get("updated_at") or format_timestamp(utc_now())),
             path=path.name,
         )
 
     def _save_memory(self, item: MemoryItem) -> None:
-        self._validate_memory_name(item.name)
+        self._validate_memory_name(item.id)
         self._validate_memory_type(item.type)
         ensure_directory(self.memory_dir)
-        self._memory_path(item.name).write_text(_format_memory_file(item), encoding="utf-8")
+        self._memory_path(item.id).write_text(_format_memory_file(item), encoding="utf-8")
 
     def _unique_name(self, base_name: str) -> str:
         if not self._memory_path(base_name).exists():
@@ -318,16 +360,16 @@ class MemoryStore:
         text = re.sub(r"[^a-z0-9_.-]+", "-", text)
         text = re.sub(r"-+", "-", text).strip("-._")
         if not text:
-            raise ValueError(f"Unsupported memory name: {value}")
+            raise ValueError(f"Unsupported memory id: {value}")
         MemoryStore._validate_memory_name(text)
         return text
 
     @staticmethod
     def _validate_memory_name(name: str) -> None:
         if not name:
-            raise ValueError("Memory name is required.")
+            raise ValueError("Memory id is required.")
         if name in {".", ".."} or not MEMORY_NAME_PATTERN.match(name):
-            raise ValueError(f"Unsupported memory name: {name}")
+            raise ValueError(f"Unsupported memory id: {name}")
 
     @staticmethod
     def _validate_memory_type(memory_type: str) -> None:
@@ -374,12 +416,12 @@ def load_relevant_memories(
         return selected, selection_error
 
     memories: list[MemoryItem] = []
-    known_names = {entry.name for entry in entries}
-    for name in selected_names:
-        if name not in known_names:
+    known_ids = {entry.id for entry in entries}
+    for memory_id in selected_names:
+        if memory_id not in known_ids:
             continue
         try:
-            memories.append(store.load_memory(name))
+            memories.append(store.load_memory(memory_id))
         except (FileNotFoundError, PermissionError, ValueError) as exc:
             selection_error = selection_error or f"{type(exc).__name__}: {exc}"
         if len(memories) >= max_memories:
@@ -418,19 +460,27 @@ def extract_memories(
     for proposal in proposals:
         try:
             memory_type = str(proposal["type"])
-            name = str(proposal["name"])
-            description = str(proposal.get("description") or "")
+            memory_id = str(proposal["id"])
+            title = str(proposal.get("title") or memory_id)
+            summary = str(proposal.get("summary") or "")
             body = str(proposal["body"])
             tags = [str(tag) for tag in proposal.get("tags", [])]
-            fingerprint = _fingerprint(memory_type, description, body)
+            confidence = _normalize_confidence(proposal.get("confidence", 1.0))
+            related_files = [
+                str(path) for path in proposal.get("related_files", [])
+            ]
+            fingerprint = _fingerprint(memory_type, title, summary, body)
             if fingerprint in existing_fingerprints:
                 continue
             item = store.add_memory(
-                name=name,
+                memory_id=memory_id,
                 memory_type=memory_type,
-                description=description,
+                title=title,
+                summary=summary,
                 body=body,
                 tags=tags,
+                confidence=confidence,
+                related_files=related_files,
                 source="auto",
             )
             existing_fingerprints.add(fingerprint)
@@ -447,9 +497,12 @@ def build_memory_selection_prompt(
 ) -> str:
     catalog = [
         {
-            "name": entry.name,
+            "id": entry.id,
             "type": entry.type,
-            "description": entry.description,
+            "title": entry.title,
+            "summary": entry.summary,
+            "confidence": entry.confidence,
+            "related_files": entry.related_files,
             "tags": entry.tags,
         }
         for entry in entries
@@ -457,7 +510,7 @@ def build_memory_selection_prompt(
     return "\n\n".join(
         [
             "Select project memories relevant to the current Agent task.",
-            "Return only a JSON array of memory names. Return [] if none are relevant.",
+            "Return only a JSON array of memory ids. Return [] if none are relevant.",
             f"Task: {task_description}",
             "Recent messages:",
             _recent_message_text(task_description, messages),
@@ -477,9 +530,12 @@ def build_memory_extraction_prompt(
 ) -> str:
     existing = [
         {
-            "name": entry.name,
+            "id": entry.id,
             "type": entry.type,
-            "description": entry.description,
+            "title": entry.title,
+            "summary": entry.summary,
+            "confidence": entry.confidence,
+            "related_files": entry.related_files,
             "tags": entry.tags,
         }
         for entry in entries
@@ -496,10 +552,10 @@ def build_memory_extraction_prompt(
     return "\n\n".join(
         [
             "Extract durable PyCode memories from this completed Agent turn.",
-            "Return only a JSON array. Each item must contain name, type, description, body, and optional tags.",
+            "Return only a JSON array. Each item must contain id, type, title, summary, body, confidence, related_files, and optional tags.",
             f"Allowed types: {sorted(MemoryType.ALL)}",
             "Only include genuinely new long-lived knowledge. Do not duplicate existing memories.",
-            "Use type=user for user preferences, feedback for collaboration rules, project for project facts, reference for pointers or commands.",
+            "Use project for codebase facts, workflow for commands or process, analysis for reusable conclusions, preference for user preferences, limitation for constraints or known risks.",
             f"Task: {task_description}",
             "Recent messages:",
             _recent_message_text(task_description, messages, limit=10),
@@ -520,9 +576,12 @@ def format_relevant_memories(memories: list[MemoryItem]) -> str:
         parts.append(
             "\n".join(
                 [
-                    f"## {memory.name}",
+                    f"## {memory.id}",
                     f"type: {memory.type}",
-                    f"description: {memory.description}",
+                    f"title: {memory.title}",
+                    f"summary: {memory.summary}",
+                    f"confidence: {memory.confidence}",
+                    f"related_files: {', '.join(memory.related_files) or 'N/A'}",
                     f"path: {memory.path}",
                     memory.body,
                 ]
@@ -534,11 +593,14 @@ def format_relevant_memories(memories: list[MemoryItem]) -> str:
 
 def _format_memory_file(item: MemoryItem) -> str:
     metadata = {
-        "name": item.name,
+        "id": item.id,
         "type": item.type,
-        "description": item.description,
+        "title": item.title,
+        "summary": item.summary,
         "tags": item.tags,
         "source": item.source,
+        "confidence": item.confidence,
+        "related_files": item.related_files,
         "created_at": item.created_at,
         "updated_at": item.updated_at,
     }
@@ -609,13 +671,23 @@ def _memory_fingerprints(store: MemoryStore) -> set[str]:
     fingerprints: set[str] = set()
     for entry in store.list_memories():
         try:
-            item = store.load_memory(entry.name)
+            item = store.load_memory(entry.id)
         except (FileNotFoundError, PermissionError, ValueError):
             continue
-        fingerprints.add(_fingerprint(item.type, item.description, item.body))
+        fingerprints.add(_fingerprint(item.type, item.title, item.summary, item.body))
     return fingerprints
 
 
-def _fingerprint(memory_type: str, description: str, body: str) -> str:
-    normalized = " ".join(f"{memory_type} {description} {body}".lower().split())
+def _fingerprint(memory_type: str, title: str, summary: str, body: str) -> str:
+    normalized = " ".join(
+        f"{memory_type} {title} {summary} {body}".lower().split()
+    )
     return normalized[:500]
+
+
+def _normalize_confidence(value: Any) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        confidence = 1.0
+    return max(0.0, min(1.0, confidence))

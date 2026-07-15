@@ -12,21 +12,25 @@ def test_memory_tool_adds_lists_searches_and_loads_memories(tmp_path: Path) -> N
     created = memory(
         context,
         operation="add",
-        name="Project Entry",
+        id="Project Entry",
         memory_type="project",
-        description="入口在 main.py",
+        title="Project Entry",
+        summary="入口在 main.py",
         body="main.py is the project entry.",
         tags=["entry"],
+        confidence=0.8,
+        related_files=["main.py"],
     )
     listed = memory(context, operation="list")
     searched = memory(context, operation="search", query="入口")
-    loaded = memory(context, operation="load", name="project-entry")
+    loaded = memory(context, operation="load", id="project-entry")
 
     assert created.ok is True
-    assert created.data["memory"]["name"] == "project-entry"
+    assert created.data["memory"]["id"] == "project-entry"
+    assert created.data["memory"]["confidence"] == 0.8
     assert created.data["storage_dir"] == ".pclens/memory"
     assert listed.data["memories"][0]["type"] == "project"
-    assert searched.data["memories"][0]["name"] == "project-entry"
+    assert searched.data["memories"][0]["id"] == "project-entry"
     assert loaded.data["memory"]["body"] == "main.py is the project entry."
 
 
@@ -37,9 +41,10 @@ def test_memory_tool_rebuilds_index(tmp_path: Path) -> None:
     memory(
         context,
         operation="add",
-        name="No Auto Tests",
-        memory_type="feedback",
-        description="Do not run tests automatically.",
+        id="No Auto Tests",
+        memory_type="preference",
+        title="No Auto Tests",
+        summary="Do not run tests automatically.",
         body="Give test commands to the user.",
     )
 
@@ -56,19 +61,19 @@ def test_memory_tool_requires_arguments(tmp_path: Path) -> None:
     context = ToolContext(project_path)
 
     missing_name = memory(context, operation="add", memory_type="project", body="body")
-    missing_type = memory(context, operation="add", name="name", body="body")
+    missing_type = memory(context, operation="add", id="name", body="body")
     missing_load_name = memory(context, operation="load")
-    unsupported = memory(context, operation="delete", name="name")
+    unsupported = memory(context, operation="delete", id="name")
 
     assert missing_name.ok is False
-    assert missing_name.summary == "Memory name is required."
-    assert missing_name.error == "operation='add' requires name."
+    assert missing_name.summary == "Memory id is required."
+    assert missing_name.error == "operation='add' requires id."
     assert missing_type.ok is False
     assert missing_type.summary == "Memory memory_type is required."
     assert missing_type.error == "operation='add' requires memory_type."
     assert missing_load_name.ok is False
-    assert missing_load_name.summary == "Memory name is required."
-    assert missing_load_name.error == "operation='load' requires name."
+    assert missing_load_name.summary == "Memory id is required."
+    assert missing_load_name.error == "operation='load' requires id."
     assert unsupported.ok is False
     assert unsupported.summary == "Unsupported memory operation."
 
@@ -81,9 +86,10 @@ def test_memory_tool_writes_only_project_internal_memory_files(tmp_path: Path) -
     result = memory(
         context,
         operation="add",
-        name="Project Entry",
+        id="Project Entry",
         memory_type="project",
-        description="entry",
+        title="Project Entry",
+        summary="entry",
         body="entry",
     )
 

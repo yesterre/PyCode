@@ -71,15 +71,16 @@ def test_todo_manager_rejects_invalid_status_and_unknown_id() -> None:
 def test_todo_manager_to_dict_is_stable() -> None:
     manager = TodoManager.from_steps([AgentStep("read_file", reason="Read file.")])
 
-    assert manager.to_dict() == [
-        {
-            "id": "todo-1",
-            "title": "Read file.",
-            "tool": "read_file",
-            "reason": "Read file.",
-            "status": "pending",
-            "error": None,
-            "step_index": 1,
-            "required": True,
-        }
-    ]
+    data = manager.to_dict()
+
+    assert data[0]["id"] == "todo-1"
+    assert data[0]["title"] == "Read file."
+    assert data[0]["tool"] == "read_file"
+    assert data[0]["reason"] == "Read file."
+    assert data[0]["status"] == "pending"
+    assert data[0]["error"] is None
+    assert data[0]["step_index"] == 1
+    assert data[0]["required"] is True
+    assert data[0]["source"] == "plan"
+    assert data[0]["created_at"]
+    assert data[0]["updated_at"]
