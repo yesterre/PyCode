@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import pytest
+
+import pycode.agent.runtime as runtime_module
 from pycode.agent import (
     AgentTask,
     RuntimeConfig,
@@ -7,7 +10,14 @@ from pycode.agent import (
     run_agent_runtime,
 )
 from pycode.agent.memory import MemoryStore
-from pycode.agent.types import AgentActionType, AgentStopReason, ToolCall
+from pycode.agent.types import (
+    AgentActionType,
+    AgentResult,
+    AgentStep,
+    AgentStopReason,
+    ToolCall,
+)
+from pycode.llm_client import LLMError, LLM_ERROR_TIMEOUT
 from pycode.tools import ToolContext, ToolSpec
 from pycode.tools.base import failure, success
 
@@ -86,6 +96,7 @@ def test_runtime_plan_only_skips_tools_and_llm() -> None:
     assert [(todo.id, todo.status) for todo in result.todos] == [
         ("todo-1", "pending")
     ]
+    assert result.ok is True
 
 
 def test_runtime_stops_when_max_turns_is_reached() -> None:
@@ -109,6 +120,7 @@ def test_runtime_stops_when_max_turns_is_reached() -> None:
     assert result.trace is not None
     assert result.trace.stop_reason == AgentStopReason.MAX_TURNS
     assert [todo.status for todo in result.todos] == ["completed", "pending"]
+    assert result.ok is False
 
 
 def test_runtime_marks_todo_failed_when_tool_fails() -> None:
@@ -291,6 +303,7 @@ def test_runtime_llm_final_answer_can_stop_before_tools() -> None:
     assert result.tool_results == []
     assert result.turns[-1].action is not None
     assert result.turns[-1].action.type == AgentActionType.FINAL_ANSWER
+    assert result.ok is True
 
 
 def test_runtime_llm_stop_with_error_stops_run() -> None:
@@ -318,6 +331,7 @@ def test_runtime_llm_stop_with_error_stops_run() -> None:
     assert result.planner_error == "No registered evidence tool can answer this."
     assert result.tool_results == []
     assert result.turns[-1].status == "failed"
+    assert result.ok is False
 
 
 def test_runtime_falls_back_when_llm_next_action_schema_is_invalid() -> None:
@@ -347,6 +361,163 @@ def test_runtime_falls_back_when_llm_next_action_schema_is_invalid() -> None:
     event_types = [event.event_type for event in result.trace.events]
     assert "LLMNextActionSchemaFailed" in event_types
     assert "LLMNextActionFallback" in event_types
+    schema_events = [
+        event
+        for event in result.trace.events
+        if event.event_type == "LLMNextActionSchemaFailed"
+    ]
+    assert schema_events[0].data["failure_kind"] == "schema_parse_failed"
+
+
+def test_agent_result_ok_requires_observed_required_steps() -> None:
+    result = AgentResult(
+        task=AgentTask("demo", Path(".")),
+        steps=[AgentStep("retrieve_context", required=True)],
+        tool_results=[],
+        prompt="",
+        stop_reason=AgentStopReason.FINAL,
+    )
+
+    assert result.ok is False
+
+    mismatched_result = AgentResult(
+        task=AgentTask("demo", Path(".")),
+        steps=[AgentStep("retrieve_context", required=True)],
+        tool_results=[success("search_code", "Searched code.")],
+        prompt="",
+        stop_reason=AgentStopReason.FINAL,
+    )
+
+    assert mismatched_result.ok is False
+
+
+def test_runtime_llm_out_of_plan_tool_does_not_update_unmatched_todo() -> None:
+    def retrieve_context(context: ToolContext, **kwargs):
+        return success("retrieve_context", "Selected context.")
+
+    def search_code(context: ToolContext, **kwargs):
+        return success("search_code", "Searched code.")
+
+    llm = _SequenceLLM(
+        [
+            """
+            [
+              {
+                "tool": "retrieve_context",
+                "arguments": {"intent": "entry"},
+                "reason": "Initial planned evidence.",
+                "required": false
+              }
+            ]
+            """,
+            """
+            {
+              "action_type": "tool_call",
+              "tool_name": "search_code",
+              "arguments": {"pattern": "main"},
+              "reason": "Use a registered out-of-plan tool."
+            }
+            """,
+            """
+            {
+              "action_type": "final_answer",
+              "reason": "Enough evidence.",
+              "final_answer": "done"
+            }
+            """,
+        ]
+    )
+
+    result = run_agent_runtime(
+        AgentTask("Where is the entry point?", Path(".")),
+        RuntimeConfig(max_turns=3, enable_memory=False),
+        tools={
+            "retrieve_context": ToolSpec("retrieve_context", retrieve_context, True),
+            "search_code": ToolSpec("search_code", search_code, True),
+        },
+        llm_client=llm,
+    )
+
+    assert [tool_result.tool for tool_result in result.tool_results] == ["search_code"]
+    assert [(todo.tool, todo.status) for todo in result.todos] == [
+        ("retrieve_context", "pending")
+    ]
+
+
+def test_runtime_falls_back_when_llm_next_action_call_fails() -> None:
+    def retrieve_context(context: ToolContext, **kwargs):
+        return success("retrieve_context", "Selected context.")
+
+    llm = _FailingNextActionLLM(
+        """
+        [
+          {
+            "tool": "retrieve_context",
+            "arguments": {"intent": "entry"},
+            "reason": "Initial planned evidence.",
+            "required": false
+          }
+        ]
+        """,
+        LLMError("timeout", category=LLM_ERROR_TIMEOUT),
+        "summary answer",
+    )
+
+    result = run_agent_runtime(
+        AgentTask("Where is the entry point?", Path(".")),
+        RuntimeConfig(max_turns=2, enable_memory=False),
+        tools={"retrieve_context": ToolSpec("retrieve_context", retrieve_context, True)},
+        llm_client=llm,
+    )
+
+    assert result.planner_source == "fallback"
+    assert result.trace is not None
+    schema_events = [
+        event
+        for event in result.trace.events
+        if event.event_type == "LLMNextActionSchemaFailed"
+    ]
+    assert schema_events[0].data["failure_kind"] == "llm_call_failed"
+
+
+def test_runtime_does_not_swallow_unexpected_next_action_errors(monkeypatch) -> None:
+    def raise_unexpected(*args, **kwargs):
+        raise RuntimeError("planner bug")
+
+    monkeypatch.setattr(
+        runtime_module,
+        "plan_next_action_with_llm",
+        raise_unexpected,
+    )
+
+    llm = _SequenceLLM(
+        [
+            """
+            [
+              {
+                "tool": "retrieve_context",
+                "arguments": {"intent": "entry"},
+                "reason": "Initial planned evidence.",
+                "required": false
+              }
+            ]
+            """
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="planner bug"):
+        run_agent_runtime(
+            AgentTask("Where is the entry point?", Path(".")),
+            RuntimeConfig(max_turns=2, enable_memory=False),
+            tools={
+                "retrieve_context": ToolSpec(
+                    "retrieve_context",
+                    _raising_tool,
+                    True,
+                )
+            },
+            llm_client=llm,
+        )
 
 
 class _MockLLM:
@@ -395,6 +566,27 @@ class _SequenceLLM:
         if self.responses:
             return self.responses.pop(0)
         return "[]"
+
+
+class _FailingNextActionLLM:
+    def __init__(
+        self,
+        initial_plan: str,
+        next_action_error: Exception,
+        summary_answer: str,
+    ) -> None:
+        self.initial_plan = initial_plan
+        self.next_action_error = next_action_error
+        self.summary_answer = summary_answer
+        self.prompts: list[str] = []
+
+    def generate(self, prompt: str) -> str:
+        self.prompts.append(prompt)
+        if len(self.prompts) == 1:
+            return self.initial_plan
+        if len(self.prompts) == 2:
+            raise self.next_action_error
+        return self.summary_answer
 
 
 def _raising_tool(context: ToolContext, **kwargs):

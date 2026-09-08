@@ -242,6 +242,8 @@ def _evidence_mentions(result, text: str) -> bool:
 
 
 def _fake_test_search(context: ToolContext, **kwargs):
+    pattern = kwargs.get("pattern")
+    assert isinstance(pattern, str) and pattern.strip()
     return success(
         "search_code",
         "Found 1 test reference.",
@@ -257,6 +259,8 @@ def _fake_test_search(context: ToolContext, **kwargs):
 
 
 def _fake_run_tests(context: ToolContext, **kwargs):
+    test_paths = kwargs.get("test_paths")
+    assert isinstance(test_paths, list) and "tests" in test_paths
     return success("run_tests", "Pytest passed.", exit_code=0, stdout="1 passed")
 
 

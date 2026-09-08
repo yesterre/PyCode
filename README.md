@@ -212,6 +212,8 @@ PyCode 从最小可行的代码扫描器开始，先完成 Python 文件扫描�
 .\.venv\Scripts\python.exe -m pytest tests --basetemp=.pytest_tmp --cache-clear
 ```
 
+V1.0 验收测试中的 git diff 场景依赖本机 `PATH` 上存在可用的 `git` 可执行文件；如果当前环境没有安装 git，pytest 会只跳过该场景。
+
 Windows 环境如果遇到 pytest 临时目录权限问题，继续优先使用项目内 `.pytest_tmp*` 目录，并换一个新的 `--basetemp` 名称重试。已有命令中如果显式带了 `--basetemp`，不需要再额外配置全局 pytest `addopts`。
 
 V1.0 验收测试集中在 `tests/test_v1_acceptance.py`，并补充覆盖 CLI、Rich 输出和 UI 数据加载。Codex 在当前 Windows 沙箱中运行 pytest 时使用临时进程内包装修正 pytest 临时目录 ACL 行为；该包装不是项目代码的一部分。

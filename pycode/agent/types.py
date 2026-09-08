@@ -167,9 +167,47 @@ class AgentResult:
 
     @property
     def ok(self) -> bool:
-        required_results = [
-            result
-            for step, result in zip(self.steps, self.tool_results)
-            if step.required
+        if self.stop_reason == AgentStopReason.PLAN_ONLY:
+            return True
+        if self.stop_reason in {
+            AgentStopReason.ERROR,
+            AgentStopReason.MAX_TURNS,
+            AgentStopReason.NO_ACTION,
+        }:
+            return False
+        if self.stop_reason == AgentStopReason.FINAL and self.answer:
+            return True
+
+        observed_turns = [
+            turn
+            for turn in self.turns
+            if turn.tool_call is not None and turn.tool_result is not None
         ]
-        return all(result.ok for result in required_results)
+        used_turn_indexes: set[int] = set()
+        for index, step in enumerate(self.steps):
+            if not step.required:
+                continue
+            if observed_turns:
+                matching_turn_index = next(
+                    (
+                        turn_index
+                        for turn_index, turn in enumerate(observed_turns)
+                        if turn_index not in used_turn_indexes
+                        and turn.tool_call is not None
+                        and turn.tool_result is not None
+                        and turn.tool_call.name == step.tool
+                        and turn.tool_result.tool == step.tool
+                        and turn.tool_result.ok
+                    ),
+                    None,
+                )
+                if matching_turn_index is None:
+                    return False
+                used_turn_indexes.add(matching_turn_index)
+                continue
+            if index >= len(self.tool_results):
+                return False
+            result = self.tool_results[index]
+            if result.tool != step.tool or not result.ok:
+                return False
+        return True

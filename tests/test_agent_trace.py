@@ -115,12 +115,16 @@ def test_trace_records_llm_next_action_fallback() -> None:
     assert "LLMNextActionStarted" in events
     assert "LLMNextActionSchemaFailed" in events
     assert "LLMNextActionFallback" in events
+    assert events["LLMNextActionSchemaFailed"].data["failure_kind"] == (
+        "schema_parse_failed"
+    )
     next_action_events = [
         event for event in result.trace.events if event.event_type == "NextActionDecided"
     ]
     assert next_action_events[0].data["planner_source"] == "fallback"
     assert next_action_events[0].data["fallback_used"] is True
     assert next_action_events[0].data["schema_error"]
+    assert next_action_events[0].data["failure_kind"] == "schema_parse_failed"
 
 
 class _SequenceLLM:

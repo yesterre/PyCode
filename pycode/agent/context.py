@@ -138,14 +138,47 @@ class ContextAssembler:
         self.warnings: list[str] = []
 
     def assemble(self) -> AgentContext:
-        from pycode.agent import prompt_sections
-
         tasks = self.tasks
         if tasks is None and self.load_tasks:
             tasks = self._load_task_dag_summary()
 
         tool_registry = self.tools or self._default_tool_registry()
-        candidates = [
+        candidates = self._build_section_candidates(tasks, tool_registry)
+        sections: list[ContextSection] = []
+        skipped_sections: list[ContextSection] = []
+        for name, section, reason in candidates:
+            if section is None:
+                skipped_sections.append(
+                    skipped_section(
+                        name,
+                        source="pycode.agent.context.ContextAssembler",
+                        reason=f"Skipped because no data was available. {reason}",
+                        turn_index=self.turn_index,
+                    )
+                )
+                continue
+            section.reason = reason
+            if self.turn_index is not None:
+                section.metadata.setdefault("turn_index", self.turn_index)
+            sections.append(section)
+        context = AgentContext(
+            task=self.task,
+            sections=sorted(sections, key=lambda section: section.priority),
+            skipped_sections=sorted(
+                skipped_sections, key=lambda section: section.priority
+            ),
+            warnings=list(self.warnings),
+        )
+        return context
+
+    def _build_section_candidates(
+        self,
+        tasks: list["TaskNode"] | None,
+        tool_registry: dict[str, "ToolSpec"],
+    ) -> list[tuple[str, ContextSection | None, str]]:
+        from pycode.agent import prompt_sections
+
+        return [
             (
                 "identity",
                 prompt_sections.identity_section(),
@@ -212,32 +245,6 @@ class ContextAssembler:
                 "Relevant memory bodies are included when selected.",
             ),
         ]
-        sections: list[ContextSection] = []
-        skipped_sections: list[ContextSection] = []
-        for name, section, reason in candidates:
-            if section is None:
-                skipped_sections.append(
-                    skipped_section(
-                        name,
-                        source="pycode.agent.context.ContextAssembler",
-                        reason=f"Skipped because no data was available. {reason}",
-                        turn_index=self.turn_index,
-                    )
-                )
-                continue
-            section.reason = reason
-            if self.turn_index is not None:
-                section.metadata.setdefault("turn_index", self.turn_index)
-            sections.append(section)
-        context = AgentContext(
-            task=self.task,
-            sections=sorted(sections, key=lambda section: section.priority),
-            skipped_sections=sorted(
-                skipped_sections, key=lambda section: section.priority
-            ),
-            warnings=list(self.warnings),
-        )
-        return context
 
     def _load_task_dag_summary(self) -> list["TaskNode"]:
         try:

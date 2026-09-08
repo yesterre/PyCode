@@ -1,3 +1,5 @@
+from dataclasses import dataclass, field
+
 from pycode.agent.hooks import (
     HookContext,
     HookEventType,
@@ -35,7 +37,7 @@ from pycode.agent.types import (
     RuntimeConfig,
     ToolCall,
 )
-from pycode.llm_client import LLMClient, classify_llm_error
+from pycode.llm_client import LLMClient, LLMError, classify_llm_error
 from pycode.tools import TOOLS, ToolContext, ToolResult, ToolSpec
 from pycode.tools.base import failure
 
@@ -146,13 +148,13 @@ def run_agent_runtime(
         trace_recorder,
         llm_client,
     )
-    tool_results = loop_result["tool_results"]
-    turns = loop_result["turns"]
-    observations = loop_result["observations"]
-    stop_reason = loop_result["stop_reason"]
-    direct_answer = loop_result["answer"]
-    loop_planner_source = loop_result["planner_source"]
-    loop_planner_error = loop_result["planner_error"]
+    tool_results = loop_result.tool_results
+    turns = loop_result.turns
+    observations = loop_result.observations
+    stop_reason = loop_result.stop_reason
+    direct_answer = loop_result.answer
+    loop_planner_source = loop_result.planner_source
+    loop_planner_error = loop_result.planner_error
 
     agent_context = build_agent_summary_context(
         task,
@@ -219,6 +221,28 @@ def run_agent_runtime(
     )
 
 
+@dataclass
+class _LoopState:
+    tool_results: list[ToolResult] = field(default_factory=list)
+    turns: list[AgentTurn] = field(default_factory=list)
+    observations: list[AgentObservation] = field(default_factory=list)
+    stop_reason: str = AgentStopReason.FINAL
+    answer: str | None = None
+    planner_source: str = PLANNER_SOURCE_RULE
+    planner_error: str | None = None
+
+
+@dataclass
+class _LoopOutcome:
+    tool_results: list[ToolResult]
+    turns: list[AgentTurn]
+    observations: list[AgentObservation]
+    stop_reason: str
+    answer: str | None
+    planner_source: str
+    planner_error: str | None
+
+
 def _run_observe_decide_act_loop(
     task: AgentTask,
     config: RuntimeConfig,
@@ -232,14 +256,8 @@ def _run_observe_decide_act_loop(
     tool_context: ToolContext,
     trace_recorder: TraceRecorder | None,
     llm_client: LLMClient | None,
-) -> dict:
-    tool_results: list[ToolResult] = []
-    turns: list[AgentTurn] = []
-    observations: list[AgentObservation] = []
-    stop_reason: str = AgentStopReason.FINAL
-    answer: str | None = None
-    planner_source = PLANNER_SOURCE_RULE
-    planner_error: str | None = None
+) -> _LoopOutcome:
+    state = _LoopState()
 
     for turn_index in range(1, config.max_turns + 1):
         _record_loop_event(
@@ -249,16 +267,16 @@ def _run_observe_decide_act_loop(
             status="running",
             data={"turn_index": turn_index},
         )
-        turn_context = build_agent_summary_context(
+        turn_context = _build_turn_context(
             task,
             steps,
-            tool_results,
-            memory_index=memory_index,
-            relevant_memories=memory_info.relevant_memories if memory_info else [],
-            trace=trace_recorder.trace if trace_recorder is not None else None,
-            todos=list(todo_manager.items),
-            tools=tool_registry,
-            turn_index=turn_index,
+            state,
+            memory_info,
+            memory_index,
+            todo_manager,
+            tool_registry,
+            trace_recorder,
+            turn_index,
         )
         _record_context_event(trace_recorder, turn_index, turn_context)
         action, decision_info = _decide_next_action(
@@ -266,69 +284,26 @@ def _run_observe_decide_act_loop(
             config,
             turn_context,
             steps,
-            turns,
-            tool_results,
+            state.turns,
+            state.tool_results,
             todo_manager,
             tool_registry,
             llm_client,
             turn_index,
             trace_recorder,
         )
-        planner_source = decision_info.get("planner_source") or planner_source
-        planner_error = decision_info.get("planner_error") or planner_error
+        state.planner_source = decision_info.get("planner_source") or state.planner_source
+        state.planner_error = decision_info.get("planner_error") or state.planner_error
         _record_next_action_event(trace_recorder, turn_index, action, decision_info)
 
-        if action.type == AgentActionType.FINAL_ANSWER:
-            stop_reason = action.stop_reason or AgentStopReason.FINAL
-            answer = action.answer
-            turns.append(
-                AgentTurn(
-                    index=turn_index,
-                    action=action,
-                    status="final",
-                )
-            )
-            _record_stop_decision(trace_recorder, turn_index, action, stop_reason)
-            break
-        if action.type == AgentActionType.STOP_WITH_ERROR:
-            stop_reason = action.stop_reason or AgentStopReason.ERROR
-            planner_error = planner_error or action.error or action.reason
-            turns.append(
-                AgentTurn(
-                    index=turn_index,
-                    action=action,
-                    status="failed",
-                )
-            )
-            _record_stop_decision(trace_recorder, turn_index, action, stop_reason)
-            break
-        if action.type == AgentActionType.NO_OP:
-            stop_reason = action.stop_reason or AgentStopReason.NO_ACTION
-            turns.append(
-                AgentTurn(
-                    index=turn_index,
-                    action=action,
-                    status="skipped",
-                )
-            )
-            _record_stop_decision(trace_recorder, turn_index, action, stop_reason)
-            break
-        if action.type != AgentActionType.TOOL_CALL or action.tool_call is None:
-            stop_reason = AgentStopReason.ERROR
-            planner_error = planner_error or f"Unsupported action type: {action.type}"
-            _record_stop_decision(
-                trace_recorder,
-                turn_index,
-                AgentAction.stop_error(f"Unsupported action type: {action.type}"),
-                stop_reason,
-            )
+        if _handle_terminal_action(action, state, trace_recorder, turn_index):
             break
 
         result = _execute_tool_action(
             task,
             action,
             steps,
-            turns,
+            state.turns,
             todo_manager,
             messages,
             hooks,
@@ -337,48 +312,23 @@ def _run_observe_decide_act_loop(
             trace_recorder,
             turn_index,
         )
-        observation = AgentObservation(
-            turn_index=turn_index,
-            action_type=action.type,
-            tool_result=result,
-            summary=result.summary,
-            ok=result.ok,
-            error=result.error,
-        )
-        observations.append(observation)
-        tool_results.append(result)
-        turns.append(
-            AgentTurn(
-                index=turn_index,
-                tool_call=action.tool_call,
-                tool_result=result,
-                action=action,
-                observation=observation,
-                status="observed" if result.ok else "failed",
-            )
-        )
-        _record_observation_event(trace_recorder, observation)
-        _record_loop_event(
+        _record_tool_observation(
+            action,
+            result,
+            state,
             trace_recorder,
-            "TurnFinished",
-            f"Agent turn {turn_index} finished.",
-            status="ok" if result.ok else "failed",
-            data={"turn_index": turn_index, "tool": result.tool},
+            turn_index,
         )
-        if (
-            decision_info.get("planner_source") == PLANNER_SOURCE_RULE
-            and len(tool_results) >= len(steps)
+        if _should_stop_after_tool_turn(
+            decision_info,
+            state,
+            steps,
+            trace_recorder,
+            turn_index,
         ):
-            stop_reason = AgentStopReason.FINAL
-            _record_stop_decision(
-                trace_recorder,
-                turn_index,
-                AgentAction.final("All planned tool steps have been observed."),
-                stop_reason,
-            )
             break
     else:
-        stop_reason = AgentStopReason.MAX_TURNS
+        state.stop_reason = AgentStopReason.MAX_TURNS
         _record_loop_event(
             trace_recorder,
             "StopDecided",
@@ -387,15 +337,153 @@ def _run_observe_decide_act_loop(
             data={"max_turns": config.max_turns},
         )
 
-    return {
-        "tool_results": tool_results,
-        "turns": turns,
-        "observations": observations,
-        "stop_reason": stop_reason,
-        "answer": answer,
-        "planner_source": planner_source,
-        "planner_error": planner_error,
-    }
+    return _LoopOutcome(
+        tool_results=state.tool_results,
+        turns=state.turns,
+        observations=state.observations,
+        stop_reason=state.stop_reason,
+        answer=state.answer,
+        planner_source=state.planner_source,
+        planner_error=state.planner_error,
+    )
+
+
+def _build_turn_context(
+    task: AgentTask,
+    steps: list[AgentStep],
+    state: _LoopState,
+    memory_info: MemoryRunInfo | None,
+    memory_index: str,
+    todo_manager: TodoManager,
+    tool_registry: dict[str, ToolSpec],
+    trace_recorder: TraceRecorder | None,
+    turn_index: int,
+):
+    return build_agent_summary_context(
+        task,
+        steps,
+        state.tool_results,
+        memory_index=memory_index,
+        relevant_memories=memory_info.relevant_memories if memory_info else [],
+        trace=trace_recorder.trace if trace_recorder is not None else None,
+        todos=list(todo_manager.items),
+        tools=tool_registry,
+        turn_index=turn_index,
+    )
+
+
+def _handle_terminal_action(
+    action: AgentAction,
+    state: _LoopState,
+    trace_recorder: TraceRecorder | None,
+    turn_index: int,
+) -> bool:
+    if action.type == AgentActionType.FINAL_ANSWER:
+        state.stop_reason = action.stop_reason or AgentStopReason.FINAL
+        state.answer = action.answer
+        state.turns.append(
+            AgentTurn(
+                index=turn_index,
+                action=action,
+                status="final",
+            )
+        )
+        _record_stop_decision(trace_recorder, turn_index, action, state.stop_reason)
+        return True
+    if action.type == AgentActionType.STOP_WITH_ERROR:
+        state.stop_reason = action.stop_reason or AgentStopReason.ERROR
+        state.planner_error = state.planner_error or action.error or action.reason
+        state.turns.append(
+            AgentTurn(
+                index=turn_index,
+                action=action,
+                status="failed",
+            )
+        )
+        _record_stop_decision(trace_recorder, turn_index, action, state.stop_reason)
+        return True
+    if action.type == AgentActionType.NO_OP:
+        state.stop_reason = action.stop_reason or AgentStopReason.NO_ACTION
+        state.turns.append(
+            AgentTurn(
+                index=turn_index,
+                action=action,
+                status="skipped",
+            )
+        )
+        _record_stop_decision(trace_recorder, turn_index, action, state.stop_reason)
+        return True
+    if action.type != AgentActionType.TOOL_CALL or action.tool_call is None:
+        state.stop_reason = AgentStopReason.ERROR
+        state.planner_error = state.planner_error or f"Unsupported action type: {action.type}"
+        _record_stop_decision(
+            trace_recorder,
+            turn_index,
+            AgentAction.stop_error(f"Unsupported action type: {action.type}"),
+            state.stop_reason,
+        )
+        return True
+    return False
+
+
+def _record_tool_observation(
+    action: AgentAction,
+    result: ToolResult,
+    state: _LoopState,
+    trace_recorder: TraceRecorder | None,
+    turn_index: int,
+) -> AgentObservation:
+    observation = AgentObservation(
+        turn_index=turn_index,
+        action_type=action.type,
+        tool_result=result,
+        summary=result.summary,
+        ok=result.ok,
+        error=result.error,
+    )
+    state.observations.append(observation)
+    state.tool_results.append(result)
+    state.turns.append(
+        AgentTurn(
+            index=turn_index,
+            tool_call=action.tool_call,
+            tool_result=result,
+            action=action,
+            observation=observation,
+            status="observed" if result.ok else "failed",
+        )
+    )
+    _record_observation_event(trace_recorder, observation)
+    _record_loop_event(
+        trace_recorder,
+        "TurnFinished",
+        f"Agent turn {turn_index} finished.",
+        status="ok" if result.ok else "failed",
+        data={"turn_index": turn_index, "tool": result.tool},
+    )
+    return observation
+
+
+def _should_stop_after_tool_turn(
+    decision_info: dict,
+    state: _LoopState,
+    steps: list[AgentStep],
+    trace_recorder: TraceRecorder | None,
+    turn_index: int,
+) -> bool:
+    if (
+        decision_info.get("planner_source") == PLANNER_SOURCE_RULE
+        and len(state.tool_results) >= len(steps)
+    ):
+        state.stop_reason = AgentStopReason.FINAL
+        _record_stop_decision(
+            trace_recorder,
+            turn_index,
+            AgentAction.final("All planned tool steps have been observed."),
+            state.stop_reason,
+        )
+        return True
+    return False
 
 
 def _execute_tool_action(
@@ -536,46 +624,30 @@ def _decide_next_action(
                 "raw_response": result.raw_response,
                 "schema_error": None,
                 "planner_error": None,
+                "failure_kind": None,
             }
-        except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
-            category = classify_llm_error(exc)
-            _record_loop_event(
-                trace_recorder,
-                "LLMNextActionSchemaFailed",
-                "LLM next-action planning failed; rule planner fallback will be used.",
-                status="failed",
-                data={
-                    "turn_index": turn_index,
-                    "error": error,
-                    "error_category": category,
-                },
-            )
-            fallback_action = decide_next_action(
+        except LLMError as exc:
+            return _fallback_next_action(
                 task,
                 steps,
                 turns,
                 tool_results,
                 turn_index,
-            )
-            _record_loop_event(
                 trace_recorder,
-                "LLMNextActionFallback",
-                f"Rule next-action planner used for turn {turn_index}.",
-                status="fallback",
-                data={
-                    "turn_index": turn_index,
-                    "error": error,
-                    "fallback_action_type": str(fallback_action.type),
-                },
+                exc,
+                failure_kind="llm_call_failed",
             )
-            return fallback_action, {
-                "planner_source": PLANNER_SOURCE_FALLBACK,
-                "fallback_used": True,
-                "raw_response": None,
-                "schema_error": error,
-                "planner_error": error,
-            }
+        except ValueError as exc:
+            return _fallback_next_action(
+                task,
+                steps,
+                turns,
+                tool_results,
+                turn_index,
+                trace_recorder,
+                exc,
+                failure_kind="schema_parse_failed",
+            )
 
     action = decide_next_action(
         task,
@@ -590,6 +662,61 @@ def _decide_next_action(
         "raw_response": None,
         "schema_error": None,
         "planner_error": None,
+        "failure_kind": None,
+    }
+
+
+def _fallback_next_action(
+    task: AgentTask,
+    steps: list[AgentStep],
+    turns: list[AgentTurn],
+    tool_results: list[ToolResult],
+    turn_index: int,
+    trace_recorder: TraceRecorder | None,
+    exc: Exception,
+    *,
+    failure_kind: str,
+) -> tuple[AgentAction, dict]:
+    error = f"{type(exc).__name__}: {exc}"
+    category = classify_llm_error(exc)
+    _record_loop_event(
+        trace_recorder,
+        "LLMNextActionSchemaFailed",
+        "LLM next-action planning failed; rule planner fallback will be used.",
+        status="failed",
+        data={
+            "turn_index": turn_index,
+            "error": error,
+            "error_category": category,
+            "failure_kind": failure_kind,
+        },
+    )
+    fallback_action = decide_next_action(
+        task,
+        steps,
+        turns,
+        tool_results,
+        turn_index,
+    )
+    _record_loop_event(
+        trace_recorder,
+        "LLMNextActionFallback",
+        f"Rule next-action planner used for turn {turn_index}.",
+        status="fallback",
+        data={
+            "turn_index": turn_index,
+            "error": error,
+            "failure_kind": failure_kind,
+            "fallback_action_type": str(fallback_action.type),
+        },
+    )
+    return fallback_action, {
+        "planner_source": PLANNER_SOURCE_FALLBACK,
+        "fallback_used": True,
+        "raw_response": None,
+        "schema_error": error,
+        "planner_error": error,
+        "failure_kind": failure_kind,
     }
 
 
@@ -606,10 +733,7 @@ def _step_for_action(
     for step in steps[executed_count:]:
         if step.tool == tool_name:
             return step
-    index = len(executed_tool_turns)
-    if index >= len(steps):
-        return None
-    return steps[index]
+    return None
 
 
 def build_runtime_plan(
@@ -736,12 +860,13 @@ def _record_next_action_event(
     data = {
         "turn_index": turn_index,
         "action_type": str(action.type),
+        "planner_source": decision_info.get("planner_source"),
+        "fallback_used": decision_info.get("fallback_used", False),
+        "failure_kind": decision_info.get("failure_kind"),
+        "schema_error": decision_info.get("schema_error"),
         "reason": action.reason,
         "stop_reason": action.stop_reason,
         "error": action.error,
-        "planner_source": decision_info.get("planner_source"),
-        "fallback_used": decision_info.get("fallback_used", False),
-        "schema_error": decision_info.get("schema_error"),
         "raw_response": decision_info.get("raw_response"),
     }
     if action.tool_call is not None:
