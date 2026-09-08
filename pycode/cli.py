@@ -2,32 +2,16 @@ import argparse
 import sys
 from pathlib import Path
 
-from pycode.agent import AgentResult, run_agent_task
+from pycode.agent import AgentResult
 from pycode.agent.evidence import collect_agent_evidence
 from pycode.agent.memory import MemoryIndexEntry, MemoryItem, MemoryStore
 from pycode.agent.task_dag import TaskDAGStore, TaskNode
 from pycode.constants import DEFAULT_ARTIFACT_DIR, DEFAULT_GRAPH_FILE, DEFAULT_INDEX_FILE
-from pycode.graph_builder import build_code_graph
-from pycode.llm_client import LLMClient, OpenAIResponsesClient
+from pycode.engine import AnswerResult, PyCodeEngine
+from pycode.llm_client import LLMClient
 from pycode.models import CodeGraph, GraphEdge, GraphNode, ProjectIndex
-from pycode.prompt_builder import build_code_qa_prompt
-from pycode.parser import parse_python_file
-from pycode.query import (
-    find_entry_candidates,
-    get_file_imported_by,
-    get_file_imports,
-    get_function_calls,
-)
-from pycode.retriever import (
-    RetrievalResult,
-    retrieve_explain,
-    retrieve_for_question,
-    retrieve_impact,
-    retrieve_onboard,
-)
+from pycode.retriever import RetrievalResult
 from pycode import rich_output as rich_render
-from pycode.scanner import scan_python_files
-from pycode.storage import load_graph, load_index, save_graph, save_index
 from pycode.tools import ToolSpec
 from pycode.utils import count_by_type
 
@@ -45,8 +29,7 @@ def index_project(
     if output_path is None:
         output_path = project_path / DEFAULT_ARTIFACT_DIR / DEFAULT_INDEX_FILE
 
-    project_index = build_project_index(project_path)
-    save_index(project_index, output_path)
+    project_index = PyCodeEngine().index(project_path, output_path)
     if not (rich_output and rich_render.print_index_summary_rich(project_index, output_path)):
         _print_index_summary(project_index, output_path)
     return project_index
@@ -54,15 +37,7 @@ def index_project(
 
 def build_project_index(project_path: Path) -> ProjectIndex:
     """Scan and parse a Python project without writing files."""
-    python_files = scan_python_files(project_path)
-    file_infos = [
-        parse_python_file(file_path, project_path)
-        for file_path in python_files
-    ]
-    return ProjectIndex(
-        project_path=str(project_path),
-        files=file_infos,
-    )
+    return PyCodeEngine().build_index(project_path)
 
 
 def graph_project(
@@ -75,9 +50,7 @@ def graph_project(
     if output_path is None:
         output_path = project_path / DEFAULT_ARTIFACT_DIR / DEFAULT_GRAPH_FILE
 
-    project_index = build_project_index(project_path)
-    graph = build_code_graph(project_index)
-    save_graph(graph, output_path)
+    graph = PyCodeEngine().graph(project_path, output_path)
     if not (rich_output and rich_render.print_graph_summary_rich(graph, output_path)):
         _print_graph_summary(graph, output_path)
     return graph
@@ -95,20 +68,7 @@ def query_project_graph(
     if graph_path is None:
         graph_path = project_path / DEFAULT_ARTIFACT_DIR / DEFAULT_GRAPH_FILE
 
-    graph = load_graph(graph_path)
-    if query_type == "imports":
-        _require_target(query_type, target)
-        result = get_file_imports(graph, target)
-    elif query_type == "imported-by":
-        _require_target(query_type, target)
-        result = get_file_imported_by(graph, target)
-    elif query_type == "calls":
-        _require_target(query_type, target)
-        result = get_function_calls(graph, target)
-    elif query_type == "entry":
-        result = find_entry_candidates(graph)
-    else:
-        raise ValueError(f"Unsupported query type: {query_type}")
+    result = PyCodeEngine().query(project_path, query_type, target, graph_path)
 
     if not (
         rich_output
@@ -127,9 +87,8 @@ def ask_project(
     rich_output: bool = False,
 ) -> str:
     """Answer a natural-language question using selected project context."""
-    index, graph = _load_project_artifacts(project_path)
-    retrieval = retrieve_for_question(question, project_path, index, graph)
-    return _answer_with_retrieval(retrieval, model, llm_client, rich_output=rich_output)
+    result = PyCodeEngine().ask(project_path, question, model, llm_client)
+    return _render_answer(result, rich_output=rich_output)
 
 
 def explain_project_target(
@@ -141,9 +100,8 @@ def explain_project_target(
     rich_output: bool = False,
 ) -> str:
     """Explain one project file using selected context."""
-    index, graph = _load_project_artifacts(project_path)
-    retrieval = retrieve_explain(file_path, project_path, index, graph)
-    return _answer_with_retrieval(retrieval, model, llm_client, rich_output=rich_output)
+    result = PyCodeEngine().explain(project_path, file_path, model, llm_client)
+    return _render_answer(result, rich_output=rich_output)
 
 
 def onboard_project(
@@ -154,9 +112,8 @@ def onboard_project(
     rich_output: bool = False,
 ) -> str:
     """Generate a newcomer reading order from project graph context."""
-    index, graph = _load_project_artifacts(project_path)
-    retrieval = retrieve_onboard(project_path, index, graph)
-    return _answer_with_retrieval(retrieval, model, llm_client, rich_output=rich_output)
+    result = PyCodeEngine().onboard(project_path, model, llm_client)
+    return _render_answer(result, rich_output=rich_output)
 
 
 def impact_project_target(
@@ -168,9 +125,8 @@ def impact_project_target(
     rich_output: bool = False,
 ) -> str:
     """Analyze the likely impact of changing one file."""
-    index, graph = _load_project_artifacts(project_path)
-    retrieval = retrieve_impact(file_path, project_path, index, graph)
-    return _answer_with_retrieval(retrieval, model, llm_client, rich_output=rich_output)
+    result = PyCodeEngine().impact(project_path, file_path, model, llm_client)
+    return _render_answer(result, rich_output=rich_output)
 
 
 def agent_project(
@@ -190,20 +146,13 @@ def agent_project(
     rule_plan: bool = False,
 ) -> AgentResult:
     """Run the stage-4 Agent workflow for a development-analysis task."""
-    client = (
-        llm_client
-        or (
-            None
-            if plan_only and rule_plan
-            else OpenAIResponsesClient(model=model)
-        )
-    )
-    result = run_agent_task(
-        task,
+    result = PyCodeEngine().run_agent(
         project_path,
+        task,
         allow_tests=run_tests,
-        graph_path=_resolve_agent_graph_path(project_path, graph_path),
-        llm_client=client,
+        graph_path=graph_path,
+        model=model,
+        llm_client=llm_client,
         tools=tools,
         plan_only=plan_only,
         use_llm_planner=not rule_plan,
@@ -364,23 +313,6 @@ def task_project(
     raise ValueError(f"Unsupported task operation: {operation}")
 
 
-def _resolve_agent_graph_path(
-    project_path: Path,
-    graph_path: Path | None,
-) -> Path | None:
-    if graph_path is None:
-        return None
-    if graph_path.is_absolute():
-        return graph_path
-    if graph_path.exists():
-        return graph_path.resolve()
-
-    project_relative = project_path / graph_path
-    if project_relative.exists():
-        return project_relative.resolve()
-    return graph_path
-
-
 def _print_task_header(label: str, project_path: Path, store: TaskDAGStore) -> None:
     print(f"PyCode {label}.")
     print(f"Project path: {project_path}")
@@ -497,33 +429,8 @@ def _print_query_result(
             print(f"{item.id} ({item.type})")
 
 
-def _load_project_artifacts(project_path: Path) -> tuple[ProjectIndex, CodeGraph]:
-    index_path = project_path / DEFAULT_ARTIFACT_DIR / DEFAULT_INDEX_FILE
-    graph_path = project_path / DEFAULT_ARTIFACT_DIR / DEFAULT_GRAPH_FILE
-    missing: list[str] = []
-    if not index_path.exists():
-        missing.append(str(index_path))
-    if not graph_path.exists():
-        missing.append(str(graph_path))
-    if missing:
-        raise FileNotFoundError(
-            "Missing PyCode artifacts: "
-            + ", ".join(missing)
-            + ". Run `pycode index <project_path>` and `pycode graph <project_path>` first."
-        )
-    return load_index(index_path), load_graph(graph_path)
-
-
-def _answer_with_retrieval(
-    retrieval: RetrievalResult,
-    model: str | None,
-    llm_client: LLMClient | None,
-    *,
-    rich_output: bool = False,
-) -> str:
-    prompt = build_code_qa_prompt(retrieval)
-    client = llm_client or OpenAIResponsesClient(model=model)
-    answer = client.generate(prompt)
+def _render_answer(result: AnswerResult, *, rich_output: bool = False) -> str:
+    answer, retrieval = result.answer, result.retrieval
     if not (
         rich_output
         and rich_render.print_llm_answer_rich(
@@ -763,11 +670,6 @@ def _safe_print(text: str) -> None:
     encoding = sys.stdout.encoding or "utf-8"
     safe_text = text.encode(encoding, errors="replace").decode(encoding)
     print(safe_text)
-
-
-def _require_target(query_type: str, target: str | None) -> None:
-    if target is None:
-        raise ValueError(f"Query '{query_type}' requires a target argument.")
 
 
 def build_parser() -> argparse.ArgumentParser:

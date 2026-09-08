@@ -47,6 +47,44 @@ V1.0 推荐从这条离线命令开始演示，因为它能稳定展示 `trace`�
 .\.venv\Scripts\python.exe -m pycode.cli graph .\examples\demo_project --plain
 ```
 
+## Python API（V2 Phase 1）
+
+`PyCodeEngine` 提供独立于 CLI 和 Streamlit 的同步入口，实例不保存项目或运行状态。下面的例子使用假 LLM，不需要 API Key：
+
+```python
+from pathlib import Path
+from pycode import PyCodeEngine
+
+class DemoLLM:
+    def generate(self, prompt: str) -> str:
+        return "离线示例回答；证据由实际检索生成。"
+
+project = Path("examples/demo_project")
+engine = PyCodeEngine()
+index = engine.index(project)
+graph = engine.graph(project)
+entries = engine.query(project, "entry")
+answer = engine.ask(project, "这个项目的入口在哪里？", llm_client=DemoLLM())
+impact = engine.impact(project, "services/user_service.py", llm_client=DemoLLM())
+run = engine.run_agent(
+    project, "这个项目的入口在哪里？",
+    llm_client=DemoLLM(), use_llm_planner=False,
+    enable_memory=False, enable_memory_extraction=False,
+)
+print(answer.answer, answer.evidence)
+print(run.answer, run.trace.run_id)
+```
+
+- `build_index()` 只返回索引，不写文件；`index()` 与 `graph()` 分别写入 `.pclens/index.json` 和 `.pclens/code_graph.json`，不会自动生成另一种产物。
+- `ask()`、`explain()`、`onboard()`、`impact()` 返回 `AnswerResult(answer, retrieval)`，并提供 `evidence` 属性；调用前需准备默认位置的索引和图谱。缺失／损坏产物与模型错误会向调用方抛出，不自动重建。
+- `run_agent()` 返回原有 `AgentResult`，可查看 Trace、Todo、Context 和工具结果；保留既有降级语义。`allow_tests=False` 为默认值，只有明确设为 `True` 才允许受控测试运行。
+- Agent 默认可能读写项目内部 Memory／Task 状态。关闭 Memory 自动提取并不等于禁止所有内部状态工具；Engine 不管理同项目并发写入。
+- Engine 不打印。调用方负责展示结果和处理异常。问答与 Agent 均可传入 `model` 或 `llm_client`，显式客户端优先；未注入时使用下节的配置。
+- `use_llm_planner=False` 只切换为规则规划，最终总结仍可调用模型。完全离线的计划预览使用 `plan_only=True, use_llm_planner=False`；离线完整执行可如上例注入假客户端。
+- 显式索引／图谱输出路径和 `query(graph_path=...)` 相对于当前工作目录。Agent graph 路径保留“绝对路径 → 当前目录已有文件 → 项目内已有文件 → 原路径”的解析顺序，工具仍限制项目内访问。
+
+完整 API／CLI 复测步骤和阶段问题记录见 [V2 开发记录](docs_v2.0/V2.0_development_record.md)。当前阶段仍为 Phase 1，尚未接入后端服务。
+
 ## LLM 配置
 
 `ask`、`explain`、`onboard`、`impact` 以及普通 Agent 总结需要 LLM。项目通过环境变量或 `.env` 读取配置，可以复制 `.env.example` 为 `.env` 后填写自己的 API Key。
@@ -216,7 +254,7 @@ V1.0 验收测试中的 git diff 场景依赖本机 `PATH` 上存在可用的 `g
 
 Windows 环境如果遇到 pytest 临时目录权限问题，继续优先使用项目内 `.pytest_tmp*` 目录，并换一个新的 `--basetemp` 名称重试。已有命令中如果显式带了 `--basetemp`，不需要再额外配置全局 pytest `addopts`。
 
-V1.0 验收测试集中在 `tests/test_v1_acceptance.py`，并补充覆盖 CLI、Rich 输出和 UI 数据加载。Codex 在当前 Windows 沙箱中运行 pytest 时使用临时进程内包装修正 pytest 临时目录 ACL 行为；该包装不是项目代码的一部分。
+V1.0 验收测试集中在 `tests/test_v1_acceptance.py`，并补充覆盖 CLI、Rich 输出和 UI 数据加载。早期 V1.0 验证曾使用临时进程内包装处理 Windows 沙箱的 pytest 临时目录 ACL 问题；该包装不是项目代码的一部分。V2 Phase 1 在沙箱外直接运行标准 pytest 命令完成验证，详情见开发记录。
 
 ## 当前局限
 
