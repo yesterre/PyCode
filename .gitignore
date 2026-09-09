@@ -58,6 +58,7 @@ tmp/
 temp/
 index.json
 .pclens/
+.pycode-workspaces/
 
 # IDE, editor, and OS files
 .vscode/

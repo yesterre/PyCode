@@ -83,7 +83,69 @@ print(run.answer, run.trace.run_id)
 - `use_llm_planner=False` 只切换为规则规划，最终总结仍可调用模型。完全离线的计划预览使用 `plan_only=True, use_llm_planner=False`；离线完整执行可如上例注入假客户端。
 - 显式索引／图谱输出路径和 `query(graph_path=...)` 相对于当前工作目录。Agent graph 路径保留“绝对路径 → 当前目录已有文件 → 项目内已有文件 → 原路径”的解析顺序，工具仍限制项目内访问。
 
-完整 API／CLI 复测步骤和阶段问题记录见 [V2 开发记录](docs_v2.0/V2.0_development_record.md)。当前阶段仍为 Phase 1，尚未接入后端服务。
+阶段问题和精简复测步骤见 [V2 开发记录](docs_v2.0/V2.0_development_record.md)。Phase 2 在该 Python API 之上提供下节的 HTTP 后端。
+
+## FastAPI Backend（V2 Phase 2）
+
+从项目根目录安装并启动：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+```
+
+浏览器打开 `http://127.0.0.1:8000/docs`，可直接提交请求；OpenAPI 位于 `/openapi.json`。只安装后端可选依赖时可使用 `pip install -e ".[backend]"`；项目常规开发安装已包含 Backend 和测试依赖。
+
+后端按 Router → Application Service → PyCodeAdapter → PyCodeEngine 调用，Core 不依赖 FastAPI。v2 的主要入口是公开 Git Repository URL：创建只登记，index 请求才准备受控 Workspace、必要时 Clone，并同步等待分析完成。当前单进程运行，Project 元数据与状态只在内存中；重启／热重载后需重新登记，新 UUID 使用新 Workspace，旧源码和产物保留但不会自动认领。不要使用多个 Uvicorn worker 共享内存状态。
+
+| 接口 | 请求示例 | 成功响应 |
+| --- | --- | --- |
+| `GET /health` | 无 | `200`，`{"status":"ok"}` |
+| `POST /api/v1/projects` | `{"name":"Flask","repo_url":"https://github.com/pallets/flask.git","branch":null}` | `201`，created 项目记录和 `id`，不 Clone |
+| `GET /api/v1/projects/{id}` | 无 | `200`，项目状态与索引统计 |
+| `POST /api/v1/projects/{id}/index` | 无请求体 | `200`，ready 项目及文件／节点／边数量 |
+| `POST /api/v1/projects/{id}/ask` | `{"question":"这个项目的入口在哪里？"}` | `200`，答案、意图和证据 |
+| `POST /api/v1/projects/{id}/impact` | `{"file_path":"src/flask/app.py"}` | `200`，影响分析、意图和证据 |
+
+执行顺序为创建 → index → 查询／分析。客户端不提交 `local_path`，同仓库／分支可以创建多个独立 Project；分支缺省时使用远程默认分支。状态为 created → preparing → indexing → ready，失败进入 failed 并记录安全的 `last_error`，可重试 index。首次浅 Clone 到 `<workspace_root>/<project_id>/repo`；后续 index 复用该工作区，只重建 `.pclens/index.json` 和 `.pclens/code_graph.json`，不自动 pull，不保证 Commit / Snapshot 一致性。
+
+项目记录包含 `id/name/repo_url/branch/status/created_at/updated_at/index_summary/last_error`，不返回服务器绝对路径；分析返回 `project_id/answer/intent/evidence`，不返回 prompt 或全部源码上下文。ask／impact 可额外传 `model`，凭证沿用服务端 `.env`／环境变量配置；请求不接受 API Key。impact 目标必须是工作区内的相对 Python 文件路径。
+
+服务需要 PATH 中存在 Git。可在启动前通过环境变量配置：
+
+| 配置 | 默认值 | 用途 |
+| --- | --- | --- |
+| `PYCODE_WORKSPACE_ROOT` | `.pycode-workspaces`（相对于启动目录） | 仅由服务／管理员写入的源码目录，已加入 Git ignore |
+| `PYCODE_GIT_ALLOWED_HOSTS` | `github.com,gitlab.com,gitee.com` | 逗号分隔、精确匹配的公共 HTTPS Host；可扩展其他公共 Git Server |
+| `PYCODE_GIT_TIMEOUT_SECONDS` | `120` | 每条 Git 命令的超时秒数 |
+
+URL 禁止内嵌认证、查询参数、片段及非 HTTPS 协议，仅接受默认端口或 443，禁用 HTTP 重定向和交互认证。Git 使用参数列表、隔离全局／系统配置、禁用 hooks，不递归获取子模块。在 checkout 前拒绝符号链接、子模块和仓库自带 `.pclens`，落盘及分析前检查链接、特殊文件和路径边界。整个 ingestion 不安装依赖、不运行仓库程序或测试。这是静态获取与分析流程；复杂网络出口控制、磁盘配额、并发外部写入隔离和执行 Sandbox 尚未实现。Git 配置及过滤器机制参见 [Git 配置文档](https://git-scm.com/docs/git-config)和 [Git 属性文档](https://git-scm.com/docs/gitattributes)。
+
+业务错误形如 `{"detail":{"code":"project_not_ready","message":"..."}}`。参数校验保留 FastAPI 默认 `422` 格式；未就绪、产物不可用和同项目操作冲突返回 `409`，越界／权限错误返回 `403`。模型配置不可用返回 `503`，超时返回 `504`，其他模型错误返回 `502`。模型失败不取消项目的 ready 状态。操作锁只协调本应用内的请求，不协调同时运行的 CLI 或其他进程。
+
+获取失败返回 `502 repository_failed`（检查仓库公开可访问、分支和服务器网络），Git 缺失返回 `503 git_unavailable`，Git 超时返回 `504 repository_timeout`；来源／Workspace 安全拒绝返回 `403`。失败不会把部分 Clone 当作 ready，已有项目的索引失败也会禁止继续分析。服务不会自动清理重启后留下的旧 Project 目录。
+
+最短 PowerShell 示例（另一个终端执行；index 会联网 Clone 并在受控 Workspace 生成产物）：
+
+```powershell
+$base = "http://127.0.0.1:8000"
+Invoke-RestMethod "$base/health"
+$project = Invoke-RestMethod "$base/api/v1/projects" -Method Post -ContentType "application/json" -Body '{"name":"Flask","repo_url":"https://github.com/pallets/flask.git"}'
+$projectUrl = "$base/api/v1/projects/$($project.id)"
+Invoke-RestMethod "$projectUrl/index" -Method Post
+Invoke-RestMethod $projectUrl
+# 以下两步需要已配置真实模型；会产生模型调用。
+Invoke-RestMethod "$projectUrl/ask" -Method Post -ContentType "application/json" -Body '{"question":"entry main"}'
+Invoke-RestMethod "$projectUrl/impact" -Method Post -ContentType "application/json" -Body '{"file_path":"src/flask/app.py"}'
+```
+
+无需模型配置或公共网络的 HTTP 闭环由假 LLM 和临时 Git 仓库验证（缺少 Git 时仅跳过真实 Git 场景；Windows 无符号链接权限时跳过对应 OS 用例，Git tree 链接拒绝仍可离线测试）：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests --basetemp=.pytest_tmp_v2_phase2_manual -o cache_dir=.pytest_tmp_v2_phase2_manual/.pytest_cache --tb=short -rs
+```
+
+数据库、Snapshot、自动远程更新、后台任务、AgentRun、SSE 和前端留待后续阶段。原 Python API／CLI 的本地目录调用方式保持不变。
 
 ## LLM 配置
 

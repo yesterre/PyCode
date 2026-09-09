@@ -16,10 +16,16 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
+    "httpx>=0.28,<1.0",
+]
+backend = [
+    "fastapi>=0.140,<1.0",
+    "pydantic>=2.9,<3.0",
+    "uvicorn>=0.30,<1.0",
 ]
 
 [project.scripts]
 pycode = "pycode.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["pycode*", "ui*"]
+include = ["pycode*", "ui*", "backend*"]
