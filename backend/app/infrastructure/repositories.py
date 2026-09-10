@@ -73,6 +73,23 @@ class GitRepositorySource:
             self._validate_tree(tree)
             self._run(["checkout", "--force", "HEAD"], cwd=destination, control=control)
 
+    def resolve_head(self, repository: Path) -> str:
+        with TemporaryDirectory(prefix="git-config-", dir=repository.parent) as temporary:
+            control = Path(temporary)
+            (control / "empty").mkdir()
+            output = self._run(
+                ["rev-parse", "--verify", "HEAD^{commit}"],
+                cwd=repository,
+                control=control,
+            )
+        try:
+            commit_sha = output.decode("ascii").strip().lower()
+        except UnicodeDecodeError as exc:
+            raise BackendError("repository_failed", "Repository HEAD is invalid.") from exc
+        if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit_sha) is None:
+            raise BackendError("repository_failed", "Repository HEAD is invalid.")
+        return commit_sha
+
     @staticmethod
     def _validate_tree(tree: bytes) -> None:
         for entry in tree.split(b"\0"):
@@ -129,13 +146,23 @@ class RepositoryWorkspace:
     def __init__(self, root: Path, source: GitRepositorySource | None = None) -> None:
         self.root = root.resolve()
         self.source = source if source is not None else GitRepositorySource()
-        self._prepared: set[UUID] = set()
 
     def validate_source(self, repo_url: str, branch: str | None) -> None:
         self.source.validate(repo_url, branch)
 
     def path_for(self, project_id: UUID) -> Path:
         return self.root / str(project_id) / "repo"
+
+    def persistent_path_for(self, project_id: UUID) -> str:
+        return str(self.path_for(project_id).resolve())
+
+    def _project_path(self, project: Project) -> Path:
+        expected = self.path_for(project.id).resolve()
+        if (project.workspace_path is None
+                or Path(project.workspace_path).resolve() != expected
+                or not expected.is_relative_to(self.root)):
+            raise BackendError("workspace_unavailable", "Project workspace is unavailable. Run indexing again.")
+        return expected
 
     @staticmethod
     def _check_entry(path: Path, root: Path) -> None:
@@ -164,13 +191,14 @@ class RepositoryWorkspace:
                     pending.append(child)
 
     def prepare(self, project: Project) -> Path:
+        self._project_path(project)
         self.root.mkdir(parents=True, exist_ok=True)
         self._check_entry(self.root, self.root)
         repo = self.path_for(project.id)
         repo.parent.mkdir(exist_ok=True)
         self._check_parents(project.id)
         if repo.exists() or repo.is_symlink():
-            return self.require_ready(project.id)
+            return self.require_ready(project)
         # TemporaryDirectory cleans only the newly created, owned staging path.
         # No existing repository is deleted on failure or on application restart.
         with TemporaryDirectory(prefix="prepare-", dir=repo.parent) as temporary:
@@ -178,14 +206,17 @@ class RepositoryWorkspace:
             self.source.clone(project.repo_url, project.branch, staging)
             self._check_tree(staging)
             staging.rename(repo)
-        self._prepared.add(project.id)
         return repo
 
-    def require_ready(self, project_id: UUID) -> Path:
-        repo = self._check_parents(project_id)
+    def require_ready(self, project: Project) -> Path:
+        self._project_path(project)
+        repo = self._check_parents(project.id)
         if not repo.exists() and not repo.is_symlink():
             raise BackendError("workspace_unavailable", "Project workspace is unavailable. Run indexing again.")
         self._check_tree(repo)
-        if project_id not in self._prepared or not (repo / ".git").is_dir():
-            raise BackendError("workspace_unavailable", "Workspace was not prepared by this application. Register a new project.")
+        if not (repo / ".git").is_dir():
+            raise BackendError("workspace_unavailable", "Project workspace is not a Git repository. Run indexing again.")
         return repo
+
+    def resolve_head(self, project: Project) -> str:
+        return self.source.resolve_head(self.require_ready(project))

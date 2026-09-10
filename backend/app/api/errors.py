@@ -24,6 +24,10 @@ ERROR_STATUS = {
     "model_unavailable": 503,
     "model_timeout": 504,
     "model_failed": 502,
+    "database_unavailable": 503,
+    "database_conflict": 409,
+    "database_failed": 500,
+    "agent_run_not_found": 404,
 }
 
 

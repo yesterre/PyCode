@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from backend.app.infrastructure.repositories import GitRepositorySource, RepositoryWorkspace
 from backend.app.main import create_app
+from backend.app.repositories import InMemoryPersistence
 from pycode.storage import load_graph, load_index
 
 
@@ -64,7 +65,10 @@ def offline_git(remote, monkeypatch):
 
 @pytest.fixture
 def git_app(tmp_path, adapter, offline_git):
-    return create_app(adapter=adapter, workspace=RepositoryWorkspace(tmp_path / "managed"))
+    return create_app(
+        adapter=adapter, workspace=RepositoryWorkspace(tmp_path / "managed"),
+        persistence=InMemoryPersistence(),
+    )
 
 
 def register(client, branch=None):
@@ -93,9 +97,10 @@ def test_real_git_http_chain_and_reuse_without_remote_update(git_app, offline_gi
         git(remote, "add", ".")
         git(remote, "commit", "-m", "remote update")
         (root / "local.py").write_text("local = True\n", encoding="utf-8")
-        count = len(offline_git)
+        clone_count = sum("clone" in command for command, _ in offline_git)
         assert client.post(url + "/index").json()["index_summary"]["file_count"] == 2
-        assert len(offline_git) == count and not (root / "later.py").exists()
+        assert sum("clone" in command for command, _ in offline_git) == clone_count
+        assert not (root / "later.py").exists()
         other = register(client)
         assert client.post(other + "/index").status_code == 200
         other_root = git_app.state.workspace.path_for(UUID(other.rsplit("/", 1)[-1]))
@@ -169,7 +174,8 @@ def test_repository_programs_and_inherited_git_commands_never_execute(git_app, r
         assert kwargs["env"]["GIT_CONFIG_GLOBAL"] == os.devnull
         assert "http.followRedirects=false" in command
         assert not any("recurse-submodules" in arg for arg in command)
-    assert all(any(op in command for op in ("clone", "ls-tree", "checkout")) for command, _ in offline_git)
+    assert all(any(op in command for op in ("clone", "ls-tree", "checkout", "rev-parse"))
+               for command, _ in offline_git)
 
 
 @pytest.mark.parametrize("repo_url,status", [
@@ -206,7 +212,10 @@ def test_git_errors_are_safe_and_staging_is_removed(tmp_path, adapter, monkeypat
         raise failure
 
     monkeypatch.setattr(subprocess, "run", fail)
-    app = create_app(adapter=adapter, workspace=RepositoryWorkspace(tmp_path / "managed"))
+    app = create_app(
+        adapter=adapter, workspace=RepositoryWorkspace(tmp_path / "managed"),
+        persistence=InMemoryPersistence(),
+    )
     with TestClient(app) as client:
         url = register(client)
         response = client.post(url + "/index")
@@ -279,7 +288,7 @@ def test_configurable_workspace_and_host_policy(tmp_path, monkeypatch):
     monkeypatch.setenv("PYCODE_WORKSPACE_ROOT", str(tmp_path / "configured"))
     monkeypatch.setenv("PYCODE_GIT_ALLOWED_HOSTS", "gitlab.com")
     monkeypatch.setenv("PYCODE_GIT_TIMEOUT_SECONDS", "30")
-    app = create_app()
+    app = create_app(persistence=InMemoryPersistence())
     assert app.state.workspace.root == tmp_path / "configured"
     assert app.state.workspace.source.timeout == 30
     with TestClient(app) as client:

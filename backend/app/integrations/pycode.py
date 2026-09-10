@@ -14,6 +14,9 @@ from pycode.storage import load_graph, load_index
 class PyCodeAdapter:
     """Convert Core results/errors without leaking presentation concerns to Core."""
 
+    index_artifact_path = f"{DEFAULT_ARTIFACT_DIR}/{DEFAULT_INDEX_FILE}"
+    graph_artifact_path = f"{DEFAULT_ARTIFACT_DIR}/{DEFAULT_GRAPH_FILE}"
+
     def __init__(
         self, *, engine: PyCodeEngine | None = None, llm_client: LLMClient | None = None,
     ) -> None:

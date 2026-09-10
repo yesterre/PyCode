@@ -1,24 +1,36 @@
 """Run with: python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000."""
 
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 
+from backend.app.config import load_environment
+from backend.app.db.session import DatabaseSessionManager
 from backend.app.api.errors import register_error_handlers
 from backend.app.api.projects import router
-from backend.app.infrastructure.projects import InMemoryProjectStore
+from backend.app.infrastructure.projects import ProjectOperationLocks
 from backend.app.infrastructure.repositories import DEFAULT_GIT_HOSTS, GitRepositorySource, RepositoryWorkspace
 from backend.app.integrations.pycode import PyCodeAdapter
-from backend.app.services.projects import ProjectService
+from backend.app.repositories import InMemoryPersistence
 
 
 def create_app(*, adapter: PyCodeAdapter | None = None,
-               workspace: RepositoryWorkspace | None = None) -> FastAPI:
-    """Own all project state in this instance; inject an adapter for offline tests."""
-    app = FastAPI(title="PyCode Backend", version="2.0-phase2")
-    store = InMemoryProjectStore()
-    app.state.project_store = store
+               workspace: RepositoryWorkspace | None = None,
+               persistence: InMemoryPersistence | None = None,
+               database_url: str | None = None) -> FastAPI:
+    """Use PostgreSQL by default; tests may explicitly inject memory persistence."""
+    load_environment()
+    database = DatabaseSessionManager(database_url) if persistence is None else None
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        yield
+        if database is not None:
+            database.dispose()
+
+    app = FastAPI(title="PyCode Backend", version="2.0-phase3", lifespan=lifespan)
     if workspace is None:
         hosts = os.environ.get("PYCODE_GIT_ALLOWED_HOSTS")
         source = GitRepositorySource(
@@ -27,10 +39,10 @@ def create_app(*, adapter: PyCodeAdapter | None = None,
         )
         workspace = RepositoryWorkspace(Path(os.environ.get("PYCODE_WORKSPACE_ROOT", ".pycode-workspaces")), source)
     app.state.workspace = workspace
-    app.state.project_service = ProjectService(
-        store, adapter if adapter is not None else PyCodeAdapter(),
-        workspace=workspace,
-    )
+    app.state.adapter = adapter if adapter is not None else PyCodeAdapter()
+    app.state.persistence = persistence
+    app.state.database = database
+    app.state.project_operations = ProjectOperationLocks()
     register_error_handlers(app)
     app.include_router(router)
 

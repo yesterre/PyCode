@@ -6,6 +6,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.main import create_app
+from backend.app.core.models import ProjectStatus
+from backend.app.repositories import InMemoryPersistence, InMemoryUnitOfWork
 from pycode.storage import load_graph, load_index
 
 
@@ -19,6 +21,17 @@ def test_health_and_openapi_without_model_or_project():
             "/api/v1/projects/{project_id}/index", "/api/v1/projects/{project_id}/ask",
             "/api/v1/projects/{project_id}/impact",
         }
+
+
+def test_production_project_api_requires_database_configuration(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "")
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/api/v1/projects",
+            json={"name": "Example", "repo_url": "https://github.com/example/demo.git"},
+        )
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "database_unavailable"
 
 
 def test_project_registration_has_no_clone_and_allows_duplicate_source(client, application, tmp_path, monkeypatch):
@@ -95,6 +108,26 @@ def test_index_and_analysis_http_chain(client, project_url, repository, llm):
     assert client.get(project_url).json()["status"] == "ready"
 
 
+def test_snapshot_and_agent_runs_use_persistence(client, project_url, application):
+    first = client.post(project_url + "/index")
+    second = client.post(project_url + "/index")
+    assert first.status_code == second.status_code == 200
+    assert client.post(project_url + "/ask", json={"question": "entry"}).status_code == 200
+    assert client.post(project_url + "/impact", json={"file_path": "main.py"}).status_code == 200
+
+    unit_of_work = InMemoryUnitOfWork(application.state.persistence)
+    project_id = UUID(project_url.rsplit("/", 1)[-1])
+    with unit_of_work.transaction():
+        snapshots = unit_of_work.snapshots.list_for_project(project_id)
+        runs = unit_of_work.agent_runs.list_for_project(project_id)
+    assert len(snapshots) == 1
+    assert snapshots[0].commit_sha == "a" * 40
+    assert snapshots[0].file_count == first.json()["index_summary"]["file_count"]
+    assert {run.run_type for run in runs} == {"ask", "impact"}
+    assert all(run.status == "completed" and run.snapshot_id == snapshots[0].id for run in runs)
+    assert all(run.prompt_tokens is None and run.completion_tokens is None for run in runs)
+
+
 @pytest.mark.parametrize("suffix,body", [
     ("ask", {}), ("ask", {"question": " "}), ("ask", {"question": "entry", "model": " "}),
     ("ask", {"question": "entry", "api_key": "not-accepted"}),
@@ -110,7 +143,13 @@ def test_analysis_validation(client, ready_url, llm, suffix, body):
 def test_not_ready_requires_current_session_index(client, project_url, repository, llm, application):
     from pycode import PyCodeEngine
 
-    project = application.state.project_store.get(UUID(project_url.rsplit("/", 1)[-1]))
+    unit_of_work = InMemoryUnitOfWork(application.state.persistence)
+    project_id = UUID(project_url.rsplit("/", 1)[-1])
+    with unit_of_work.transaction():
+        project = unit_of_work.projects.set_status(
+            project_id, ProjectStatus.CREATED,
+            workspace_path=application.state.workspace.persistent_path_for(project_id),
+        )
     application.state.workspace.prepare(project)
     PyCodeEngine().index(repository)
     PyCodeEngine().graph(repository)
@@ -172,7 +211,7 @@ def test_impact_normalizes_separators(client, ready_url, repository):
 
 
 def test_new_app_has_no_registration_and_keeps_artifacts(client, ready_url, repository, adapter, tmp_path):
-    with TestClient(create_app(adapter=adapter)) as other:
+    with TestClient(create_app(adapter=adapter, persistence=InMemoryPersistence())) as other:
         assert other.get(ready_url).status_code == 404
         response = other.post("/api/v1/projects", json={"name": "New", "repo_url": "https://github.com/example/demo.git"})
         assert response.status_code == 201 and response.json()["status"] == "created"
