@@ -23,24 +23,45 @@ class PyCodeAdapter:
         self.engine = engine if engine is not None else PyCodeEngine()
         self.llm_client = llm_client
 
-    def index(self, root: Path) -> IndexSummary:
-        self._artifact_paths(root)
-        index = self.engine.index(root)
-        graph = self.engine.graph(root)
+    def index(
+        self, root: Path, *, index_path: Path | None = None,
+        graph_path: Path | None = None,
+    ) -> IndexSummary:
+        if index_path is None or graph_path is None:
+            if index_path is not None or graph_path is not None:
+                raise ValueError("Both Snapshot artifact paths are required.")
+            self._artifact_paths(root)
+            index = self.engine.index(root)
+            graph = self.engine.graph(root)
+        else:
+            index = self.engine.index(root, output_path=index_path)
+            graph = self.engine.graph(root, output_path=graph_path)
         return IndexSummary(len(index.files), len(graph.nodes), len(graph.edges))
 
-    def ask(self, root: Path, question: str, model: str | None) -> Analysis:
-        self._check_artifacts(root)
+    def ask(
+        self, root: Path, question: str, model: str | None, *,
+        index_path: Path | None = None, graph_path: Path | None = None,
+    ) -> Analysis:
+        index_path, graph_path = self._check_artifacts(root, index_path, graph_path)
         try:
-            result = self.engine.ask(root, question, model=model, llm_client=self.llm_client)
+            result = self.engine.ask(
+                root, question, model=model, llm_client=self.llm_client,
+                index_path=index_path, graph_path=graph_path,
+            )
         except LLMError as exc:
             raise _model_error(exc) from exc
         return _analysis(result)
 
-    def impact(self, root: Path, file_path: str, model: str | None) -> Analysis:
-        self._check_artifacts(root)
+    def impact(
+        self, root: Path, file_path: str, model: str | None, *,
+        index_path: Path | None = None, graph_path: Path | None = None,
+    ) -> Analysis:
+        index_path, graph_path = self._check_artifacts(root, index_path, graph_path)
         try:
-            result = self.engine.impact(root, file_path, model=model, llm_client=self.llm_client)
+            result = self.engine.impact(
+                root, file_path, model=model, llm_client=self.llm_client,
+                index_path=index_path, graph_path=graph_path,
+            )
         except LLMError as exc:
             raise _model_error(exc) from exc
         return _analysis(result)
@@ -56,8 +77,14 @@ class PyCodeAdapter:
                 raise BackendError("path_forbidden", "Artifact path is outside the project.")
         return paths
 
-    def _check_artifacts(self, root: Path) -> None:
-        index_path, graph_path = self._artifact_paths(root)
+    def _check_artifacts(
+        self, root: Path, index_path: Path | None = None,
+        graph_path: Path | None = None,
+    ) -> tuple[Path, Path]:
+        if index_path is None or graph_path is None:
+            if index_path is not None or graph_path is not None:
+                raise ValueError("Both Snapshot artifact paths are required.")
+            index_path, graph_path = self._artifact_paths(root)
         try:
             # Validate using Core readers before invoking the model. Keeping this
             # separate prevents model failures from being mistaken for corruption.
@@ -68,6 +95,7 @@ class PyCodeAdapter:
             raise BackendError(
                 "artifacts_unavailable", "Index or graph is unavailable. Rebuild the project index.",
             ) from exc
+        return index_path, graph_path
 
 
 def _analysis(result: AnswerResult) -> Analysis:

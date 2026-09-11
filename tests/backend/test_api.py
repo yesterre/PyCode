@@ -6,7 +6,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.main import create_app
-from backend.app.core.models import ProjectStatus
+from backend.app.core.errors import BackendError
+from backend.app.core.models import IndexSummary, ProjectStatus
 from backend.app.repositories import InMemoryPersistence, InMemoryUnitOfWork
 from pycode.storage import load_graph, load_index
 
@@ -90,8 +91,9 @@ def test_index_and_analysis_http_chain(client, project_url, repository, llm):
     assert index.status_code == 200
     project = index.json()
     assert project["status"] == "ready" and project["last_error"] is None
-    graph = load_graph(repository / ".pclens/code_graph.json")
-    assert len(load_index(repository / ".pclens/index.json").files) == 2
+    artifact_dir = next((repository.parent / "artifacts").iterdir())
+    graph = load_graph(artifact_dir / "code_graph.json")
+    assert len(load_index(artifact_dir / "index.json").files) == 2
     assert project["index_summary"] == {"file_count": 2, "node_count": len(graph.nodes), "edge_count": len(graph.edges)}
     assert client.get(project_url).json() == project
     for suffix, body, intent in [
@@ -128,6 +130,39 @@ def test_snapshot_and_agent_runs_use_persistence(client, project_url, applicatio
     assert all(run.prompt_tokens is None and run.completion_tokens is None for run in runs)
 
 
+def test_memory_repository_rejects_current_snapshot_from_another_project(persistence):
+    unit_of_work = InMemoryUnitOfWork(persistence)
+    with unit_of_work.transaction():
+        first = unit_of_work.projects.create(
+            "First", "https://github.com/example/first.git",
+        )
+        second = unit_of_work.projects.create(
+            "Second", "https://github.com/example/second.git",
+        )
+        first_snapshot = unit_of_work.snapshots.upsert(
+            first.id, "1" * 40,
+            index_artifact_path="artifacts/first/index.json",
+            graph_artifact_path="artifacts/first/code_graph.json",
+            summary=IndexSummary(1, 2, 1),
+        )
+        second_snapshot = unit_of_work.snapshots.upsert(
+            second.id, "2" * 40,
+            index_artifact_path="artifacts/second/index.json",
+            graph_artifact_path="artifacts/second/code_graph.json",
+            summary=IndexSummary(2, 3, 2),
+        )
+        unit_of_work.projects.set_current_snapshot(first.id, first_snapshot.id)
+
+    with pytest.raises(BackendError) as failure:
+        with unit_of_work.transaction():
+            unit_of_work.projects.set_current_snapshot(first.id, second_snapshot.id)
+    assert failure.value.code == "database_conflict"
+
+    with unit_of_work.transaction():
+        persisted = unit_of_work.projects.get(first.id)
+    assert persisted.current_snapshot_id == first_snapshot.id
+
+
 @pytest.mark.parametrize("suffix,body", [
     ("ask", {}), ("ask", {"question": " "}), ("ask", {"question": "entry", "model": " "}),
     ("ask", {"question": "entry", "api_key": "not-accepted"}),
@@ -161,6 +196,7 @@ def test_not_ready_requires_current_session_index(client, project_url, repositor
 
 @pytest.mark.parametrize("bad_content", [b"def broken(:\n", b"\xff\xfe\xfa"])
 def test_source_error_and_reindex_recovery(client, ready_url, repository, bad_content):
+    next((repository.parent / "artifacts").glob("*/index.json")).unlink()
     file = repository / "broken.py"
     file.write_bytes(bad_content)
     response = client.post(ready_url + "/index")
@@ -178,7 +214,7 @@ def test_source_error_and_reindex_recovery(client, ready_url, repository, bad_co
 @pytest.mark.parametrize("artifact", ["index.json", "code_graph.json"])
 @pytest.mark.parametrize("damage", ["missing", "json", "shape"])
 def test_unavailable_artifacts_fail_before_model_and_can_recover(client, ready_url, repository, llm, artifact, damage):
-    path = repository / ".pclens" / artifact
+    path = next((repository.parent / "artifacts").glob(f"*/{artifact}"))
     if damage == "missing":
         path.unlink()
     else:
@@ -217,4 +253,85 @@ def test_new_app_has_no_registration_and_keeps_artifacts(client, ready_url, repo
         assert response.status_code == 201 and response.json()["status"] == "created"
         assert response.json()["id"] != ready_url.rsplit("/", 1)[-1]
     assert client.get(ready_url).json()["status"] == "ready"
-    assert (repository / ".pclens/index.json").exists()
+    assert next((repository.parent / "artifacts").glob("*/index.json")).exists()
+
+
+def test_published_bundle_is_reused_after_database_activation_failure(
+    client, project_url, repository, adapter, monkeypatch,
+):
+    from backend.app.repositories.memory import InMemorySnapshotRepository
+
+    original = InMemorySnapshotRepository.mark_ready
+    failed = False
+
+    def fail_once(self, *args, **kwargs):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise BackendError("database_failed", "A database transaction failed.")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(InMemorySnapshotRepository, "mark_ready", fail_once)
+    first = client.post(project_url + "/index")
+    assert first.status_code == 500
+    artifact = next((repository.parent / "artifacts").glob("*/manifest.json"))
+    assert artifact.exists()
+
+    forbidden = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("published artifacts must be recovered without rebuilding")
+    )
+    monkeypatch.setattr(adapter.engine, "index", forbidden)
+    monkeypatch.setattr(adapter.engine, "graph", forbidden)
+    recovered = client.post(project_url + "/index")
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()["status"] == "ready"
+
+
+def test_phase3_current_artifact_is_archived_without_rewriting_other_history(
+    client, project_url, application, adapter, repository, monkeypatch,
+):
+    project_id = UUID(project_url.rsplit("/", 1)[-1])
+    unit_of_work = InMemoryUnitOfWork(application.state.persistence)
+    with unit_of_work.transaction():
+        project = unit_of_work.projects.set_status(
+            project_id, ProjectStatus.READY,
+            workspace_path=application.state.workspace.persistent_path_for(project_id),
+        )
+    application.state.workspace.prepare(project)
+    adapter.engine.index(repository)
+    adapter.engine.graph(repository)
+    legacy_summary = IndexSummary(
+        len(load_index(repository / ".pclens/index.json").files),
+        len(load_graph(repository / ".pclens/code_graph.json").nodes),
+        len(load_graph(repository / ".pclens/code_graph.json").edges),
+    )
+    with unit_of_work.transaction():
+        current = unit_of_work.snapshots.upsert(
+            project_id, "a" * 40,
+            index_artifact_path=".pclens/index.json",
+            graph_artifact_path=".pclens/code_graph.json",
+            summary=legacy_summary,
+        )
+        historical = unit_of_work.snapshots.upsert(
+            project_id, "b" * 40,
+            index_artifact_path=".pclens/index.json",
+            graph_artifact_path=".pclens/code_graph.json",
+            summary=IndexSummary(9, 9, 9),
+        )
+        unit_of_work.projects.set_current_snapshot(project_id, current.id)
+
+    forbidden = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("legacy relocation must not rebuild a valid current Snapshot")
+    )
+    monkeypatch.setattr(adapter.engine, "index", forbidden)
+    monkeypatch.setattr(adapter.engine, "graph", forbidden)
+    response = client.post(project_url + "/index")
+    assert response.status_code == 200, response.text
+
+    with unit_of_work.transaction():
+        current = unit_of_work.snapshots.get(current.id)
+        historical = unit_of_work.snapshots.get(historical.id)
+    assert current.index_artifact_path.startswith("artifacts/")
+    assert current.status == "ready"
+    assert historical.index_artifact_path == ".pclens/index.json"
+    assert historical.status == "ready" and historical.file_count == 9

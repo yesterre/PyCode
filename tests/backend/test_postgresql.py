@@ -16,7 +16,9 @@ from sqlalchemy.pool import NullPool
 
 from backend.app.core.errors import BackendError
 from backend.app.core.models import AgentRunStatus, IndexSummary, ProjectStatus
-from backend.app.infrastructure.repositories import GitRepositorySource, RepositoryWorkspace
+from backend.app.infrastructure.repositories import (
+    GitRepositorySource, RepositoryRevision, RepositoryWorkspace,
+)
 from backend.app.main import create_app
 from backend.app.repositories import SqlAlchemyUnitOfWork
 
@@ -223,11 +225,28 @@ class RestartCopySource(GitRepositorySource):
         super().__init__()
         self.source = source
 
-    def clone(self, repo_url, branch, destination):
+    def clone(self, repo_url, branch, destination, *, project_id=None):
         shutil.copytree(self.source, destination)
         (destination / ".git").mkdir()
+        return RepositoryRevision(branch or "default", "d" * 40)
 
-    def resolve_head(self, repository):
+    def update(self, repo_url, branch, repository, *, project_id=None):
+        return RepositoryRevision(branch or "default", "d" * 40)
+
+    def checkout_exact(self, repository, commit_sha, *, project_id=None):
+        if commit_sha != "d" * 40:
+            raise AssertionError("unexpected fake Commit")
+
+    def protect_snapshot(
+        self, repository, snapshot_id, commit_sha, *, project_id=None,
+    ):
+        if commit_sha != "d" * 40:
+            raise AssertionError("unexpected fake Commit")
+
+    def commit_available(self, repository, commit_sha, *, project_id=None):
+        return commit_sha == "d" * 40
+
+    def resolve_head(self, repository, *, project_id=None):
         return "d" * 40
 
 

@@ -56,10 +56,101 @@ class SqlAlchemyProjectRepository:
         self.session.flush()
         return _project(record)
 
+    def set_current_snapshot(
+        self, project_id: UUID, snapshot_id: UUID | None,
+    ) -> Project:
+        record = self.session.get(ProjectORM, project_id)
+        if record is None:
+            raise BackendError("project_not_found", "Project does not exist.")
+        if snapshot_id is not None:
+            snapshot = self.session.get(ProjectSnapshotORM, snapshot_id)
+            if (snapshot is None or snapshot.project_id != project_id
+                    or snapshot.status != "ready"):
+                raise BackendError(
+                    "database_conflict", "A related persistent record is invalid.",
+                )
+        record.current_snapshot_id = snapshot_id
+        record.updated_at = _now()
+        self.session.flush()
+        return _project(record)
+
 
 class SqlAlchemyProjectSnapshotRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
+
+    def get(self, snapshot_id: UUID) -> ProjectSnapshot:
+        record = self.session.get(ProjectSnapshotORM, snapshot_id)
+        if record is None:
+            raise BackendError("snapshot_not_found", "Project snapshot does not exist.")
+        return _snapshot(record)
+
+    def get_by_commit(
+        self, project_id: UUID, commit_sha: str,
+    ) -> ProjectSnapshot | None:
+        statement = select(ProjectSnapshotORM).where(
+            ProjectSnapshotORM.project_id == project_id,
+            ProjectSnapshotORM.commit_sha == commit_sha,
+        )
+        record = self.session.scalars(statement).one_or_none()
+        return _snapshot(record) if record is not None else None
+
+    def start(self, project_id: UUID, commit_sha: str) -> ProjectSnapshot:
+        now = _now()
+        values = {
+            "id": uuid4(), "project_id": project_id, "commit_sha": commit_sha,
+            "index_artifact_path": None, "graph_artifact_path": None,
+            "file_count": None, "node_count": None, "edge_count": None,
+            "status": "indexing", "error_message": None,
+            "created_at": now, "updated_at": now,
+        }
+        statement = insert(ProjectSnapshotORM).values(**values).on_conflict_do_update(
+            constraint="uq_project_snapshots_project_commit",
+            set_={key: values[key] for key in (
+                "index_artifact_path", "graph_artifact_path", "file_count",
+                "node_count", "edge_count", "status", "error_message", "updated_at",
+            )},
+        ).returning(ProjectSnapshotORM).execution_options(populate_existing=True)
+        record = self.session.scalars(statement).one()
+        self.session.flush()
+        return _snapshot(record)
+
+    def mark_ready(
+        self, snapshot_id: UUID, *, index_artifact_path: str,
+        graph_artifact_path: str, summary: IndexSummary,
+    ) -> ProjectSnapshot:
+        record = self._get_record(snapshot_id)
+        record.status = "ready"
+        record.index_artifact_path = index_artifact_path
+        record.graph_artifact_path = graph_artifact_path
+        record.file_count = summary.file_count
+        record.node_count = summary.node_count
+        record.edge_count = summary.edge_count
+        record.error_message = None
+        record.updated_at = _now()
+        self.session.flush()
+        return _snapshot(record)
+
+    def mark_failed(
+        self, snapshot_id: UUID, error_message: str,
+    ) -> ProjectSnapshot:
+        record = self._get_record(snapshot_id)
+        record.status = "failed"
+        record.index_artifact_path = None
+        record.graph_artifact_path = None
+        record.file_count = None
+        record.node_count = None
+        record.edge_count = None
+        record.error_message = error_message
+        record.updated_at = _now()
+        self.session.flush()
+        return _snapshot(record)
+
+    def _get_record(self, snapshot_id: UUID) -> ProjectSnapshotORM:
+        record = self.session.get(ProjectSnapshotORM, snapshot_id)
+        if record is None:
+            raise BackendError("snapshot_not_found", "Project snapshot does not exist.")
+        return record
 
     def upsert(
         self, project_id: UUID, commit_sha: str, *,
@@ -225,6 +316,7 @@ def _project(record: ProjectORM) -> Project:
         record.id, record.name, record.repo_url, record.branch,
         ProjectStatus(record.status), record.created_at, record.updated_at,
         workspace_path=record.workspace_path, last_error=record.last_error,
+        current_snapshot_id=record.current_snapshot_id,
     )
 
 
@@ -234,6 +326,7 @@ def _snapshot(record: ProjectSnapshotORM) -> ProjectSnapshot:
         record.index_artifact_path, record.graph_artifact_path,
         record.file_count, record.node_count, record.edge_count,
         record.status, record.created_at, record.updated_at,
+        error_message=record.error_message,
     )
 
 

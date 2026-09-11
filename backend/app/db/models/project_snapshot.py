@@ -15,6 +15,20 @@ class ProjectSnapshotORM(Base):
         CheckConstraint("file_count >= 0", name="snapshot_file_count"),
         CheckConstraint("node_count >= 0", name="snapshot_node_count"),
         CheckConstraint("edge_count >= 0", name="snapshot_edge_count"),
+        CheckConstraint(
+            "status IN ('indexing', 'ready', 'failed')",
+            name="snapshot_status",
+        ),
+        CheckConstraint(
+            "status <> 'ready' OR ("
+            "index_artifact_path IS NOT NULL AND "
+            "graph_artifact_path IS NOT NULL AND "
+            "file_count IS NOT NULL AND "
+            "node_count IS NOT NULL AND "
+            "edge_count IS NOT NULL AND "
+            "error_message IS NULL)",
+            name="snapshot_ready_complete",
+        ),
         Index("ix_project_snapshots_project_updated", "project_id", "updated_at"),
     )
 
@@ -25,10 +39,11 @@ class ProjectSnapshotORM(Base):
     commit_sha: Mapped[str] = mapped_column(String(64), nullable=False)
     index_artifact_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     graph_artifact_path: Mapped[str | None] = mapped_column(Text, nullable=True)
-    file_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    node_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    edge_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    file_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    node_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    edge_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),
     )

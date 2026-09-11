@@ -108,9 +108,11 @@ class PyCodeEngine:
     def ask(
         self, project_path: str | Path, question: str,
         model: str | None = None, llm_client: LLMClient | None = None,
+        *, index_path: str | Path | None = None,
+        graph_path: str | Path | None = None,
     ) -> AnswerResult:
         root = Path(project_path)
-        index, graph = _load_project_artifacts(root)
+        index, graph = _load_project_artifacts(root, index_path, graph_path)
         return _answer(retrieve_for_question(question, root, index, graph), model, llm_client)
 
     def explain(
@@ -132,9 +134,11 @@ class PyCodeEngine:
     def impact(
         self, project_path: str | Path, file_path: str | Path,
         model: str | None = None, llm_client: LLMClient | None = None,
+        *, index_path: str | Path | None = None,
+        graph_path: str | Path | None = None,
     ) -> AnswerResult:
         root = Path(project_path)
-        index, graph = _load_project_artifacts(root)
+        index, graph = _load_project_artifacts(root, index_path, graph_path)
         return _answer(retrieve_impact(str(file_path), root, index, graph), model, llm_client)
 
     def run_agent(
@@ -165,9 +169,18 @@ class PyCodeEngine:
         )
 
 
-def _load_project_artifacts(project_path: Path) -> tuple[ProjectIndex, CodeGraph]:
-    index_path = project_path / DEFAULT_ARTIFACT_DIR / DEFAULT_INDEX_FILE
-    graph_path = project_path / DEFAULT_ARTIFACT_DIR / DEFAULT_GRAPH_FILE
+def _load_project_artifacts(
+    project_path: Path, index_path: str | Path | None = None,
+    graph_path: str | Path | None = None,
+) -> tuple[ProjectIndex, CodeGraph]:
+    index_path = (
+        Path(index_path) if index_path is not None
+        else project_path / DEFAULT_ARTIFACT_DIR / DEFAULT_INDEX_FILE
+    )
+    graph_path = (
+        Path(graph_path) if graph_path is not None
+        else project_path / DEFAULT_ARTIFACT_DIR / DEFAULT_GRAPH_FILE
+    )
     missing = [str(path) for path in (index_path, graph_path) if not path.exists()]
     if missing:
         raise FileNotFoundError(

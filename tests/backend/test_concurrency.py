@@ -7,12 +7,13 @@ def test_index_lock_keeps_health_get_and_other_projects_responsive(
 ):
     entered, release = Event(), Event()
     original = adapter.engine.graph
+    next((repository.parent / "artifacts").glob("*/code_graph.json")).unlink()
 
-    def slow_graph(root):
+    def slow_graph(root, *args, **kwargs):
         if root == repository:
             entered.set()
             assert release.wait(10), "test did not release indexing"
-        return original(root)
+        return original(root, *args, **kwargs)
 
     monkeypatch.setattr(adapter.engine, "graph", slow_graph)
     other_root = tmp_path / "other"

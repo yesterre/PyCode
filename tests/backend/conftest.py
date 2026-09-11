@@ -7,7 +7,9 @@ from fastapi.testclient import TestClient
 
 from backend.app.integrations.pycode import PyCodeAdapter
 from backend.app.main import create_app
-from backend.app.infrastructure.repositories import GitRepositorySource, RepositoryWorkspace
+from backend.app.infrastructure.repositories import (
+    GitRepositorySource, RepositoryRevision, RepositoryWorkspace,
+)
 from backend.app.repositories import InMemoryPersistence
 
 
@@ -22,12 +24,29 @@ class CopySource(GitRepositorySource):
         self.repositories = {REPO_URL: root}
         self.calls = []
 
-    def clone(self, repo_url, branch, destination):
+    def clone(self, repo_url, branch, destination, *, project_id=None):
         self.calls.append((repo_url, branch, destination))
         shutil.copytree(self.repositories[repo_url], destination, symlinks=True)
         (destination / ".git").mkdir(exist_ok=True)
+        return RepositoryRevision(branch or "default", "a" * 40)
 
-    def resolve_head(self, repository):
+    def update(self, repo_url, branch, repository, *, project_id=None):
+        return RepositoryRevision(branch or "default", "a" * 40)
+
+    def checkout_exact(self, repository, commit_sha, *, project_id=None):
+        if commit_sha != "a" * 40:
+            raise AssertionError("unexpected fake Commit")
+
+    def protect_snapshot(
+        self, repository, snapshot_id, commit_sha, *, project_id=None,
+    ):
+        if commit_sha != "a" * 40:
+            raise AssertionError("unexpected fake Commit")
+
+    def commit_available(self, repository, commit_sha, *, project_id=None):
+        return commit_sha == "a" * 40
+
+    def resolve_head(self, repository, *, project_id=None):
         return "a" * 40
 
 

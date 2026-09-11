@@ -19,8 +19,29 @@ class ProjectRepository(Protocol):
         workspace_path: str | None = None, error: str | None = None,
     ) -> Project: ...
 
+    def set_current_snapshot(
+        self, project_id: UUID, snapshot_id: UUID | None,
+    ) -> Project: ...
+
 
 class ProjectSnapshotRepository(Protocol):
+    def get(self, snapshot_id: UUID) -> ProjectSnapshot: ...
+
+    def get_by_commit(
+        self, project_id: UUID, commit_sha: str,
+    ) -> ProjectSnapshot | None: ...
+
+    def start(self, project_id: UUID, commit_sha: str) -> ProjectSnapshot: ...
+
+    def mark_ready(
+        self, snapshot_id: UUID, *, index_artifact_path: str,
+        graph_artifact_path: str, summary: IndexSummary,
+    ) -> ProjectSnapshot: ...
+
+    def mark_failed(
+        self, snapshot_id: UUID, error_message: str,
+    ) -> ProjectSnapshot: ...
+
     def upsert(
         self, project_id: UUID, commit_sha: str, *,
         index_artifact_path: str | None, graph_artifact_path: str | None,

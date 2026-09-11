@@ -74,8 +74,8 @@ def test_impact_rejects_resolved_escape_even_when_relative_path_looks_safe(
 def test_artifact_resolved_escape_is_rejected_before_core_write(
     client, project_url, repository, tmp_path, monkeypatch,
 ):
-    apparent = repository / ".pclens/index.json"
-    outside = tmp_path / "external.json"
+    apparent = repository.parent / "artifacts"
+    outside = tmp_path / "external-artifacts"
     original = Path.resolve
 
     def resolve(path, *args, **kwargs):
@@ -83,7 +83,7 @@ def test_artifact_resolved_escape_is_rejected_before_core_write(
 
     monkeypatch.setattr(Path, "resolve", resolve)
     assert client.post(project_url + "/index").status_code == 403
-    assert not outside.exists() and not (repository / ".pclens").exists()
+    assert not outside.exists() and list(apparent.iterdir()) == []
 
 
 def test_routers_and_services_obey_core_dependency_direction():

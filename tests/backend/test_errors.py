@@ -50,8 +50,12 @@ def test_model_name_reaches_core_after_trimming(client, ready_url, adapter, monk
     assert seen == ["demo-model"]
 
 
-def test_graph_failure_marks_failed_and_releases_lock(client, ready_url, adapter, monkeypatch):
-    def forbidden(root):
+def test_graph_failure_marks_failed_and_releases_lock(
+    client, ready_url, repository, adapter, monkeypatch,
+):
+    next((repository.parent / "artifacts").glob("*/code_graph.json")).unlink()
+
+    def forbidden(root, *args, **kwargs):
         raise PermissionError("private filesystem detail")
 
     with monkeypatch.context() as patch:
@@ -66,7 +70,7 @@ def test_graph_failure_marks_failed_and_releases_lock(client, ready_url, adapter
 
 
 def test_unexpected_index_error_is_logged_and_sanitized(application, project_url, adapter, monkeypatch, caplog):
-    def crash(root):
+    def crash(root, *args, **kwargs):
         raise RuntimeError("internal implementation detail")
 
     monkeypatch.setattr(adapter.engine, "index", crash)

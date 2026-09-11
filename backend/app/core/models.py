@@ -20,6 +20,12 @@ class AgentRunStatus(StrEnum):
     FAILED = "failed"
 
 
+class SnapshotStatus(StrEnum):
+    INDEXING = "indexing"
+    READY = "ready"
+    FAILED = "failed"
+
+
 @dataclass(frozen=True)
 class IndexSummary:
     file_count: int
@@ -37,6 +43,7 @@ class Project:
     created_at: datetime
     updated_at: datetime
     workspace_path: str | None = None
+    current_snapshot_id: UUID | None = None
     index_summary: IndexSummary | None = None
     last_error: str | None = None
 
@@ -48,12 +55,13 @@ class ProjectSnapshot:
     commit_sha: str
     index_artifact_path: str | None
     graph_artifact_path: str | None
-    file_count: int
-    node_count: int
-    edge_count: int
+    file_count: int | None
+    node_count: int | None
+    edge_count: int | None
     status: str
     created_at: datetime
     updated_at: datetime
+    error_message: str | None = None
 
 
 @dataclass(frozen=True)

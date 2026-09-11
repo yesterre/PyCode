@@ -61,10 +61,78 @@ class InMemoryProjectRepository:
         self.state.projects[project_id] = updated
         return updated
 
+    def set_current_snapshot(
+        self, project_id: UUID, snapshot_id: UUID | None,
+    ) -> Project:
+        project = self.get(project_id)
+        if snapshot_id is not None:
+            snapshot = self.state.snapshots.get(snapshot_id)
+            if (snapshot is None or snapshot.project_id != project_id
+                    or snapshot.status != "ready"):
+                raise BackendError(
+                    "database_conflict", "A related persistent record is invalid.",
+                )
+        updated = replace(
+            project, current_snapshot_id=snapshot_id, updated_at=_now(),
+        )
+        self.state.projects[project_id] = updated
+        return updated
+
 
 class InMemorySnapshotRepository:
     def __init__(self, state: InMemoryPersistence) -> None:
         self.state = state
+
+    def get(self, snapshot_id: UUID) -> ProjectSnapshot:
+        try:
+            return self.state.snapshots[snapshot_id]
+        except KeyError:
+            raise BackendError("snapshot_not_found", "Project snapshot does not exist.") from None
+
+    def get_by_commit(
+        self, project_id: UUID, commit_sha: str,
+    ) -> ProjectSnapshot | None:
+        return next((
+            snapshot for snapshot in self.state.snapshots.values()
+            if snapshot.project_id == project_id and snapshot.commit_sha == commit_sha
+        ), None)
+
+    def start(self, project_id: UUID, commit_sha: str) -> ProjectSnapshot:
+        self._project(project_id)
+        existing = self.get_by_commit(project_id, commit_sha)
+        now = _now()
+        snapshot = ProjectSnapshot(
+            existing.id if existing else uuid4(), project_id, commit_sha,
+            None, None, None, None, None, "indexing",
+            existing.created_at if existing else now, now,
+        )
+        self.state.snapshots[snapshot.id] = snapshot
+        return snapshot
+
+    def mark_ready(
+        self, snapshot_id: UUID, *, index_artifact_path: str,
+        graph_artifact_path: str, summary: IndexSummary,
+    ) -> ProjectSnapshot:
+        snapshot = replace(
+            self.get(snapshot_id), status="ready",
+            index_artifact_path=index_artifact_path,
+            graph_artifact_path=graph_artifact_path,
+            file_count=summary.file_count, node_count=summary.node_count,
+            edge_count=summary.edge_count, error_message=None, updated_at=_now(),
+        )
+        self.state.snapshots[snapshot.id] = snapshot
+        return snapshot
+
+    def mark_failed(
+        self, snapshot_id: UUID, error_message: str,
+    ) -> ProjectSnapshot:
+        snapshot = replace(
+            self.get(snapshot_id), status="failed", error_message=error_message,
+            index_artifact_path=None, graph_artifact_path=None,
+            file_count=None, node_count=None, edge_count=None, updated_at=_now(),
+        )
+        self.state.snapshots[snapshot.id] = snapshot
+        return snapshot
 
     def upsert(
         self, project_id: UUID, commit_sha: str, *,

@@ -41,4 +41,5 @@ def get_project_service(
         request.app.state.adapter,
         workspace=request.app.state.workspace,
         operations=request.app.state.project_operations,
+        artifacts=request.app.state.artifacts,
     )

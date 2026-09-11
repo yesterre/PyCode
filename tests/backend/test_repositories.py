@@ -11,7 +11,10 @@ from uuid import UUID
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app.infrastructure.repositories import GitRepositorySource, RepositoryWorkspace
+from backend.app.core.errors import BackendError
+from backend.app.infrastructure.repositories import (
+    GIT_LOGGER, GitRepositorySource, RepositoryWorkspace,
+)
 from backend.app.main import create_app
 from backend.app.repositories import InMemoryPersistence
 from pycode.storage import load_graph, load_index
@@ -50,11 +53,10 @@ def offline_git(remote, monkeypatch):
         if kwargs.get("env", {}).get("GIT_ALLOW_PROTOCOL") == "https":
             calls.append((list(command), dict(kwargs)))
             # Only this test transport substitutes a trusted temporary repository.
-            # All actual clone/tree/checkout work still uses the production code.
+            # All actual clone/fetch/tree/checkout work still uses production code.
             command = list(command)
-            if "clone" in command:
-                assert command[-2] == URL
-                command[-2] = remote.as_uri()
+            if URL in command:
+                command[command.index(URL)] = remote.as_uri()
                 command[1:1] = ["-c", "protocol.file.allow=always"]
                 kwargs["env"] = {**kwargs["env"], "GIT_ALLOW_PROTOCOL": "file"}
         return original(command, **kwargs)
@@ -77,7 +79,9 @@ def register(client, branch=None):
     return "/api/v1/projects/" + response.json()["id"]
 
 
-def test_real_git_http_chain_and_reuse_without_remote_update(git_app, offline_git, remote):
+def test_real_git_http_chain_fetches_new_commit_and_preserves_snapshots(
+    git_app, offline_git, remote,
+):
     with TestClient(git_app) as client:
         url = register(client)
         assert offline_git == [] and not git_app.state.workspace.root.exists()
@@ -86,8 +90,9 @@ def test_real_git_http_chain_and_reuse_without_remote_update(git_app, offline_gi
         assert response.json()["status"] == "ready"
         root = git_app.state.workspace.path_for(UUID(response.json()["id"]))
         assert root == git_app.state.workspace.root / response.json()["id"] / "repo"
-        assert len(load_index(root / ".pclens/index.json").files) == 1
-        assert load_graph(root / ".pclens/code_graph.json").nodes
+        first_artifact = next((root.parent / "artifacts").iterdir())
+        assert len(load_index(first_artifact / "index.json").files) == 1
+        assert load_graph(first_artifact / "code_graph.json").nodes
         for operation, body in [("ask", {"question": "entry main"}), ("impact", {"file_path": "main.py"})]:
             answer = client.post(url + "/" + operation, json=body)
             assert answer.status_code == 200, answer.text
@@ -100,7 +105,11 @@ def test_real_git_http_chain_and_reuse_without_remote_update(git_app, offline_gi
         clone_count = sum("clone" in command for command, _ in offline_git)
         assert client.post(url + "/index").json()["index_summary"]["file_count"] == 2
         assert sum("clone" in command for command, _ in offline_git) == clone_count
-        assert not (root / "later.py").exists()
+        assert (root / "later.py").exists()
+        assert not (root / "local.py").exists()
+        artifact_dirs = [path for path in (root.parent / "artifacts").iterdir() if path.is_dir()]
+        assert len(artifact_dirs) == 2
+        assert sorted(len(load_index(path / "index.json").files) for path in artifact_dirs) == [1, 2]
         other = register(client)
         assert client.post(other + "/index").status_code == 200
         other_root = git_app.state.workspace.path_for(UUID(other.rsplit("/", 1)[-1]))
@@ -112,7 +121,7 @@ def test_explicit_branch_and_missing_branch_retry(git_app, remote):
     with TestClient(git_app) as client:
         url = register(client, "feature/demo")
         response = client.post(url + "/index")
-        assert response.status_code == 502
+        assert response.status_code == 422
         failed = client.get(url).json()
         assert failed["status"] == "failed" and failed["last_error"]
         root = git_app.state.workspace.path_for(UUID(failed["id"]))
@@ -174,7 +183,10 @@ def test_repository_programs_and_inherited_git_commands_never_execute(git_app, r
         assert kwargs["env"]["GIT_CONFIG_GLOBAL"] == os.devnull
         assert "http.followRedirects=false" in command
         assert not any("recurse-submodules" in arg for arg in command)
-    assert all(any(op in command for op in ("clone", "ls-tree", "checkout", "rev-parse"))
+    assert all(any(op in command for op in (
+        "clone", "ls-remote", "ls-tree", "checkout", "clean", "rev-parse",
+        "update-ref",
+    ))
                for command, _ in offline_git)
 
 
@@ -228,15 +240,81 @@ def test_git_errors_are_safe_and_staging_is_removed(tmp_path, adapter, monkeypat
         assert list(root.parent.iterdir()) == []
 
 
+def test_git_network_environment_is_allowlisted_and_failure_log_is_safe(
+    tmp_path, monkeypatch,
+):
+    allowed = {
+        "HTTPS_PROXY": "https://proxy-user:proxy-password@proxy.invalid:8443",
+        "NO_PROXY": "localhost,127.0.0.1",
+        "SSL_CERT_FILE": "C:/trusted/ca.pem",
+        "GIT_SSL_CAINFO": "C:/trusted/git-ca.pem",
+    }
+    dangerous = {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "http.sslVerify",
+        "GIT_CONFIG_VALUE_0": "false",
+        "GIT_PROXY_COMMAND": "unsafe-proxy-command",
+        "GIT_SSL_NO_VERIFY": "true",
+        "CURL_CA_BUNDLE": "C:/unapproved/curl-ca.pem",
+    }
+    for key, value in {**allowed, **dangerous}.items():
+        monkeypatch.setenv(key, value)
+    captured = {}
+    logs = []
+    project_id = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+
+    def fail(command, **kwargs):
+        captured.update(kwargs["env"])
+        raise subprocess.CalledProcessError(
+            128, command,
+            stderr=(
+                b"fatal: proxy https://proxy-user:proxy-password@proxy.invalid:8443 "
+                b"token=top-secret\nAuthorization: Bearer bearer-secret\n" + b"x" * 3000
+            ),
+        )
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    monkeypatch.setattr(
+        GIT_LOGGER, "error",
+        lambda message, *args: logs.append(message % args),
+    )
+    assert GIT_LOGGER.name == "uvicorn.error"
+    destination_parent = tmp_path / "destination"
+    destination_parent.mkdir()
+    with pytest.raises(BackendError) as failure:
+        GitRepositorySource().clone(
+            URL, "main", destination_parent / "repo", project_id=project_id,
+        )
+
+    assert failure.value.code == "repository_failed"
+    assert all(captured[key] == value for key, value in allowed.items())
+    assert not dangerous.keys() & captured.keys()
+    assert captured["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert captured["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert len(logs) == 1
+    log = logs[0]
+    assert str(project_id) in log
+    assert "stage=resolve_remote_branch" in log
+    assert "operation=ls-remote" in log
+    assert "remote_host=github.com" in log and "branch=main" in log
+    assert "returncode=128" in log and "timeout=120" in log
+    assert "<redacted-url>" in log and "<truncated>" in log
+    for secret in (
+        *allowed.values(), "top-secret", "bearer-secret",
+        "proxy-user", "proxy-password",
+    ):
+        assert secret not in log
+
+
 def test_preparing_holds_lock_and_does_not_block_queries(client, project_url, application, monkeypatch):
     entered, release = Event(), Event()
     source = application.state.workspace.source
     original = source.clone
 
-    def slow(*args):
+    def slow(*args, **kwargs):
         entered.set()
         assert release.wait(10)
-        original(*args)
+        return original(*args, **kwargs)
 
     monkeypatch.setattr(source, "clone", slow)
     with ThreadPoolExecutor(max_workers=1) as pool:
