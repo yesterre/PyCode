@@ -10,7 +10,8 @@ from uuid import UUID, uuid4
 
 from backend.app.core.errors import BackendError
 from backend.app.core.models import (
-    AgentRun, AgentRunStatus, IndexSummary, Project, ProjectSnapshot, ProjectStatus, TraceEvent,
+    AgentRun, AgentRunStatus, BackgroundTask, BackgroundTaskStatus, IndexSummary,
+    Project, ProjectSnapshot, ProjectStatus, TraceEvent,
 )
 
 
@@ -27,6 +28,7 @@ class InMemoryPersistence:
         self.snapshots: dict[UUID, ProjectSnapshot] = {}
         self.agent_runs: dict[UUID, AgentRun] = {}
         self.trace_events: dict[UUID, TraceEvent] = {}
+        self.background_tasks: dict[UUID, BackgroundTask] = {}
 
 
 class InMemoryProjectRepository:
@@ -243,6 +245,89 @@ class InMemoryTraceEventRepository:
         )
 
 
+class InMemoryBackgroundTaskRepository:
+    def __init__(self, state: InMemoryPersistence) -> None:
+        self.state = state
+
+    def create(
+        self, task_type: str, *, project_id: UUID | None = None,
+        snapshot_id: UUID | None = None, agent_run_id: UUID | None = None,
+    ) -> BackgroundTask:
+        if project_id is not None:
+            InMemoryProjectRepository(self.state).get(project_id)
+        if snapshot_id is not None and snapshot_id not in self.state.snapshots:
+            raise BackendError("database_conflict", "A related persistent record is invalid.")
+        if agent_run_id is not None and agent_run_id not in self.state.agent_runs:
+            raise BackendError("database_conflict", "A related persistent record is invalid.")
+        task = BackgroundTask(
+            uuid4(), task_type, BackgroundTaskStatus.QUEUED,
+            project_id, snapshot_id, agent_run_id, 0, None, None,
+            _now(), None, None,
+        )
+        self.state.background_tasks[task.id] = task
+        return task
+
+    def get(self, task_id: UUID) -> BackgroundTask:
+        try:
+            return self.state.background_tasks[task_id]
+        except KeyError:
+            raise BackendError(
+                "background_task_not_found", "Background task does not exist.",
+            ) from None
+
+    def mark_running(self, task_id: UUID) -> BackgroundTask:
+        task = self._expect(task_id, BackgroundTaskStatus.QUEUED)
+        updated = replace(
+            task, status=BackgroundTaskStatus.RUNNING,
+            attempt_count=task.attempt_count + 1, started_at=_now(),
+            error_code=None, error_message=None,
+        )
+        self.state.background_tasks[task_id] = updated
+        return updated
+
+    def mark_completed(
+        self, task_id: UUID, *, snapshot_id: UUID | None = None,
+    ) -> BackgroundTask:
+        task = self._expect(task_id, BackgroundTaskStatus.RUNNING)
+        if snapshot_id is not None:
+            snapshot = self.state.snapshots.get(snapshot_id)
+            if (snapshot is None or task.project_id is None
+                    or snapshot.project_id != task.project_id
+                    or snapshot.status != "ready"):
+                raise BackendError(
+                    "database_conflict", "A related persistent record is invalid.",
+                )
+        updated = replace(
+            task, status=BackgroundTaskStatus.COMPLETED, finished_at=_now(),
+            snapshot_id=snapshot_id if snapshot_id is not None else task.snapshot_id,
+            error_code=None, error_message=None,
+        )
+        self.state.background_tasks[task_id] = updated
+        return updated
+
+    def mark_failed(
+        self, task_id: UUID, *, error_code: str, error_message: str,
+    ) -> BackgroundTask:
+        task = self._expect(task_id, BackgroundTaskStatus.RUNNING)
+        updated = replace(
+            task, status=BackgroundTaskStatus.FAILED, finished_at=_now(),
+            error_code=error_code, error_message=error_message,
+        )
+        self.state.background_tasks[task_id] = updated
+        return updated
+
+    def _expect(
+        self, task_id: UUID, expected: BackgroundTaskStatus,
+    ) -> BackgroundTask:
+        task = self.get(task_id)
+        if task.status != expected:
+            raise BackendError(
+                "background_task_state_conflict",
+                "Background task cannot make the requested state transition.",
+            )
+        return task
+
+
 class InMemoryUnitOfWork:
     def __init__(self, state: InMemoryPersistence) -> None:
         self.state = state
@@ -250,6 +335,7 @@ class InMemoryUnitOfWork:
         self.snapshots = InMemorySnapshotRepository(state)
         self.agent_runs = InMemoryAgentRunRepository(state)
         self.trace_events = InMemoryTraceEventRepository(state)
+        self.background_tasks = InMemoryBackgroundTaskRepository(state)
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
@@ -257,10 +343,12 @@ class InMemoryUnitOfWork:
             before = (
                 deepcopy(self.state.projects), deepcopy(self.state.snapshots),
                 deepcopy(self.state.agent_runs), deepcopy(self.state.trace_events),
+                deepcopy(self.state.background_tasks),
             )
             try:
                 yield
             except Exception:
                 (self.state.projects, self.state.snapshots,
-                 self.state.agent_runs, self.state.trace_events) = before
+                 self.state.agent_runs, self.state.trace_events,
+                 self.state.background_tasks) = before
                 raise

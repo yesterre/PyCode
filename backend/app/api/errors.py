@@ -33,6 +33,9 @@ ERROR_STATUS = {
     "database_conflict": 409,
     "database_failed": 500,
     "agent_run_not_found": 404,
+    "background_task_not_found": 404,
+    "background_task_state_conflict": 409,
+    "task_queue_unavailable": 503,
 }
 
 

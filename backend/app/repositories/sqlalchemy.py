@@ -12,9 +12,12 @@ from sqlalchemy.orm import Session
 
 from backend.app.core.errors import BackendError
 from backend.app.core.models import (
-    AgentRun, AgentRunStatus, IndexSummary, Project, ProjectSnapshot, ProjectStatus, TraceEvent,
+    AgentRun, AgentRunStatus, BackgroundTask, BackgroundTaskStatus, IndexSummary,
+    Project, ProjectSnapshot, ProjectStatus, TraceEvent,
 )
-from backend.app.db.models import AgentRunORM, ProjectORM, ProjectSnapshotORM, TraceEventORM
+from backend.app.db.models import (
+    AgentRunORM, BackgroundTaskORM, ProjectORM, ProjectSnapshotORM, TraceEventORM,
+)
 
 
 def _now() -> datetime:
@@ -282,6 +285,88 @@ class SqlAlchemyTraceEventRepository:
         return [_trace_event(record) for record in self.session.scalars(statement)]
 
 
+class SqlAlchemyBackgroundTaskRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self, task_type: str, *, project_id: UUID | None = None,
+        snapshot_id: UUID | None = None, agent_run_id: UUID | None = None,
+    ) -> BackgroundTask:
+        record = BackgroundTaskORM(
+            id=uuid4(), task_type=task_type,
+            status=BackgroundTaskStatus.QUEUED.value,
+            project_id=project_id, snapshot_id=snapshot_id,
+            agent_run_id=agent_run_id, attempt_count=0, created_at=_now(),
+        )
+        self.session.add(record)
+        self.session.flush()
+        return _background_task(record)
+
+    def get(self, task_id: UUID) -> BackgroundTask:
+        return _background_task(self._get_record(task_id))
+
+    def mark_running(self, task_id: UUID) -> BackgroundTask:
+        record = self._expect(task_id, BackgroundTaskStatus.QUEUED)
+        record.status = BackgroundTaskStatus.RUNNING.value
+        record.attempt_count += 1
+        record.started_at = _now()
+        record.error_code = None
+        record.error_message = None
+        self.session.flush()
+        return _background_task(record)
+
+    def mark_completed(
+        self, task_id: UUID, *, snapshot_id: UUID | None = None,
+    ) -> BackgroundTask:
+        record = self._expect(task_id, BackgroundTaskStatus.RUNNING)
+        if snapshot_id is not None:
+            snapshot = self.session.get(ProjectSnapshotORM, snapshot_id)
+            if (snapshot is None or record.project_id is None
+                    or snapshot.project_id != record.project_id
+                    or snapshot.status != "ready"):
+                raise BackendError(
+                    "database_conflict", "A related persistent record is invalid.",
+                )
+            record.snapshot_id = snapshot_id
+        record.status = BackgroundTaskStatus.COMPLETED.value
+        record.finished_at = _now()
+        record.error_code = None
+        record.error_message = None
+        self.session.flush()
+        return _background_task(record)
+
+    def mark_failed(
+        self, task_id: UUID, *, error_code: str, error_message: str,
+    ) -> BackgroundTask:
+        record = self._expect(task_id, BackgroundTaskStatus.RUNNING)
+        record.status = BackgroundTaskStatus.FAILED.value
+        record.error_code = error_code
+        record.error_message = error_message
+        record.finished_at = _now()
+        self.session.flush()
+        return _background_task(record)
+
+    def _get_record(self, task_id: UUID) -> BackgroundTaskORM:
+        record = self.session.get(BackgroundTaskORM, task_id)
+        if record is None:
+            raise BackendError(
+                "background_task_not_found", "Background task does not exist.",
+            )
+        return record
+
+    def _expect(
+        self, task_id: UUID, expected: BackgroundTaskStatus,
+    ) -> BackgroundTaskORM:
+        record = self._get_record(task_id)
+        if record.status != expected.value:
+            raise BackendError(
+                "background_task_state_conflict",
+                "Background task cannot make the requested state transition.",
+            )
+        return record
+
+
 class SqlAlchemyUnitOfWork:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -289,6 +374,7 @@ class SqlAlchemyUnitOfWork:
         self.snapshots = SqlAlchemyProjectSnapshotRepository(session)
         self.agent_runs = SqlAlchemyAgentRunRepository(session)
         self.trace_events = SqlAlchemyTraceEventRepository(session)
+        self.background_tasks = SqlAlchemyBackgroundTaskRepository(session)
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
@@ -343,4 +429,13 @@ def _trace_event(record: TraceEventORM) -> TraceEvent:
     return TraceEvent(
         record.id, record.run_id, record.sequence, record.event_type,
         record.tool_name, dict(record.payload), record.created_at,
+    )
+
+
+def _background_task(record: BackgroundTaskORM) -> BackgroundTask:
+    return BackgroundTask(
+        record.id, record.task_type, BackgroundTaskStatus(record.status),
+        record.project_id, record.snapshot_id, record.agent_run_id,
+        record.attempt_count, record.error_code, record.error_message,
+        record.created_at, record.started_at, record.finished_at,
     )

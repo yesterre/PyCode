@@ -66,11 +66,16 @@ def offline_git(remote, monkeypatch):
 
 
 @pytest.fixture
-def git_app(tmp_path, adapter, offline_git):
+def git_app(tmp_path, adapter, offline_git, task_dispatcher_factory):
     return create_app(
         adapter=adapter, workspace=RepositoryWorkspace(tmp_path / "managed"),
-        persistence=InMemoryPersistence(),
+        persistence=InMemoryPersistence(), task_dispatcher=task_dispatcher_factory(),
     )
+
+
+@pytest.fixture
+def git_index_worker(git_app, index_worker_factory):
+    return index_worker_factory(git_app)
 
 
 def register(client, branch=None):
@@ -80,12 +85,12 @@ def register(client, branch=None):
 
 
 def test_real_git_http_chain_fetches_new_commit_and_preserves_snapshots(
-    git_app, offline_git, remote,
+    git_app, offline_git, remote, git_index_worker,
 ):
     with TestClient(git_app) as client:
         url = register(client)
         assert offline_git == [] and not git_app.state.workspace.root.exists()
-        response = client.post(url + "/index")
+        response = git_index_worker.run(client, url)
         assert response.status_code == 200, response.text
         assert response.json()["status"] == "ready"
         root = git_app.state.workspace.path_for(UUID(response.json()["id"]))
@@ -103,7 +108,7 @@ def test_real_git_http_chain_fetches_new_commit_and_preserves_snapshots(
         git(remote, "commit", "-m", "remote update")
         (root / "local.py").write_text("local = True\n", encoding="utf-8")
         clone_count = sum("clone" in command for command, _ in offline_git)
-        assert client.post(url + "/index").json()["index_summary"]["file_count"] == 2
+        assert git_index_worker.run(client, url).json()["index_summary"]["file_count"] == 2
         assert sum("clone" in command for command, _ in offline_git) == clone_count
         assert (root / "later.py").exists()
         assert not (root / "local.py").exists()
@@ -111,17 +116,19 @@ def test_real_git_http_chain_fetches_new_commit_and_preserves_snapshots(
         assert len(artifact_dirs) == 2
         assert sorted(len(load_index(path / "index.json").files) for path in artifact_dirs) == [1, 2]
         other = register(client)
-        assert client.post(other + "/index").status_code == 200
+        assert git_index_worker.run(client, other).status_code == 200
         other_root = git_app.state.workspace.path_for(UUID(other.rsplit("/", 1)[-1]))
         assert other_root != root and (other_root / "later.py").exists()
         assert not (other_root / "local.py").exists()
 
 
-def test_explicit_branch_and_missing_branch_retry(git_app, remote):
+def test_explicit_branch_and_missing_branch_retry(git_app, remote, git_index_worker):
     with TestClient(git_app) as client:
         url = register(client, "feature/demo")
-        response = client.post(url + "/index")
-        assert response.status_code == 422
+        response = git_index_worker.submit(client, url)
+        with pytest.raises(BackendError) as failure:
+            git_index_worker.execute(UUID(response.json()["task_id"]))
+        assert failure.value.code == "repository_branch_missing"
         failed = client.get(url).json()
         assert failed["status"] == "failed" and failed["last_error"]
         root = git_app.state.workspace.path_for(UUID(failed["id"]))
@@ -130,7 +137,7 @@ def test_explicit_branch_and_missing_branch_retry(git_app, remote):
         (remote / "feature.py").write_text("enabled = True\n", encoding="utf-8")
         git(remote, "add", ".")
         git(remote, "commit", "-m", "feature")
-        result = client.post(url + "/index")
+        result = git_index_worker.run(client, url)
         assert result.status_code == 200 and result.json()["last_error"] is None
         assert (root / "feature.py").exists()
 
@@ -138,7 +145,9 @@ def test_explicit_branch_and_missing_branch_retry(git_app, remote):
 @pytest.mark.parametrize("mode,name", [
     ("120000", "outside.py"), ("160000", "nested"), ("100644", ".pclens/index.json"),
 ])
-def test_git_tree_rejects_symlink_submodule_and_remote_artifacts(git_app, remote, mode, name, offline_git):
+def test_git_tree_rejects_symlink_submodule_and_remote_artifacts(
+    git_app, remote, mode, name, offline_git, git_index_worker,
+):
     # Construct tree metadata directly: works even without OS symlink privileges.
     oid = (git(remote, "rev-parse", "HEAD") if mode == "160000" else
            git(remote, "hash-object", "-w", "--stdin", input=b"../../outside.py")).decode().strip()
@@ -146,16 +155,19 @@ def test_git_tree_rejects_symlink_submodule_and_remote_artifacts(git_app, remote
     git(remote, "commit", "-m", "unsafe tree")
     with TestClient(git_app) as client:
         url = register(client)
-        response = client.post(url + "/index")
-        assert response.status_code == 403, response.text
-        assert response.json()["detail"]["code"] == "unsafe_repository"
+        response = git_index_worker.submit(client, url)
+        with pytest.raises(BackendError) as failure:
+            git_index_worker.execute(UUID(response.json()["task_id"]))
+        assert failure.value.code == "unsafe_repository"
         assert client.get(url).json()["status"] == "failed"
         assert not any("checkout" in command for command, _ in offline_git)
         root = git_app.state.workspace.path_for(UUID(url.rsplit("/", 1)[-1]))
         assert list(root.parent.iterdir()) == []
 
 
-def test_repository_programs_and_inherited_git_commands_never_execute(git_app, remote, tmp_path, monkeypatch, offline_git):
+def test_repository_programs_and_inherited_git_commands_never_execute(
+    git_app, remote, tmp_path, monkeypatch, offline_git, git_index_worker,
+):
     marker = tmp_path / "EXECUTED"
     script = f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n"
     for name in ("setup.py", "test_danger.py", "main.py"):
@@ -172,7 +184,7 @@ def test_repository_programs_and_inherited_git_commands_never_execute(git_app, r
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", "definitely-not-a-real-command")
     with TestClient(git_app) as client:
         url = register(client)
-        response = client.post(url + "/index")
+        response = git_index_worker.run(client, url)
         assert response.status_code == 200, response.text
     assert not marker.exists()
     for command, kwargs in offline_git:
@@ -219,23 +231,29 @@ def test_invalid_branch_is_rejected_before_clone(client, branch):
     (subprocess.TimeoutExpired(["git"], 120, stderr=b"private"), 504, "repository_timeout"),
     (subprocess.CalledProcessError(128, ["git"], stderr=b"private"), 502, "repository_failed"),
 ])
-def test_git_errors_are_safe_and_staging_is_removed(tmp_path, adapter, monkeypatch, failure, status, code):
+def test_git_errors_are_safe_and_staging_is_removed(
+    tmp_path, adapter, monkeypatch, failure, status, code,
+    index_worker_factory, task_dispatcher_factory,
+):
     def fail(*args, **kwargs):
         raise failure
 
     monkeypatch.setattr(subprocess, "run", fail)
     app = create_app(
         adapter=adapter, workspace=RepositoryWorkspace(tmp_path / "managed"),
-        persistence=InMemoryPersistence(),
+        persistence=InMemoryPersistence(), task_dispatcher=task_dispatcher_factory(),
     )
+    worker = index_worker_factory(app)
     with TestClient(app) as client:
         url = register(client)
-        response = client.post(url + "/index")
-        assert response.status_code == status and response.json()["detail"]["code"] == code
+        response = worker.submit(client, url)
+        with pytest.raises(BackendError) as raised:
+            worker.execute(UUID(response.json()["task_id"]))
+        assert raised.value.code == code
         project = client.get(url).json()
         assert project["status"] == "failed" and project["index_summary"] is None
-        assert project["last_error"] == response.json()["detail"]["message"]
-        assert "private" not in response.text and "private" not in project["last_error"]
+        assert project["last_error"] == raised.value.message
+        assert "private" not in raised.value.message and "private" not in project["last_error"]
         root = app.state.workspace.path_for(UUID(project["id"]))
         assert list(root.parent.iterdir()) == []
 
@@ -306,7 +324,9 @@ def test_git_network_environment_is_allowlisted_and_failure_log_is_safe(
         assert secret not in log
 
 
-def test_preparing_holds_lock_and_does_not_block_queries(client, project_url, application, monkeypatch):
+def test_preparing_holds_lock_and_does_not_block_queries(
+    client, project_url, application, monkeypatch, index_worker,
+):
     entered, release = Event(), Event()
     source = application.state.workspace.source
     original = source.clone
@@ -317,20 +337,26 @@ def test_preparing_holds_lock_and_does_not_block_queries(client, project_url, ap
         return original(*args, **kwargs)
 
     monkeypatch.setattr(source, "clone", slow)
+    first = index_worker.submit(client, project_url)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(client.post, project_url + "/index")
+        future = pool.submit(index_worker.execute, UUID(first.json()["task_id"]))
         try:
             assert entered.wait(5)
             assert client.get(project_url).json()["status"] == "preparing"
             assert client.get("/health").status_code == 200
-            assert client.post(project_url + "/index").json()["detail"]["code"] == "project_busy"
+            second = index_worker.submit(client, project_url)
+            with pytest.raises(BackendError) as failure:
+                index_worker.execute(UUID(second.json()["task_id"]))
+            assert failure.value.code == "project_busy"
             assert client.post(project_url + "/ask", json={"question": "entry"}).status_code == 409
         finally:
             release.set()
-        assert future.result(timeout=5).status_code == 200
+        assert future.result(timeout=5).status == "completed"
 
 
-def test_workspace_parent_escape_is_denied_before_clone(client, project_url, repository, application, tmp_path, monkeypatch):
+def test_workspace_parent_escape_is_denied_before_clone(
+    client, project_url, repository, application, tmp_path, monkeypatch, index_worker,
+):
     outside = tmp_path / "external"
     outside.mkdir()
     original = Path.resolve
@@ -339,18 +365,26 @@ def test_workspace_parent_escape_is_denied_before_clone(client, project_url, rep
         return outside if path == repository.parent else original(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "resolve", resolve)
-    assert client.post(project_url + "/index").status_code == 403
+    response = index_worker.submit(client, project_url)
+    with pytest.raises(BackendError) as failure:
+        index_worker.execute(UUID(response.json()["task_id"]))
+    assert failure.value.code == "unsafe_repository"
     assert application.state.workspace.source.calls == [] and list(outside.iterdir()) == []
 
 
-def test_reindex_rejects_source_file_resolving_outside_workspace(client, ready_url, repository, tmp_path, monkeypatch):
+def test_reindex_rejects_source_file_resolving_outside_workspace(
+    client, ready_url, repository, tmp_path, monkeypatch, index_worker,
+):
     original = Path.resolve
 
     def resolve(path, *args, **kwargs):
         return tmp_path / "secret.py" if path == repository / "main.py" else original(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "resolve", resolve)
-    assert client.post(ready_url + "/index").status_code == 403
+    response = index_worker.submit(client, ready_url)
+    with pytest.raises(BackendError) as failure:
+        index_worker.execute(UUID(response.json()["task_id"]))
+    assert failure.value.code == "unsafe_repository"
     assert client.get(ready_url).json()["status"] == "failed"
 
 

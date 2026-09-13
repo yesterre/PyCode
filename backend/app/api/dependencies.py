@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 
 from backend.app.core.errors import BackendError
 from backend.app.repositories import InMemoryUnitOfWork, SqlAlchemyUnitOfWork
+from backend.app.runtime import build_project_service
+from backend.app.services.background_tasks import BackgroundTaskService
 from backend.app.services.projects import ProjectService
 
 
@@ -36,10 +38,21 @@ def get_project_service(
         if session is None:  # pragma: no cover - dependency invariant
             raise RuntimeError("Database Session dependency is unavailable.")
         unit_of_work = SqlAlchemyUnitOfWork(session)
-    return ProjectService(
-        unit_of_work,
-        request.app.state.adapter,
+    return build_project_service(
+        unit_of_work, adapter=request.app.state.adapter,
         workspace=request.app.state.workspace,
         operations=request.app.state.project_operations,
         artifacts=request.app.state.artifacts,
     )
+
+
+def get_background_task_service(
+    request: Request, session: Session | None = Depends(get_db_session),
+) -> BackgroundTaskService:
+    if request.app.state.persistence is not None:
+        unit_of_work = InMemoryUnitOfWork(request.app.state.persistence)
+    else:
+        if session is None:  # pragma: no cover - dependency invariant
+            raise RuntimeError("Database Session dependency is unavailable.")
+        unit_of_work = SqlAlchemyUnitOfWork(session)
+    return BackgroundTaskService(unit_of_work, request.app.state.task_dispatcher)

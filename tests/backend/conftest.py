@@ -11,6 +11,9 @@ from backend.app.infrastructure.repositories import (
     GitRepositorySource, RepositoryRevision, RepositoryWorkspace,
 )
 from backend.app.repositories import InMemoryPersistence
+from backend.app.repositories import InMemoryUnitOfWork
+from backend.app.runtime import build_project_service
+from backend.app.services.background_tasks import BackgroundTaskService
 
 
 REPO_URL = "https://github.com/example/demo.git"
@@ -59,6 +62,47 @@ class FakeLLM:
         return "Offline HTTP answer"
 
 
+class RecordingTaskDispatcher:
+    def __init__(self) -> None:
+        self.health_task_ids: list[UUID] = []
+        self.repository_index_task_ids: list[UUID] = []
+
+    def enqueue_health(self, task_id: UUID) -> None:
+        self.health_task_ids.append(task_id)
+
+    def enqueue_repository_index(self, task_id: UUID) -> None:
+        self.repository_index_task_ids.append(task_id)
+
+
+class InlineIndexWorker:
+    """Run the production application services without requiring Redis in tests."""
+
+    def __init__(self, application) -> None:
+        self.application = application
+
+    def submit(self, client: TestClient, project_url: str):
+        response = client.post(project_url + "/index")
+        assert response.status_code == 202, response.text
+        return response
+
+    def execute(self, task_id: UUID):
+        unit_of_work = InMemoryUnitOfWork(self.application.state.persistence)
+        background_tasks = BackgroundTaskService(unit_of_work)
+        projects = build_project_service(
+            unit_of_work,
+            adapter=self.application.state.adapter,
+            workspace=self.application.state.workspace,
+            artifacts=self.application.state.artifacts,
+            operations=self.application.state.project_operations,
+        )
+        return background_tasks.execute_repository_index(task_id, projects.index)
+
+    def run(self, client: TestClient, project_url: str):
+        accepted = self.submit(client, project_url)
+        self.execute(UUID(accepted.json()["task_id"]))
+        return client.get(project_url)
+
+
 @pytest.fixture
 def source_repository(tmp_path: Path) -> Path:
     root = tmp_path / "repository"
@@ -89,13 +133,31 @@ def persistence():
 @pytest.fixture
 def application(adapter, tmp_path, source_repository, persistence):
     workspace = RepositoryWorkspace(tmp_path / "workspaces", CopySource(source_repository))
-    return create_app(adapter=adapter, workspace=workspace, persistence=persistence)
+    return create_app(
+        adapter=adapter, workspace=workspace, persistence=persistence,
+        task_dispatcher=RecordingTaskDispatcher(),
+    )
 
 
 @pytest.fixture
 def client(application):
     with TestClient(application) as client:
         yield client
+
+
+@pytest.fixture
+def index_worker(application):
+    return InlineIndexWorker(application)
+
+
+@pytest.fixture
+def index_worker_factory():
+    return InlineIndexWorker
+
+
+@pytest.fixture
+def task_dispatcher_factory():
+    return RecordingTaskDispatcher
 
 
 @pytest.fixture
@@ -111,7 +173,7 @@ def repository(application, project_url):
 
 
 @pytest.fixture
-def ready_url(client, project_url):
-    response = client.post(project_url + "/index")
+def ready_url(client, project_url, index_worker):
+    response = index_worker.run(client, project_url)
     assert response.status_code == 200, response.text
     return project_url

@@ -20,6 +20,13 @@ class AgentRunStatus(StrEnum):
     FAILED = "failed"
 
 
+class BackgroundTaskStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class SnapshotStatus(StrEnum):
     INDEXING = "indexing"
     READY = "ready"
@@ -91,6 +98,22 @@ class TraceEvent:
     tool_name: str | None
     payload: dict[str, Any]
     created_at: datetime
+
+
+@dataclass(frozen=True)
+class BackgroundTask:
+    id: UUID
+    task_type: str
+    status: BackgroundTaskStatus
+    project_id: UUID | None
+    snapshot_id: UUID | None
+    agent_run_id: UUID | None
+    attempt_count: int
+    error_code: str | None
+    error_message: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
 
 
 @dataclass(frozen=True)

@@ -15,15 +15,21 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 from backend.app.core.errors import BackendError
-from backend.app.core.models import AgentRunStatus, IndexSummary, ProjectStatus
+from backend.app.core.models import (
+    AgentRunStatus, BackgroundTaskStatus, IndexSummary, ProjectStatus,
+)
 from backend.app.infrastructure.repositories import (
     GitRepositorySource, RepositoryRevision, RepositoryWorkspace,
 )
 from backend.app.main import create_app
 from backend.app.repositories import SqlAlchemyUnitOfWork
+from backend.app.runtime import build_project_service
+from backend.app.services.background_tasks import BackgroundTaskService
 
 
-MANAGED_TABLES = {"projects", "project_snapshots", "agent_runs", "trace_events"}
+MANAGED_TABLES = {
+    "projects", "project_snapshots", "agent_runs", "trace_events", "background_tasks",
+}
 
 
 def _safe_test_database_url() -> str:
@@ -74,13 +80,30 @@ def clean_postgresql(postgresql_engine: Engine):
 def _truncate(engine: Engine) -> None:
     with engine.begin() as connection:
         connection.execute(text(
-            "TRUNCATE TABLE trace_events, agent_runs, project_snapshots, projects CASCADE"
+            "TRUNCATE TABLE background_tasks, trace_events, agent_runs, "
+            "project_snapshots, projects CASCADE"
         ))
 
 
 def _uow(engine: Engine) -> tuple[Session, SqlAlchemyUnitOfWork]:
     session = Session(engine, autoflush=False, expire_on_commit=False)
     return session, SqlAlchemyUnitOfWork(session)
+
+
+def _execute_index_task(engine: Engine, app, task_id: UUID):
+    session, uow = _uow(engine)
+    try:
+        projects = build_project_service(
+            uow, adapter=app.state.adapter, workspace=app.state.workspace,
+            artifacts=app.state.artifacts, operations=app.state.project_operations,
+        )
+        return BackgroundTaskService(uow).execute_repository_index(
+            task_id, projects.index,
+        )
+    finally:
+        if session.in_transaction():
+            session.rollback()
+        session.close()
 
 
 def _create_project(uow: SqlAlchemyUnitOfWork, name: str = "Example"):
@@ -220,6 +243,51 @@ def test_transaction_failure_rolls_back_all_new_records(postgresql_engine):
         session.close()
 
 
+def test_background_task_lifecycle_persists_across_sessions(postgresql_engine):
+    session, uow = _uow(postgresql_engine)
+    try:
+        with uow.transaction():
+            queued = uow.background_tasks.create("health")
+        with uow.transaction():
+            running = uow.background_tasks.mark_running(queued.id)
+        assert running.status == BackgroundTaskStatus.RUNNING
+        assert running.attempt_count == 1 and running.started_at is not None
+    finally:
+        session.close()
+
+    other_session, other = _uow(postgresql_engine)
+    try:
+        with other.transaction():
+            completed = other.background_tasks.mark_completed(queued.id)
+        assert completed.status == BackgroundTaskStatus.COMPLETED
+        assert completed.finished_at is not None
+        with other.transaction():
+            failed_candidate = other.background_tasks.create("health")
+            other.background_tasks.mark_running(failed_candidate.id)
+        with other.transaction():
+            failed = other.background_tasks.mark_failed(
+                failed_candidate.id,
+                error_code="health_probe_failed",
+                error_message="The health probe failed safely.",
+            )
+        assert failed.status == BackgroundTaskStatus.FAILED
+        assert failed.error_code == "health_probe_failed"
+        assert failed.error_message == "The health probe failed safely."
+    finally:
+        other_session.close()
+
+
+def test_background_task_foreign_keys_are_checked(postgresql_engine):
+    session, uow = _uow(postgresql_engine)
+    try:
+        with pytest.raises(BackendError) as failure:
+            with uow.transaction():
+                uow.background_tasks.create("health", project_id=uuid4())
+        assert failure.value.code == "database_conflict"
+    finally:
+        session.close()
+
+
 class RestartCopySource(GitRepositorySource):
     def __init__(self, source: Path) -> None:
         super().__init__()
@@ -252,11 +320,15 @@ class RestartCopySource(GitRepositorySource):
 
 def test_app_restart_recovers_project_snapshot_workspace_and_runs(
     postgresql_engine, tmp_path, source_repository, adapter,
+    task_dispatcher_factory,
 ):
     database_url = _safe_test_database_url()
     workspace_root = tmp_path / "persistent-workspace"
     first_workspace = RepositoryWorkspace(workspace_root, RestartCopySource(source_repository))
-    first_app = create_app(adapter=adapter, workspace=first_workspace, database_url=database_url)
+    first_app = create_app(
+        adapter=adapter, workspace=first_workspace, database_url=database_url,
+        task_dispatcher=task_dispatcher_factory(),
+    )
     with TestClient(first_app) as client:
         created = client.post(
             "/api/v1/projects",
@@ -265,20 +337,32 @@ def test_app_restart_recovers_project_snapshot_workspace_and_runs(
         assert created.status_code == 201
         project_id = UUID(created.json()["id"])
         indexed = client.post(f"/api/v1/projects/{project_id}/index")
-        assert indexed.status_code == 200 and indexed.json()["status"] == "ready"
+        assert indexed.status_code == 202 and indexed.json()["status"] == "queued"
+        _execute_index_task(
+            postgresql_engine, first_app, UUID(indexed.json()["task_id"]),
+        )
+        indexed_project = client.get(f"/api/v1/projects/{project_id}")
+        assert indexed_project.status_code == 200
+        assert indexed_project.json()["status"] == "ready"
 
     second_workspace = RepositoryWorkspace(workspace_root, RestartCopySource(source_repository))
-    second_app = create_app(adapter=adapter, workspace=second_workspace, database_url=database_url)
+    second_app = create_app(
+        adapter=adapter, workspace=second_workspace, database_url=database_url,
+        task_dispatcher=task_dispatcher_factory(),
+    )
     with TestClient(second_app) as client:
         restored = client.get(f"/api/v1/projects/{project_id}")
         assert restored.status_code == 200
-        assert restored.json()["index_summary"] == indexed.json()["index_summary"]
+        assert restored.json()["index_summary"] == indexed_project.json()["index_summary"]
         answer = client.post(
             f"/api/v1/projects/{project_id}/ask", json={"question": "entry"},
         )
         assert answer.status_code == 200
         repeated = client.post(f"/api/v1/projects/{project_id}/index")
-        assert repeated.status_code == 200
+        assert repeated.status_code == 202
+        _execute_index_task(
+            postgresql_engine, second_app, UUID(repeated.json()["task_id"]),
+        )
 
     session, uow = _uow(postgresql_engine)
     try:

@@ -21,6 +21,7 @@ def test_health_and_openapi_without_model_or_project():
             "/health", "/api/v1/projects", "/api/v1/projects/{project_id}",
             "/api/v1/projects/{project_id}/index", "/api/v1/projects/{project_id}/ask",
             "/api/v1/projects/{project_id}/impact",
+            "/api/v1/tasks/health", "/api/v1/tasks/{task_id}",
         }
 
 
@@ -86,8 +87,10 @@ def test_unknown_project_and_invalid_uuid(client, project_id, status):
     assert client.post(url + "/impact", json={"file_path": "main.py"}).status_code == status
 
 
-def test_index_and_analysis_http_chain(client, project_url, repository, llm):
-    index = client.post(project_url + "/index")
+def test_index_and_analysis_http_chain(
+    client, project_url, repository, llm, index_worker,
+):
+    index = index_worker.run(client, project_url)
     assert index.status_code == 200
     project = index.json()
     assert project["status"] == "ready" and project["last_error"] is None
@@ -110,9 +113,11 @@ def test_index_and_analysis_http_chain(client, project_url, repository, llm):
     assert client.get(project_url).json()["status"] == "ready"
 
 
-def test_snapshot_and_agent_runs_use_persistence(client, project_url, application):
-    first = client.post(project_url + "/index")
-    second = client.post(project_url + "/index")
+def test_snapshot_and_agent_runs_use_persistence(
+    client, project_url, application, index_worker,
+):
+    first = index_worker.run(client, project_url)
+    second = index_worker.run(client, project_url)
     assert first.status_code == second.status_code == 200
     assert client.post(project_url + "/ask", json={"question": "entry"}).status_code == 200
     assert client.post(project_url + "/impact", json={"file_path": "main.py"}).status_code == 200
@@ -195,17 +200,20 @@ def test_not_ready_requires_current_session_index(client, project_url, repositor
 
 
 @pytest.mark.parametrize("bad_content", [b"def broken(:\n", b"\xff\xfe\xfa"])
-def test_source_error_and_reindex_recovery(client, ready_url, repository, bad_content):
+def test_source_error_and_reindex_recovery(
+    client, ready_url, repository, bad_content, index_worker,
+):
     next((repository.parent / "artifacts").glob("*/index.json")).unlink()
     file = repository / "broken.py"
     file.write_bytes(bad_content)
-    response = client.post(ready_url + "/index")
-    assert response.status_code == 422 and response.json()["detail"]["code"] == "invalid_source"
+    response = index_worker.submit(client, ready_url)
+    with pytest.raises((SyntaxError, UnicodeError)):
+        index_worker.execute(UUID(response.json()["task_id"]))
     failed = client.get(ready_url).json()
     assert failed["status"] == "failed" and failed["index_summary"] is None and failed["last_error"]
     assert client.post(ready_url + "/ask", json={"question": "entry"}).status_code == 409
     file.write_text("value = 1\n", encoding="utf-8")
-    ready = client.post(ready_url + "/index").json()
+    ready = index_worker.run(client, ready_url).json()
     assert ready["status"] == "ready" and ready["last_error"] is None
     assert ready["index_summary"]["file_count"] == 3
     assert ready["created_at"] == failed["created_at"]
@@ -213,7 +221,9 @@ def test_source_error_and_reindex_recovery(client, ready_url, repository, bad_co
 
 @pytest.mark.parametrize("artifact", ["index.json", "code_graph.json"])
 @pytest.mark.parametrize("damage", ["missing", "json", "shape"])
-def test_unavailable_artifacts_fail_before_model_and_can_recover(client, ready_url, repository, llm, artifact, damage):
+def test_unavailable_artifacts_fail_before_model_and_can_recover(
+    client, ready_url, repository, llm, artifact, damage, index_worker,
+):
     path = next((repository.parent / "artifacts").glob(f"*/{artifact}"))
     if damage == "missing":
         path.unlink()
@@ -224,7 +234,7 @@ def test_unavailable_artifacts_fail_before_model_and_can_recover(client, ready_u
     assert llm.prompts == []
     failed = client.get(ready_url).json()
     assert failed["status"] == "failed" and failed["index_summary"] is None
-    assert client.post(ready_url + "/index").status_code == 200
+    assert index_worker.run(client, ready_url).status_code == 200
     assert client.post(ready_url + "/impact", json={"file_path": "main.py"}).status_code == 200
 
 
@@ -257,7 +267,7 @@ def test_new_app_has_no_registration_and_keeps_artifacts(client, ready_url, repo
 
 
 def test_published_bundle_is_reused_after_database_activation_failure(
-    client, project_url, repository, adapter, monkeypatch,
+    client, project_url, repository, adapter, monkeypatch, index_worker,
 ):
     from backend.app.repositories.memory import InMemorySnapshotRepository
 
@@ -272,8 +282,10 @@ def test_published_bundle_is_reused_after_database_activation_failure(
         return original(self, *args, **kwargs)
 
     monkeypatch.setattr(InMemorySnapshotRepository, "mark_ready", fail_once)
-    first = client.post(project_url + "/index")
-    assert first.status_code == 500
+    first = index_worker.submit(client, project_url)
+    with pytest.raises(BackendError) as failure:
+        index_worker.execute(UUID(first.json()["task_id"]))
+    assert failure.value.code == "database_failed"
     artifact = next((repository.parent / "artifacts").glob("*/manifest.json"))
     assert artifact.exists()
 
@@ -282,13 +294,13 @@ def test_published_bundle_is_reused_after_database_activation_failure(
     )
     monkeypatch.setattr(adapter.engine, "index", forbidden)
     monkeypatch.setattr(adapter.engine, "graph", forbidden)
-    recovered = client.post(project_url + "/index")
+    recovered = index_worker.run(client, project_url)
     assert recovered.status_code == 200, recovered.text
     assert recovered.json()["status"] == "ready"
 
 
 def test_phase3_current_artifact_is_archived_without_rewriting_other_history(
-    client, project_url, application, adapter, repository, monkeypatch,
+    client, project_url, application, adapter, repository, monkeypatch, index_worker,
 ):
     project_id = UUID(project_url.rsplit("/", 1)[-1])
     unit_of_work = InMemoryUnitOfWork(application.state.persistence)
@@ -325,7 +337,7 @@ def test_phase3_current_artifact_is_archived_without_rewriting_other_history(
     )
     monkeypatch.setattr(adapter.engine, "index", forbidden)
     monkeypatch.setattr(adapter.engine, "graph", forbidden)
-    response = client.post(project_url + "/index")
+    response = index_worker.run(client, project_url)
     assert response.status_code == 200, response.text
 
     with unit_of_work.transaction():

@@ -83,32 +83,42 @@ print(run.answer, run.trace.run_id)
 - `use_llm_planner=False` 只切换为规则规划，最终总结仍可调用模型。完全离线的计划预览使用 `plan_only=True, use_llm_planner=False`；离线完整执行可如上例注入假客户端。
 - 显式索引／图谱输出路径和 `query(graph_path=...)` 相对于当前工作目录。Agent graph 路径保留“绝对路径 → 当前目录已有文件 → 项目内已有文件 → 原路径”的解析顺序，工具仍限制项目内访问。
 
-阶段问题和精简复测步骤见 [V2 开发记录](docs_v2.0/V2.0_development_record.md)。Phase 3 在该 Python API 和 Phase 2 HTTP 后端之上增加 PostgreSQL 持久化。
+阶段问题和精简复测步骤见 [V2 开发记录](docs_v2.0/V2.0_development_record.md)。Phase 5B 已在 Phase 5A 基础设施上把 Repository Indexing 迁移到 Celery Worker，同时继续复用 Phase 4 Repository／Snapshot／Artifact 生命周期。
 
-## FastAPI Backend（V2 Phase 3）
+## FastAPI Backend 与 Worker（V2 Phase 5B）
 
-从项目根目录安装、迁移并启动。先在当前进程中设置指向开发数据库的 `DATABASE_URL`；Alembic 负责创建业务表：
+从项目根目录安装和迁移。先在 `.env` 或进程环境中配置 `DATABASE_URL` 与 `REDIS_URL`；Alembic 负责创建业务表：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m alembic upgrade head
+```
+
+启动 Redis 后，在两个独立终端分别启动 FastAPI 与 Celery Worker。Windows 使用 `solo` pool：
+
+```powershell
 .\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python.exe -m celery -A backend.app.worker:app worker --loglevel=INFO --pool=solo
 ```
 
 浏览器打开 `http://127.0.0.1:8000/docs`，可直接提交请求；OpenAPI 位于 `/openapi.json`。只安装后端可选依赖时可使用 `pip install -e ".[backend]"`；项目常规开发安装已包含 Backend 和测试依赖。
 
-后端按 Router → Application Service → Repository／Infrastructure → PostgreSQL，以及 Service → PyCodeAdapter → PyCodeEngine 调用；Core 不依赖 FastAPI 或 SQLAlchemy。v2 的主要入口是公开 Git Repository URL：创建只登记，index 请求才准备受控 Workspace、必要时 Clone，并同步等待分析完成。Project、Snapshot、ask/impact AgentRun 和 TraceEvent 存入 PostgreSQL；源码、`.pclens/index.json` 与 `.pclens/code_graph.json` 继续保存在受控文件系统。应用重启后通过 PostgreSQL Project、持久化 workspace_path 和文件系统安全检查恢复已有 Workspace。
+后端按 Router → Application Service → Repository／Infrastructure → PostgreSQL，以及 Service → PyCodeAdapter → PyCodeEngine 调用；Core 不依赖 FastAPI 或 SQLAlchemy。v2 的主要入口是公开 Git Repository URL：创建只登记；index 请求校验 Project、持久化 queued BackgroundTask、enqueue 后立即返回，受控 Workspace 准备、Clone／Fetch 和分析由 Worker 执行。Project、Snapshot、ask/impact AgentRun、TraceEvent 和 BackgroundTask 存入 PostgreSQL；源码与 Snapshot Artifact 继续保存在受控文件系统。应用重启后通过 PostgreSQL Project、持久化 workspace_path 和文件系统安全检查恢复已有 Workspace。
 
 | 接口 | 请求示例 | 成功响应 |
 | --- | --- | --- |
 | `GET /health` | 无 | `200`，`{"status":"ok"}` |
 | `POST /api/v1/projects` | `{"name":"Flask","repo_url":"https://github.com/pallets/flask.git","branch":null}` | `201`，created 项目记录和 `id`，不 Clone |
 | `GET /api/v1/projects/{id}` | 无 | `200`，项目状态与索引统计 |
-| `POST /api/v1/projects/{id}/index` | 无请求体 | `200`，ready 项目及文件／节点／边数量 |
+| `POST /api/v1/projects/{id}/index` | 无请求体 | `202`，`task_id/project_id/status=queued`；通过 Task API 查询完成状态 |
 | `POST /api/v1/projects/{id}/ask` | `{"question":"这个项目的入口在哪里？"}` | `200`，答案、意图和证据 |
 | `POST /api/v1/projects/{id}/impact` | `{"file_path":"src/flask/app.py"}` | `200`，影响分析、意图和证据 |
+| `POST /api/v1/tasks/health` | 无请求体 | `202`，已持久化的 queued BackgroundTask |
+| `GET /api/v1/tasks/{task_id}` | 无 | `200`，queued／running／completed／failed 业务状态 |
 
-执行顺序为创建 → index → 查询／分析。客户端不提交 `local_path` 或 `workspace_path`，同仓库／分支可以创建多个独立 Project；分支缺省时使用远程默认分支。状态为 created → preparing → indexing → ready，失败进入 failed 并记录安全的 `last_error`，可重试 index。首次浅 Clone 到 `<workspace_root>/<project_id>/repo`；后续 index 复用该工作区，只重建 `.pclens/index.json` 和 `.pclens/code_graph.json`，不自动 pull。每次成功 index 读取当前本地 HEAD，并按 Project + Commit upsert Snapshot；Phase 3 不实现远程更新或完整 Snapshot 生命周期。
+Phase 5A 的 health task 继续用于验证基础设施链路；Phase 5B 新增 `pycode.tasks.index_repository`，Worker 通过现有 `ProjectService.index()` 执行完整 Phase 4 生命周期。Celery 的内部状态不会暴露给 API，业务状态只读取 PostgreSQL `background_tasks`。Agent Run 尚未迁移到 Worker。
+
+执行顺序为创建 → index → 查询／分析。客户端不提交 `local_path` 或 `workspace_path`，同仓库／分支可以创建多个独立 Project；分支缺省时使用远程默认分支。状态为 created → preparing → indexing → ready，失败进入 failed 并记录安全的 `last_error`，可重试 index。首次 Clone 到 `<workspace_root>/<project_id>/repo`；后续 index Fetch 远程 branch、解析 exact Commit 并 detached checkout。每个 Commit 对应唯一 Snapshot 和独立 Artifact bundle；新版本失败不会破坏旧的 current ready Snapshot。
 
 项目记录包含 `id/name/repo_url/branch/status/created_at/updated_at/index_summary/last_error`，不返回服务器绝对路径；`index_summary` 由最新 ready Snapshot 组装，不在 projects 中重复保存。分析返回 `project_id/answer/intent/evidence`，不返回 prompt 或全部源码上下文。ask／impact 可额外传 `model`，凭证沿用服务端环境变量配置；请求不接受 API Key。两类分析会在数据库中记录 AgentRun，当前 API Response 不增加 run_id，无法获得 token usage 时保持 NULL。impact 目标必须是工作区内的相对 Python 文件路径。
 
@@ -117,6 +127,7 @@ print(run.answer, run.trace.run_id)
 | 配置 | 默认值 | 用途 |
 | --- | --- | --- |
 | `DATABASE_URL` | 无，必填 | 生产 Backend 使用的同步 SQLAlchemy／Psycopg PostgreSQL URL |
+| `REDIS_URL` | 无，必填（创建任务或启动 Worker 时） | Celery Redis broker，例如 `redis://127.0.0.1:6379/0` |
 | `TEST_DATABASE_URL` | 无 | 仅真实 PostgreSQL 集成测试使用，必须指向独立的 `pycode_test`，禁止与 `DATABASE_URL` 相同 |
 | `PYCODE_WORKSPACE_ROOT` | `.pycode-workspaces`（相对于启动目录） | 仅由服务／管理员写入的源码目录，已加入 Git ignore |
 | `PYCODE_GIT_ALLOWED_HOSTS` | `github.com,gitlab.com,gitee.com` | 逗号分隔、精确匹配的公共 HTTPS Host；可扩展其他公共 Git Server |
@@ -124,20 +135,27 @@ print(run.answer, run.trace.run_id)
 
 URL 禁止内嵌认证、查询参数、片段及非 HTTPS 协议，仅接受默认端口或 443，禁用 HTTP 重定向和交互认证。Git 使用参数列表、隔离全局／系统配置、禁用 hooks，不递归获取子模块。在 checkout 前拒绝符号链接、子模块和仓库自带 `.pclens`，落盘及分析前检查链接、特殊文件和路径边界。整个 ingestion 不安装依赖、不运行仓库程序或测试。这是静态获取与分析流程；复杂网络出口控制、磁盘配额、并发外部写入隔离和执行 Sandbox 尚未实现。Git 配置及过滤器机制参见 [Git 配置文档](https://git-scm.com/docs/git-config)和 [Git 属性文档](https://git-scm.com/docs/gitattributes)。
 
-业务错误形如 `{"detail":{"code":"project_not_ready","message":"..."}}`。参数校验保留 FastAPI 默认 `422` 格式；未就绪、产物不可用和同项目操作冲突返回 `409`，越界／权限错误返回 `403`。数据库配置或连接不可用返回安全的 `503`，响应不会包含 SQL、密码、连接 URL 或堆栈。模型配置不可用返回 `503`，超时返回 `504`，其他模型错误返回 `502`。模型失败不取消项目的 ready 状态。操作锁仍只协调本应用进程内的请求；Phase 3 不引入分布式锁。
+业务错误形如 `{"detail":{"code":"project_not_ready","message":"..."}}`。参数校验保留 FastAPI 默认 `422` 格式；未就绪、产物不可用和同项目操作冲突返回 `409`，越界／权限错误返回 `403`。数据库或任务队列不可用返回安全的 `503`，响应不会包含 SQL、密码、连接 URL 或堆栈。模型配置不可用返回 `503`，超时返回 `504`，其他模型错误返回 `502`。模型失败不取消项目的 ready 状态。操作锁仍只协调本应用进程内的请求；Phase 5A 不引入 Redis 分布式锁。
 
 获取失败返回 `502 repository_failed`（检查仓库公开可访问、分支和服务器网络），Git 缺失返回 `503 git_unavailable`，Git 超时返回 `504 repository_timeout`；来源／Workspace 安全拒绝返回 `403`。失败不会把部分 Clone 当作 ready，已有项目的索引失败也会禁止继续分析。服务不会自动认领数据库中没有对应 Project 的旧目录，也不会自动清理 Workspace。
 
-数据库 Schema 只通过 Alembic 管理；应用启动不会调用 `Base.metadata.create_all()`。Initial Migration 创建 `projects`、`project_snapshots`、`agent_runs` 和 `trace_events`。测试前需单独设置 `TEST_DATABASE_URL`；数据库测试会再次验证数据库名为 `pycode_test`，不会回退使用开发数据库。
+数据库 Schema 只通过 Alembic 管理；应用启动不会调用 `Base.metadata.create_all()`。Phase 3 Initial Migration 创建 `projects`、`project_snapshots`、`agent_runs` 和 `trace_events`，Phase 5A Revision `20260911_0003` 独立增加 `background_tasks`。测试前需单独设置 `TEST_DATABASE_URL`；数据库测试会再次验证数据库名为 `pycode_test`，不会回退使用开发数据库。
 
 最短 PowerShell 示例（另一个终端执行；index 会联网 Clone 并在受控 Workspace 生成产物）：
 
 ```powershell
 $base = "http://127.0.0.1:8000"
 Invoke-RestMethod "$base/health"
+$task = Invoke-RestMethod "$base/api/v1/tasks/health" -Method Post
+Invoke-RestMethod "$base/api/v1/tasks/$($task.id)"
 $project = Invoke-RestMethod "$base/api/v1/projects" -Method Post -ContentType "application/json" -Body '{"name":"Flask","repo_url":"https://github.com/pallets/flask.git"}'
 $projectUrl = "$base/api/v1/projects/$($project.id)"
-Invoke-RestMethod "$projectUrl/index" -Method Post
+$indexTask = Invoke-RestMethod "$projectUrl/index" -Method Post
+do {
+    Start-Sleep -Milliseconds 250
+    $indexStatus = Invoke-RestMethod "$base/api/v1/tasks/$($indexTask.task_id)"
+} while ($indexStatus.status -in @("queued", "running"))
+$indexStatus
 Invoke-RestMethod $projectUrl
 # 以下两步需要已配置真实模型；会产生模型调用。
 Invoke-RestMethod "$projectUrl/ask" -Method Post -ContentType "application/json" -Body '{"question":"entry main"}'
@@ -150,7 +168,7 @@ Invoke-RestMethod "$projectUrl/impact" -Method Post -ContentType "application/js
 .\.venv\Scripts\python.exe -m pytest tests --basetemp=.pytest_tmp_v2_phase3_manual -o cache_dir=.pytest_tmp_v2_phase3_manual/.pytest_cache --tb=short -rs
 ```
 
-数据库、Snapshot、自动远程更新、后台任务、AgentRun、SSE 和前端留待后续阶段。原 Python API／CLI 的本地目录调用方式保持不变。
+Agent Run 异步迁移、retry、timeout、幂等、防重、分布式锁、复杂进度、SSE 和前端留待后续阶段。原 Python API／CLI 的本地目录调用方式保持不变。
 
 ## LLM 配置
 
@@ -330,7 +348,7 @@ V1.0 验收测试集中在 `tests/test_v1_acceptance.py`，并补充覆盖 CLI�
 - 当前不使用图数据库，代码图谱保存为 JSON，适合学习和小型项目演示。
 - LLM 只解释 PyCode 选择出的有限上下文，不会自动读取整个仓库。
 - Agent 默认不自动修改代码、不自动提交 git，也不默认运行测试。
-- 当前不实现完整多 Agent、远程 MCP、后台 worker、自动任务调度或动态工具市场。
+- 当前不实现完整多 Agent、远程 MCP、Agent Run 异步化、自动任务调度或动态工具市场；Phase 5B Worker 仅增加 Repository Indexing，health task 继续保留。
 - Streamlit 页面是展示型 Demo，不是完整 IDE。
 - 入口判断、影响分析和测试覆盖判断都属于静态分析辅助结果，需要人工结合项目语义确认。
 

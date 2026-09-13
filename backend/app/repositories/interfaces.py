@@ -5,7 +5,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from backend.app.core.models import (
-    AgentRun, IndexSummary, Project, ProjectSnapshot, ProjectStatus, TraceEvent,
+    AgentRun, BackgroundTask, IndexSummary, Project, ProjectSnapshot, ProjectStatus, TraceEvent,
 )
 
 
@@ -80,10 +80,30 @@ class TraceEventRepository(Protocol):
     def list_for_run(self, run_id: UUID) -> list[TraceEvent]: ...
 
 
+class BackgroundTaskRepository(Protocol):
+    def create(
+        self, task_type: str, *, project_id: UUID | None = None,
+        snapshot_id: UUID | None = None, agent_run_id: UUID | None = None,
+    ) -> BackgroundTask: ...
+
+    def get(self, task_id: UUID) -> BackgroundTask: ...
+
+    def mark_running(self, task_id: UUID) -> BackgroundTask: ...
+
+    def mark_completed(
+        self, task_id: UUID, *, snapshot_id: UUID | None = None,
+    ) -> BackgroundTask: ...
+
+    def mark_failed(
+        self, task_id: UUID, *, error_code: str, error_message: str,
+    ) -> BackgroundTask: ...
+
+
 class UnitOfWork(Protocol):
     projects: ProjectRepository
     snapshots: ProjectSnapshotRepository
     agent_runs: AgentRunRepository
     trace_events: TraceEventRepository
+    background_tasks: BackgroundTaskRepository
 
     def transaction(self) -> AbstractContextManager[None]: ...

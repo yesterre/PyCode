@@ -101,6 +101,7 @@ def register(client: TestClient) -> tuple[str, UUID]:
 
 def test_bare_remote_history_failure_fallback_idempotency_and_restart(
     tmp_path, bare_remote, bare_transport, adapter, monkeypatch,
+    index_worker_factory, task_dispatcher_factory,
 ):
     state = InMemoryPersistence()
     workspace_root = tmp_path / "managed"
@@ -108,10 +109,12 @@ def test_bare_remote_history_failure_fallback_idempotency_and_restart(
         adapter=adapter,
         workspace=RepositoryWorkspace(workspace_root),
         persistence=state,
+        task_dispatcher=task_dispatcher_factory(),
     )
+    worker = index_worker_factory(app)
     with TestClient(app) as client:
         url, project_id = register(client)
-        first = client.post(url + "/index")
+        first = worker.run(client, url)
         assert first.status_code == 200, first.text
         first_snapshot = next(iter(state.snapshots.values()))
         assert first_snapshot.commit_sha == bare_remote.first_commit
@@ -130,8 +133,10 @@ def test_bare_remote_history_failure_fallback_idempotency_and_restart(
                     "repository_failed", "Repository preparation failed.",
                 )),
             )
-            failed_fetch = client.post(url + "/index")
-        assert failed_fetch.status_code == 502
+            failed_fetch = worker.submit(client, url)
+            with pytest.raises(BackendError) as failure:
+                worker.execute(UUID(failed_fetch.json()["task_id"]))
+        assert failure.value.code == "repository_failed"
         assert client.get(url).json()["index_summary"] == first.json()["index_summary"]
         assert client.post(url + "/ask", json={"question": "version"}).status_code == 200
         assert list(state.agent_runs.values())[-1].snapshot_id == first_snapshot.id
@@ -146,8 +151,9 @@ def test_bare_remote_history_failure_fallback_idempotency_and_restart(
                     PermissionError("private graph detail")
                 ),
             )
-            failed_build = client.post(url + "/index")
-        assert failed_build.status_code == 403
+            failed_build = worker.submit(client, url)
+            with pytest.raises(PermissionError):
+                worker.execute(UUID(failed_build.json()["task_id"]))
         snapshots = list(state.snapshots.values())
         second_snapshot = next(s for s in snapshots if s.commit_sha == second_commit)
         assert len(snapshots) == 2 and second_snapshot.status == "failed"
@@ -162,7 +168,7 @@ def test_bare_remote_history_failure_fallback_idempotency_and_restart(
         assert answer.status_code == 200, answer.text
         assert list(state.agent_runs.values())[-1].snapshot_id == first_snapshot.id
 
-        repaired = client.post(url + "/index")
+        repaired = worker.run(client, url)
         assert repaired.status_code == 200, repaired.text
         assert repaired.json()["index_summary"]["file_count"] == 2
         assert state.projects[project_id].current_snapshot_id == second_snapshot.id
@@ -178,7 +184,7 @@ def test_bare_remote_history_failure_fallback_idempotency_and_restart(
             )
             patch.setattr(adapter.engine, "index", forbidden)
             patch.setattr(adapter.engine, "graph", forbidden)
-            repeated = client.post(url + "/index")
+            repeated = worker.run(client, url)
         assert repeated.status_code == 200, repeated.text
         assert len(state.snapshots) == 2
         repository = app.state.workspace.path_for(project_id)
@@ -229,6 +235,7 @@ def test_existing_shallow_workspace_is_unshallowed_before_refresh(
 
 def test_head_change_after_build_prevents_artifact_publish_and_ready(
     tmp_path, bare_remote, bare_transport, adapter, monkeypatch,
+    index_worker_factory, task_dispatcher_factory,
 ):
     target_commit = bare_remote.commit_and_push(
         "second.py", "value = 2\n", "second",
@@ -238,7 +245,9 @@ def test_head_change_after_build_prevents_artifact_publish_and_ready(
         adapter=adapter,
         workspace=RepositoryWorkspace(tmp_path / "managed"),
         persistence=state,
+        task_dispatcher=task_dispatcher_factory(),
     )
+    worker = index_worker_factory(app)
     original = adapter.index
 
     def move_head_after_build(root, **kwargs):
@@ -249,9 +258,10 @@ def test_head_change_after_build_prevents_artifact_publish_and_ready(
     monkeypatch.setattr(adapter, "index", move_head_after_build)
     with TestClient(app) as client:
         url, project_id = register(client)
-        response = client.post(url + "/index")
-        assert response.status_code == 409
-        assert response.json()["detail"]["code"] == "repository_changed"
+        response = worker.submit(client, url)
+        with pytest.raises(BackendError) as failure:
+            worker.execute(UUID(response.json()["task_id"]))
+        assert failure.value.code == "repository_changed"
 
     snapshot = next(iter(state.snapshots.values()))
     assert snapshot.commit_sha == target_commit and snapshot.status == "failed"
@@ -262,13 +272,16 @@ def test_head_change_after_build_prevents_artifact_publish_and_ready(
 
 def test_first_attempt_a_b_c_refreshes_keep_git_snapshot_and_artifacts_aligned(
     tmp_path, bare_remote, bare_transport, adapter,
+    index_worker_factory, task_dispatcher_factory,
 ):
     state = InMemoryPersistence()
     app = create_app(
         adapter=adapter,
         workspace=RepositoryWorkspace(tmp_path / "managed"),
         persistence=state,
+        task_dispatcher=task_dispatcher_factory(),
     )
+    worker = index_worker_factory(app)
     with TestClient(app) as client:
         url, project_id = register(client)
         expected_commits = [bare_remote.first_commit]
@@ -281,7 +294,7 @@ def test_first_attempt_a_b_c_refreshes_keep_git_snapshot_and_artifacts_aligned(
                     f"version {position}",
                 ))
             expected = expected_commits[-1]
-            response = client.post(url + "/index")
+            response = worker.run(client, url)
             assert response.status_code == 200, response.text
 
             snapshots = list(state.snapshots.values())

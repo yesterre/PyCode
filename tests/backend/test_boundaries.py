@@ -2,8 +2,11 @@ import ast
 import subprocess
 import sys
 from pathlib import Path
+from uuid import UUID
 
 import pytest
+
+from backend.app.core.errors import BackendError
 
 
 def make_symlink(link, target, *, directory=False):
@@ -21,22 +24,30 @@ def test_impact_symlink_escape_is_denied(client, ready_url, repository, tmp_path
     assert response.status_code == 403 and llm.prompts == []
 
 
-def test_artifact_directory_symlink_cannot_redirect_writes(client, project_url, source_repository, tmp_path):
+def test_artifact_directory_symlink_cannot_redirect_writes(
+    client, project_url, source_repository, tmp_path, index_worker,
+):
     outside = tmp_path / "outside"
     outside.mkdir()
     make_symlink(source_repository / ".pclens", outside, directory=True)
-    response = client.post(project_url + "/index")
-    assert response.status_code == 403
+    response = index_worker.submit(client, project_url)
+    with pytest.raises(BackendError) as failure:
+        index_worker.execute(UUID(response.json()["task_id"]))
+    assert failure.value.code == "unsafe_repository"
     assert list(outside.iterdir()) == []
     assert client.get(project_url).json()["status"] == "failed"
 
 
-def test_source_symlink_cannot_redirect_scanner(client, project_url, source_repository, tmp_path):
+def test_source_symlink_cannot_redirect_scanner(
+    client, project_url, source_repository, tmp_path, index_worker,
+):
     outside = tmp_path / "outside.py"
     outside.write_text("private = 1\n", encoding="utf-8")
     make_symlink(source_repository / "linked.py", outside)
-    response = client.post(project_url + "/index")
-    assert response.status_code == 403
+    response = index_worker.submit(client, project_url)
+    with pytest.raises(BackendError) as failure:
+        index_worker.execute(UUID(response.json()["task_id"]))
+    assert failure.value.code == "unsafe_repository"
 
 
 def test_backend_imports_do_not_use_cli_or_presentation():
@@ -72,7 +83,7 @@ def test_impact_rejects_resolved_escape_even_when_relative_path_looks_safe(
 
 
 def test_artifact_resolved_escape_is_rejected_before_core_write(
-    client, project_url, repository, tmp_path, monkeypatch,
+    client, project_url, repository, tmp_path, monkeypatch, index_worker,
 ):
     apparent = repository.parent / "artifacts"
     outside = tmp_path / "external-artifacts"
@@ -82,7 +93,10 @@ def test_artifact_resolved_escape_is_rejected_before_core_write(
         return outside if path == apparent else original(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "resolve", resolve)
-    assert client.post(project_url + "/index").status_code == 403
+    response = index_worker.submit(client, project_url)
+    with pytest.raises(BackendError) as failure:
+        index_worker.execute(UUID(response.json()["task_id"]))
+    assert failure.value.code == "unsafe_repository"
     assert not outside.exists() and list(apparent.iterdir()) == []
 
 
