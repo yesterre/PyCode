@@ -5,6 +5,7 @@ from pathlib import Path
 
 from backend.app.config import load_environment
 from backend.app.infrastructure.artifacts import SnapshotArtifactStore
+from backend.app.infrastructure.agent_workspace import AgentSnapshotWorkspace
 from backend.app.infrastructure.projects import ProjectOperationLocks
 from backend.app.infrastructure.repositories import (
     DEFAULT_GIT_HOSTS, GitRepositorySource, RepositoryWorkspace,
@@ -12,6 +13,8 @@ from backend.app.infrastructure.repositories import (
 from backend.app.integrations.pycode import PyCodeAdapter
 from backend.app.repositories import UnitOfWork
 from backend.app.services.projects import ProjectService
+from backend.app.services.agent_runs import AgentRunService
+from backend.app.services.background_tasks import BackgroundTaskService
 
 
 def repository_workspace_from_environment() -> RepositoryWorkspace:
@@ -39,4 +42,21 @@ def build_project_service(
     return ProjectService(
         unit_of_work, adapter, workspace=workspace,
         operations=operations, artifacts=artifacts,
+    )
+
+
+def build_agent_run_service(
+    unit_of_work: UnitOfWork,
+    *,
+    background_tasks: BackgroundTaskService,
+    projects: ProjectService,
+    adapter: PyCodeAdapter,
+    agent_workspace: AgentSnapshotWorkspace,
+) -> AgentRunService:
+    return AgentRunService(
+        unit_of_work,
+        background_tasks,
+        projects,
+        adapter,
+        agent_workspace,
     )

@@ -289,9 +289,10 @@ class GitRepositorySource:
             project_id=project_id,
         )
         # The directory is service-owned. Artifact history lives outside repo;
-        # removing untracked/ignored files makes the analyzed tree exact.
+        # remove untracked/ignored source files while preserving the reserved
+        # Agent runtime directory (memory, todos, task DAG, and related state).
         self._run(
-            ["clean", "-ffdx"], cwd=repository, control=control,
+            ["clean", "-ffdx", "-e", ".pclens/"], cwd=repository, control=control,
             stage="clean_workspace", project_id=project_id,
         )
         if self._resolve_ref(

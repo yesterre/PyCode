@@ -12,7 +12,8 @@ from backend.app.infrastructure.repositories import (
 )
 from backend.app.repositories import InMemoryPersistence
 from backend.app.repositories import InMemoryUnitOfWork
-from backend.app.runtime import build_project_service
+from backend.app.runtime import build_agent_run_service, build_project_service
+from backend.app.services.agent_runs import AgentRunService
 from backend.app.services.background_tasks import BackgroundTaskService
 
 
@@ -66,12 +67,16 @@ class RecordingTaskDispatcher:
     def __init__(self) -> None:
         self.health_task_ids: list[UUID] = []
         self.repository_index_task_ids: list[UUID] = []
+        self.agent_run_task_ids: list[UUID] = []
 
     def enqueue_health(self, task_id: UUID) -> None:
         self.health_task_ids.append(task_id)
 
     def enqueue_repository_index(self, task_id: UUID) -> None:
         self.repository_index_task_ids.append(task_id)
+
+    def enqueue_agent_run(self, task_id: UUID) -> None:
+        self.agent_run_task_ids.append(task_id)
 
 
 class InlineIndexWorker:
@@ -101,6 +106,34 @@ class InlineIndexWorker:
         accepted = self.submit(client, project_url)
         self.execute(UUID(accepted.json()["task_id"]))
         return client.get(project_url)
+
+
+class InlineAgentWorker:
+    """Execute the production AgentRun service without requiring Redis."""
+
+    def __init__(self, application) -> None:
+        self.application = application
+
+    def service(self) -> AgentRunService:
+        unit_of_work = InMemoryUnitOfWork(self.application.state.persistence)
+        background_tasks = BackgroundTaskService(unit_of_work)
+        projects = build_project_service(
+            unit_of_work,
+            adapter=self.application.state.adapter,
+            workspace=self.application.state.workspace,
+            artifacts=self.application.state.artifacts,
+            operations=self.application.state.project_operations,
+        )
+        return build_agent_run_service(
+            unit_of_work,
+            background_tasks=background_tasks,
+            projects=projects,
+            adapter=self.application.state.adapter,
+            agent_workspace=self.application.state.agent_workspace,
+        )
+
+    def execute(self, task_id: UUID):
+        return self.service().execute(task_id)
 
 
 @pytest.fixture
@@ -153,6 +186,11 @@ def index_worker(application):
 @pytest.fixture
 def index_worker_factory():
     return InlineIndexWorker
+
+
+@pytest.fixture
+def agent_worker(application):
+    return InlineAgentWorker(application)
 
 
 @pytest.fixture

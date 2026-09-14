@@ -103,6 +103,9 @@ def test_real_git_http_chain_fetches_new_commit_and_preserves_snapshots(
             assert answer.status_code == 200, answer.text
             assert answer.json()["answer"] == "Offline HTTP answer"
             assert "main.py" in answer.json()["evidence"]
+        runtime_state = root / ".pclens" / "memory.json"
+        runtime_state.parent.mkdir(exist_ok=True)
+        runtime_state.write_text('{"preserved": true}\n', encoding="utf-8")
         (remote / "later.py").write_text("later = True\n", encoding="utf-8")
         git(remote, "add", ".")
         git(remote, "commit", "-m", "remote update")
@@ -112,6 +115,7 @@ def test_real_git_http_chain_fetches_new_commit_and_preserves_snapshots(
         assert sum("clone" in command for command, _ in offline_git) == clone_count
         assert (root / "later.py").exists()
         assert not (root / "local.py").exists()
+        assert runtime_state.read_text(encoding="utf-8") == '{"preserved": true}\n'
         artifact_dirs = [path for path in (root.parent / "artifacts").iterdir() if path.is_dir()]
         assert len(artifact_dirs) == 2
         assert sorted(len(load_index(path / "index.json").files) for path in artifact_dirs) == [1, 2]

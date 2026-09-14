@@ -177,13 +177,32 @@ class InMemoryAgentRunRepository:
         self, project_id: UUID, snapshot_id: UUID | None, *,
         task: str, run_type: str, model: str | None,
     ) -> AgentRun:
+        return self._create(
+            project_id, snapshot_id, task=task, run_type=run_type, model=model,
+            status=AgentRunStatus.RUNNING,
+        )
+
+    def create_queued(
+        self, project_id: UUID, snapshot_id: UUID | None, *,
+        task: str, run_type: str, model: str | None,
+    ) -> AgentRun:
+        return self._create(
+            project_id, snapshot_id, task=task, run_type=run_type, model=model,
+            status=AgentRunStatus.QUEUED,
+        )
+
+    def _create(
+        self, project_id: UUID, snapshot_id: UUID | None, *,
+        task: str, run_type: str, model: str | None, status: AgentRunStatus,
+    ) -> AgentRun:
         InMemoryProjectRepository(self.state).get(project_id)
         if snapshot_id is not None and snapshot_id not in self.state.snapshots:
             raise BackendError("database_conflict", "A related persistent record is invalid.")
         now = _now()
         run = AgentRun(
-            uuid4(), project_id, snapshot_id, task, run_type, AgentRunStatus.RUNNING,
-            model, None, None, None, None, now, None, now,
+            uuid4(), project_id, snapshot_id, task, run_type, status,
+            model, None, None, None, None,
+            now if status == AgentRunStatus.RUNNING else None, None, now,
         )
         self.state.agent_runs[run.id] = run
         return run
@@ -194,12 +213,22 @@ class InMemoryAgentRunRepository:
         except KeyError:
             raise BackendError("agent_run_not_found", "Agent run does not exist.") from None
 
+    def mark_running(self, run_id: UUID) -> AgentRun:
+        run = replace(
+            self._expect(run_id, AgentRunStatus.QUEUED),
+            status=AgentRunStatus.RUNNING, started_at=_now(), finished_at=None,
+            result=None, error_message=None,
+        )
+        self.state.agent_runs[run.id] = run
+        return run
+
     def complete(
-        self, run_id: UUID, result: str, *,
+        self, run_id: UUID, result: str | None, *,
         prompt_tokens: int | None = None, completion_tokens: int | None = None,
     ) -> AgentRun:
         run = replace(
-            self.get(run_id), status=AgentRunStatus.COMPLETED, result=result,
+            self._expect(run_id, AgentRunStatus.RUNNING),
+            status=AgentRunStatus.COMPLETED, result=result,
             error_message=None, prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens, finished_at=_now(),
         )
@@ -208,7 +237,8 @@ class InMemoryAgentRunRepository:
 
     def fail(self, run_id: UUID, error_message: str) -> AgentRun:
         run = replace(
-            self.get(run_id), status=AgentRunStatus.FAILED,
+            self._expect(run_id, AgentRunStatus.RUNNING),
+            status=AgentRunStatus.FAILED, result=None,
             error_message=error_message, finished_at=_now(),
         )
         self.state.agent_runs[run.id] = run
@@ -219,6 +249,15 @@ class InMemoryAgentRunRepository:
             (run for run in self.state.agent_runs.values() if run.project_id == project_id),
             key=lambda run: (run.created_at, str(run.id)), reverse=True,
         )
+
+    def _expect(self, run_id: UUID, expected: AgentRunStatus) -> AgentRun:
+        run = self.get(run_id)
+        if run.status != expected:
+            raise BackendError(
+                "agent_run_state_conflict",
+                "Agent run cannot make the requested state transition.",
+            )
+        return run
 
 
 class InMemoryTraceEventRepository:

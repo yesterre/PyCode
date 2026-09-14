@@ -22,6 +22,7 @@ def test_health_and_openapi_without_model_or_project():
             "/api/v1/projects/{project_id}/index", "/api/v1/projects/{project_id}/ask",
             "/api/v1/projects/{project_id}/impact",
             "/api/v1/tasks/health", "/api/v1/tasks/{task_id}",
+            "/api/v1/agent-runs", "/api/v1/agent-runs/{run_id}",
         }
 
 

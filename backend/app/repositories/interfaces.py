@@ -59,10 +59,17 @@ class AgentRunRepository(Protocol):
         task: str, run_type: str, model: str | None,
     ) -> AgentRun: ...
 
+    def create_queued(
+        self, project_id: UUID, snapshot_id: UUID | None, *,
+        task: str, run_type: str, model: str | None,
+    ) -> AgentRun: ...
+
     def get(self, run_id: UUID) -> AgentRun: ...
 
+    def mark_running(self, run_id: UUID) -> AgentRun: ...
+
     def complete(
-        self, run_id: UUID, result: str, *,
+        self, run_id: UUID, result: str | None, *,
         prompt_tokens: int | None = None, completion_tokens: int | None = None,
     ) -> AgentRun: ...
 

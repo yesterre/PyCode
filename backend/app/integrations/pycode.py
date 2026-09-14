@@ -3,6 +3,7 @@ from pathlib import Path
 from backend.app.core.errors import BackendError
 from backend.app.core.models import Analysis, IndexSummary
 from pycode import AnswerResult, PyCodeEngine
+from pycode.agent import AgentResult
 from pycode.constants import DEFAULT_ARTIFACT_DIR, DEFAULT_GRAPH_FILE, DEFAULT_INDEX_FILE
 from pycode.llm_client import (
     LLMClient, LLMError, LLM_ERROR_DEPENDENCY_MISSING,
@@ -65,6 +66,15 @@ class PyCodeAdapter:
         except LLMError as exc:
             raise _model_error(exc) from exc
         return _analysis(result)
+
+    def run_agent(self, root: Path, task: str) -> AgentResult:
+        """Invoke the existing Agent facade without changing its runtime defaults."""
+        try:
+            return self.engine.run_agent(
+                root, task, llm_client=self.llm_client,
+            )
+        except LLMError as exc:
+            raise _model_error(exc) from exc
 
     @staticmethod
     def _artifact_paths(root: Path) -> tuple[Path, Path]:

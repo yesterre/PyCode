@@ -207,11 +207,31 @@ class SqlAlchemyAgentRunRepository:
         self, project_id: UUID, snapshot_id: UUID | None, *,
         task: str, run_type: str, model: str | None,
     ) -> AgentRun:
+        return self._create(
+            project_id, snapshot_id, task=task, run_type=run_type, model=model,
+            status=AgentRunStatus.RUNNING,
+        )
+
+    def create_queued(
+        self, project_id: UUID, snapshot_id: UUID | None, *,
+        task: str, run_type: str, model: str | None,
+    ) -> AgentRun:
+        return self._create(
+            project_id, snapshot_id, task=task, run_type=run_type, model=model,
+            status=AgentRunStatus.QUEUED,
+        )
+
+    def _create(
+        self, project_id: UUID, snapshot_id: UUID | None, *,
+        task: str, run_type: str, model: str | None, status: AgentRunStatus,
+    ) -> AgentRun:
         now = _now()
         record = AgentRunORM(
             id=uuid4(), project_id=project_id, snapshot_id=snapshot_id,
-            task=task, run_type=run_type, status=AgentRunStatus.RUNNING.value,
-            model=model, started_at=now, created_at=now,
+            task=task, run_type=run_type, status=status.value,
+            model=model,
+            started_at=now if status == AgentRunStatus.RUNNING else None,
+            created_at=now,
         )
         self.session.add(record)
         self.session.flush()
@@ -223,11 +243,21 @@ class SqlAlchemyAgentRunRepository:
             raise BackendError("agent_run_not_found", "Agent run does not exist.")
         return _agent_run(record)
 
+    def mark_running(self, run_id: UUID) -> AgentRun:
+        record = self._expect(run_id, AgentRunStatus.QUEUED)
+        record.status = AgentRunStatus.RUNNING.value
+        record.started_at = _now()
+        record.finished_at = None
+        record.result = None
+        record.error_message = None
+        self.session.flush()
+        return _agent_run(record)
+
     def complete(
-        self, run_id: UUID, result: str, *,
+        self, run_id: UUID, result: str | None, *,
         prompt_tokens: int | None = None, completion_tokens: int | None = None,
     ) -> AgentRun:
-        record = self._get_record(run_id)
+        record = self._expect(run_id, AgentRunStatus.RUNNING)
         record.status = AgentRunStatus.COMPLETED.value
         record.result = result
         record.error_message = None
@@ -238,8 +268,9 @@ class SqlAlchemyAgentRunRepository:
         return _agent_run(record)
 
     def fail(self, run_id: UUID, error_message: str) -> AgentRun:
-        record = self._get_record(run_id)
+        record = self._expect(run_id, AgentRunStatus.RUNNING)
         record.status = AgentRunStatus.FAILED.value
+        record.result = None
         record.error_message = error_message
         record.finished_at = _now()
         self.session.flush()
@@ -257,6 +288,15 @@ class SqlAlchemyAgentRunRepository:
         record = self.session.get(AgentRunORM, run_id)
         if record is None:
             raise BackendError("agent_run_not_found", "Agent run does not exist.")
+        return record
+
+    def _expect(self, run_id: UUID, expected: AgentRunStatus) -> AgentRunORM:
+        record = self._get_record(run_id)
+        if record.status != expected.value:
+            raise BackendError(
+                "agent_run_state_conflict",
+                "Agent run cannot make the requested state transition.",
+            )
         return record
 
 

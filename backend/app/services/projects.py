@@ -1,6 +1,8 @@
 import stat
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path, PureWindowsPath
+from typing import TypeVar
 from uuid import UUID
 
 from backend.app.core.errors import BackendError
@@ -12,6 +14,9 @@ from backend.app.infrastructure.projects import ProjectOperationLocks
 from backend.app.infrastructure.repositories import RepositoryWorkspace
 from backend.app.integrations.pycode import PyCodeAdapter
 from backend.app.repositories.interfaces import UnitOfWork
+
+
+T = TypeVar("T")
 
 
 class ProjectService:
@@ -132,6 +137,24 @@ class ProjectService:
 
     def impact(self, project_id: UUID, file_path: str, model: str | None) -> ProjectAnalysis:
         return self._analyze(project_id, file_path, model, impact=True)
+
+    def execute_on_snapshot(
+        self,
+        project_id: UUID,
+        snapshot_id: UUID,
+        operation: Callable[[Path, ProjectSnapshot, SnapshotArtifactBundle], T],
+    ) -> T:
+        """Run a caller operation against one persisted exact ready Snapshot."""
+        with self.operations.operation(project_id):
+            with self.uow.transaction():
+                project = self.uow.projects.get(project_id)
+                snapshot = self.uow.snapshots.get(snapshot_id)
+                if snapshot.project_id != project_id or snapshot.status != "ready":
+                    raise BackendError(
+                        "project_not_ready", "Build the project index before analysis.",
+                    )
+            root, snapshot, bundle = self._analysis_snapshot(project, snapshot)
+            return operation(root, snapshot, bundle)
 
     def _analyze(
         self, project_id: UUID, text: str, model: str | None, *, impact: bool,

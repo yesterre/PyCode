@@ -15,12 +15,16 @@ HEALTH_TASK_TYPE = "health"
 HEALTH_CELERY_TASK_NAME = "pycode.tasks.health"
 REPOSITORY_INDEX_TASK_TYPE = "repository_index"
 REPOSITORY_INDEX_CELERY_TASK_NAME = "pycode.tasks.index_repository"
+AGENT_RUN_TASK_TYPE = "agent_run"
+AGENT_RUN_CELERY_TASK_NAME = "pycode.tasks.run_agent"
 
 
 class BackgroundTaskDispatcher(Protocol):
     def enqueue_health(self, task_id: UUID) -> None: ...
 
     def enqueue_repository_index(self, task_id: UUID) -> None: ...
+
+    def enqueue_agent_run(self, task_id: UUID) -> None: ...
 
 
 class BackgroundTaskService:
@@ -55,6 +59,16 @@ class BackgroundTaskService:
     def get(self, task_id: UUID) -> BackgroundTask:
         with self.unit_of_work.transaction():
             return self.unit_of_work.background_tasks.get(task_id)
+
+    def enqueue_agent_run(self, task: BackgroundTask) -> None:
+        if self.dispatcher is None:
+            raise RuntimeError("A task dispatcher is required to enqueue a background task.")
+        if task.task_type != AGENT_RUN_TASK_TYPE or task.agent_run_id is None:
+            raise BackendError(
+                "background_task_state_conflict",
+                "Background task cannot make the requested state transition.",
+            )
+        self._enqueue(task, self.dispatcher.enqueue_agent_run)
 
     def execute_health(
         self, task_id: UUID, operation: Callable[[], None] | None = None,

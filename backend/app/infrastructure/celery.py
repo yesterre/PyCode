@@ -8,7 +8,8 @@ from celery import Celery
 
 from backend.app.infrastructure.redis import RedisSettings
 from backend.app.services.background_tasks import (
-    HEALTH_CELERY_TASK_NAME, REPOSITORY_INDEX_CELERY_TASK_NAME,
+    AGENT_RUN_CELERY_TASK_NAME, HEALTH_CELERY_TASK_NAME,
+    REPOSITORY_INDEX_CELERY_TASK_NAME,
 )
 
 
@@ -16,7 +17,11 @@ def create_celery_app(redis_url: str | None = None) -> Celery:
     broker_url = redis_url or RedisSettings.from_environment().url
     app = Celery(
         "pycode", broker=broker_url,
-        include=["backend.app.tasks.health", "backend.app.tasks.indexing"],
+        include=[
+            "backend.app.tasks.health",
+            "backend.app.tasks.indexing",
+            "backend.app.tasks.agent_runs",
+        ],
     )
     app.conf.update(
         accept_content=["json"],
@@ -49,6 +54,12 @@ class CeleryTaskDispatcher:
     def enqueue_repository_index(self, task_id: UUID) -> None:
         self._celery_app().send_task(
             REPOSITORY_INDEX_CELERY_TASK_NAME,
+            args=[str(task_id)], queue="pycode",
+        )
+
+    def enqueue_agent_run(self, task_id: UUID) -> None:
+        self._celery_app().send_task(
+            AGENT_RUN_CELERY_TASK_NAME,
             args=[str(task_id)], queue="pycode",
         )
 

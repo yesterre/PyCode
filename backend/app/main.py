@@ -7,9 +7,11 @@ from fastapi import FastAPI
 from backend.app.config import load_environment
 from backend.app.db.session import DatabaseSessionManager
 from backend.app.api.errors import register_error_handlers
+from backend.app.api.agent_runs import router as agent_runs_router
 from backend.app.api.projects import router as projects_router
 from backend.app.api.tasks import router as tasks_router
 from backend.app.infrastructure.celery import CeleryTaskDispatcher
+from backend.app.infrastructure.agent_workspace import AgentSnapshotWorkspace
 from backend.app.infrastructure.artifacts import SnapshotArtifactStore
 from backend.app.infrastructure.projects import ProjectOperationLocks
 from backend.app.infrastructure.repositories import RepositoryWorkspace
@@ -35,7 +37,7 @@ def create_app(*, adapter: PyCodeAdapter | None = None,
         if database is not None:
             database.dispose()
 
-    app = FastAPI(title="PyCode Backend", version="2.0-phase5b", lifespan=lifespan)
+    app = FastAPI(title="PyCode Backend", version="2.0-phase5c", lifespan=lifespan)
     if workspace is None:
         workspace = repository_workspace_from_environment()
     app.state.workspace = workspace
@@ -47,9 +49,11 @@ def create_app(*, adapter: PyCodeAdapter | None = None,
     app.state.database = database
     app.state.project_operations = ProjectOperationLocks()
     app.state.task_dispatcher = task_dispatcher or CeleryTaskDispatcher()
+    app.state.agent_workspace = AgentSnapshotWorkspace()
     register_error_handlers(app)
     app.include_router(projects_router)
     app.include_router(tasks_router)
+    app.include_router(agent_runs_router)
 
     @app.get("/health", tags=["health"])
     def health() -> dict[str, str]:

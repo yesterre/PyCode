@@ -190,9 +190,15 @@ def test_agent_runs_and_trace_events_persist_jsonb_order_and_unique(postgresql_e
                 graph_artifact_path=".pclens/code_graph.json",
                 summary=IndexSummary(1, 2, 1),
             )
-            completed = uow.agent_runs.create(
+            completed = uow.agent_runs.create_queued(
                 project.id, snapshot.id, task="question", run_type="ask", model="demo",
             )
+        assert completed.status == AgentRunStatus.QUEUED
+        assert completed.started_at is None and completed.finished_at is None
+        with uow.transaction():
+            completed = uow.agent_runs.mark_running(completed.id)
+        assert completed.status == AgentRunStatus.RUNNING
+        assert completed.started_at is not None and completed.finished_at is None
         with uow.transaction():
             completed = uow.agent_runs.complete(completed.id, "answer")
             failed = uow.agent_runs.create(
