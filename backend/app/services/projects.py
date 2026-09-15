@@ -2,7 +2,7 @@ import stat
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path, PureWindowsPath
-from typing import TypeVar
+from typing import Protocol, TypeVar
 from uuid import UUID
 
 from backend.app.core.errors import BackendError
@@ -17,6 +17,10 @@ from backend.app.repositories.interfaces import UnitOfWork
 
 
 T = TypeVar("T")
+
+
+class ExecutionBoundary(Protocol):
+    def ensure_owned(self) -> None: ...
 
 
 class ProjectService:
@@ -40,7 +44,11 @@ class ProjectService:
         with self.uow.transaction():
             return self._with_summary(self.uow.projects.get(project_id))
 
-    def index(self, project_id: UUID) -> Project:
+    def index(
+        self, project_id: UUID, *, task_id: UUID | None = None,
+        execution_token: UUID | None = None,
+        execution: ExecutionBoundary | None = None,
+    ) -> Project:
         with self.uow.transaction():
             self.uow.projects.get(project_id)
         with self.operations.operation(project_id) as project_lock:
@@ -53,12 +61,16 @@ class ProjectService:
             try:
                 project = self._reconcile_legacy_snapshots(project)
                 root, revision = self.workspace.synchronize(project)
-                project_lock.ensure_owned()
+                self._ensure_execution(project_lock, execution)
                 with self.uow.transaction():
                     project = self.uow.projects.get(project_id)
                     existing = self.uow.snapshots.get_by_commit(
                         project_id, revision.commit_sha,
                     )
+                    if existing is not None:
+                        self._bind_task_snapshot(
+                            task_id, execution_token, existing.id,
+                        )
 
                 if existing is not None and existing.status == "ready":
                     try:
@@ -72,8 +84,11 @@ class ProjectService:
                         self.workspace.protect_snapshot(
                             project, existing.id, revision.commit_sha,
                         )
-                        project_lock.ensure_owned()
-                        return self._activate(project_id, existing, bundle)
+                        self._ensure_execution(project_lock, execution)
+                        return self._activate(
+                            project_id, existing, bundle,
+                            task_id=task_id, execution_token=execution_token,
+                        )
 
                 if existing is not None and existing.status != "ready":
                     try:
@@ -88,10 +103,13 @@ class ProjectService:
                         self.workspace.protect_snapshot(
                             project, existing.id, revision.commit_sha,
                         )
-                        project_lock.ensure_owned()
-                        return self._activate(project_id, existing, recovered, finalize=True)
+                        self._ensure_execution(project_lock, execution)
+                        return self._activate(
+                            project_id, existing, recovered, finalize=True,
+                            task_id=task_id, execution_token=execution_token,
+                        )
 
-                project_lock.ensure_owned()
+                self._ensure_execution(project_lock, execution)
                 with self.uow.transaction():
                     project = self.uow.projects.get(project_id)
                     if (existing is not None
@@ -100,19 +118,22 @@ class ProjectService:
                     target_snapshot = self.uow.snapshots.start(
                         project_id, revision.commit_sha,
                     )
+                    self._bind_task_snapshot(
+                        task_id, execution_token, target_snapshot.id,
+                    )
                     project = self.uow.projects.set_status(
                         project_id, ProjectStatus.INDEXING,
                     )
                 self.workspace.protect_snapshot(
                     project, target_snapshot.id, revision.commit_sha,
                 )
-                project_lock.ensure_owned()
+                self._ensure_execution(project_lock, execution)
                 root = self.workspace.checkout_exact(project, revision.commit_sha)
                 self.workspace.assert_head(project, revision.commit_sha)
 
                 def before_publish() -> None:
                     self.workspace.assert_head(project, revision.commit_sha)
-                    project_lock.ensure_owned()
+                    self._ensure_execution(project_lock, execution)
 
                 bundle = self.artifacts.build_and_publish(
                     project_id, target_snapshot.id, revision.commit_sha,
@@ -121,12 +142,16 @@ class ProjectService:
                     ),
                     before_publish=before_publish,
                 )
-                project_lock.ensure_owned()
+                self._ensure_execution(project_lock, execution)
                 return self._activate(
                     project_id, target_snapshot, bundle, finalize=True,
+                    task_id=task_id, execution_token=execution_token,
                 )
             except Exception as exc:
-                if isinstance(exc, BackendError) and exc.code == "project_lock_lost":
+                if isinstance(exc, BackendError) and exc.code in {
+                    "project_lock_lost", "worker_execution_lost",
+                    "database_unavailable",
+                }:
                     # A newer owner may already be operating on this Project.
                     # Do not let the old owner overwrite shared Project/Snapshot state.
                     raise
@@ -142,6 +167,115 @@ class ProjectService:
                             self.uow.projects.set_current_snapshot(project_id, None)
                     self.uow.projects.set_status(
                         project_id, ProjectStatus.FAILED, error=_safe_index_error(exc),
+                    )
+                raise
+
+    def recover_index_for_snapshot(
+        self,
+        project_id: UUID,
+        snapshot_id: UUID,
+        *,
+        task_id: UUID,
+        execution_token: UUID,
+        execution: ExecutionBoundary,
+    ) -> Project:
+        """Recover one durable exact Snapshot without resolving remote HEAD."""
+
+        with self.operations.operation(project_id) as project_lock:
+            target_snapshot: ProjectSnapshot | None = None
+            try:
+                self._ensure_execution(project_lock, execution)
+                with self.uow.transaction():
+                    project = self.uow.projects.get(project_id)
+                    target_snapshot = self.uow.snapshots.get(snapshot_id)
+                    if target_snapshot.project_id != project_id:
+                        raise BackendError(
+                            "database_conflict",
+                            "A related persistent record is invalid.",
+                        )
+                    if self.uow.background_tasks.bind_snapshot_if_owner(
+                        task_id, execution_token, snapshot_id,
+                    ) is None:
+                        raise BackendError(
+                            "worker_execution_lost",
+                            "Worker execution ownership was lost before completion.",
+                        )
+                    if target_snapshot.status == "failed":
+                        raise BackendError(
+                            "database_conflict",
+                            "A failed Snapshot cannot be recovered automatically.",
+                        )
+                    if target_snapshot.status == "ready":
+                        if project.current_snapshot_id != snapshot_id:
+                            raise BackendError(
+                                "database_conflict",
+                                "The ready Snapshot is not the Project's current Snapshot.",
+                            )
+                    else:
+                        project = self.uow.projects.set_status(
+                            project_id, ProjectStatus.INDEXING,
+                        )
+
+                if target_snapshot.status == "ready":
+                    bundle = self.artifacts.validate(project_id, target_snapshot)
+                    return replace(project, index_summary=bundle.summary)
+
+                if not self.workspace.commit_available(
+                    project, target_snapshot.commit_sha,
+                ):
+                    raise BackendError(
+                        "repository_commit_unavailable",
+                        "The Snapshot repository commit is unavailable.",
+                    )
+                root = self.workspace.checkout_exact(
+                    project, target_snapshot.commit_sha,
+                )
+                self.workspace.assert_head(project, target_snapshot.commit_sha)
+                self.workspace.protect_snapshot(
+                    project, target_snapshot.id, target_snapshot.commit_sha,
+                )
+                self._ensure_execution(project_lock, execution)
+
+                try:
+                    bundle = self.artifacts.recover_published(
+                        project_id, target_snapshot.id, target_snapshot.commit_sha,
+                    )
+                except BackendError:
+                    def before_publish() -> None:
+                        self.workspace.assert_head(
+                            project, target_snapshot.commit_sha,
+                        )
+                        self._ensure_execution(project_lock, execution)
+
+                    bundle = self.artifacts.build_and_publish(
+                        project_id, target_snapshot.id, target_snapshot.commit_sha,
+                        lambda index_path, graph_path: self.adapter.index(
+                            root, index_path=index_path, graph_path=graph_path,
+                        ),
+                        before_publish=before_publish,
+                    )
+                self._ensure_execution(project_lock, execution)
+                return self._activate(
+                    project_id, target_snapshot, bundle, finalize=True,
+                    task_id=task_id, execution_token=execution_token,
+                )
+            except Exception as exc:
+                if isinstance(exc, BackendError) and exc.code in {
+                    "project_lock_lost", "worker_execution_lost",
+                    "database_unavailable", "database_conflict",
+                }:
+                    raise
+                with self.uow.transaction():
+                    current = self.uow.projects.get(project_id)
+                    if target_snapshot is not None:
+                        self.uow.snapshots.mark_failed(
+                            target_snapshot.id, _safe_index_error(exc),
+                        )
+                        if current.current_snapshot_id == target_snapshot.id:
+                            self.uow.projects.set_current_snapshot(project_id, None)
+                    self.uow.projects.set_status(
+                        project_id, ProjectStatus.FAILED,
+                        error=_safe_index_error(exc),
                     )
                 raise
 
@@ -248,8 +382,17 @@ class ProjectService:
     def _activate(
         self, project_id: UUID, snapshot: ProjectSnapshot,
         bundle: SnapshotArtifactBundle, *, finalize: bool = False,
+        task_id: UUID | None = None, execution_token: UUID | None = None,
     ) -> Project:
         with self.uow.transaction():
+            if task_id is not None and execution_token is not None:
+                if self.uow.background_tasks.guard_execution(
+                    task_id, execution_token,
+                ) is None:
+                    raise BackendError(
+                        "worker_execution_lost",
+                        "Worker execution ownership was lost before completion.",
+                    )
             if finalize:
                 snapshot = self.uow.snapshots.mark_ready(
                     snapshot.id,
@@ -260,6 +403,32 @@ class ProjectService:
             self.uow.projects.set_current_snapshot(project_id, snapshot.id)
             ready = self.uow.projects.set_status(project_id, ProjectStatus.READY)
         return replace(ready, index_summary=bundle.summary)
+
+    def _bind_task_snapshot(
+        self,
+        task_id: UUID | None,
+        execution_token: UUID | None,
+        snapshot_id: UUID,
+    ) -> None:
+        if task_id is None and execution_token is None:
+            return
+        if task_id is None or execution_token is None:
+            raise BackendError(
+                "database_conflict", "A related persistent record is invalid.",
+            )
+        if self.uow.background_tasks.bind_snapshot_if_owner(
+            task_id, execution_token, snapshot_id,
+        ) is None:
+            raise BackendError(
+                "worker_execution_lost",
+                "Worker execution ownership was lost before completion.",
+            )
+
+    @staticmethod
+    def _ensure_execution(project_lock, execution: ExecutionBoundary | None) -> None:
+        project_lock.ensure_owned()
+        if execution is not None:
+            execution.ensure_owned()
 
     def _analysis_snapshot(
         self, project: Project, snapshot: ProjectSnapshot,

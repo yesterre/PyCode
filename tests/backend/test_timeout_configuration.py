@@ -62,8 +62,11 @@ def test_redis_timeouts_reach_lock_client_and_celery_transport(monkeypatch):
     assert celery.conf.broker_connection_timeout == 5.0
     assert celery.conf.broker_transport_options["socket_connect_timeout"] == 5.0
     assert celery.conf.broker_transport_options["socket_timeout"] == 5.0
-    assert celery.conf.task_acks_late is False
-    assert celery.conf.task_reject_on_worker_lost is None
+    assert celery.conf.broker_transport_options["visibility_timeout"] == 21600
+    assert celery.conf.task_acks_late is True
+    assert celery.conf.task_acks_on_failure_or_timeout is True
+    assert celery.conf.task_reject_on_worker_lost is True
+    assert celery.conf.worker_prefetch_multiplier == 1
     assert celery.conf.task_soft_time_limit is None
     assert celery.conf.task_time_limit is None
 

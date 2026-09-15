@@ -75,6 +75,11 @@ class BackgroundTaskORM(Base):
                 "status = 'queued' AND enqueue_confirmed_at IS NULL"
             ),
         ),
+        Index(
+            "ix_background_tasks_running_lease",
+            "lease_expires_at", "id",
+            postgresql_where=text("status = 'running'"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -108,6 +113,16 @@ class BackgroundTaskORM(Base):
     next_enqueue_attempt_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
+    execution_token: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=True,
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    worker_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),
     )

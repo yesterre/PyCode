@@ -123,3 +123,66 @@ class QueuedReconciliationSettings:
         ):
             raise RuntimeError("Queued reconciliation settings must be positive.")
         return settings
+
+
+@dataclass(frozen=True)
+class ExecutionLeaseSettings:
+    ttl_seconds: float = 420.0
+    heartbeat_interval_seconds: float = 30.0
+
+    @classmethod
+    def from_environment(cls) -> "ExecutionLeaseSettings":
+        load_environment()
+        settings = cls(
+            ttl_seconds=_positive_float("PYCODE_TASK_LEASE_TTL_SECONDS", "420"),
+            heartbeat_interval_seconds=_positive_float(
+                "PYCODE_TASK_HEARTBEAT_INTERVAL_SECONDS", "30",
+            ),
+        )
+        if settings.heartbeat_interval_seconds >= settings.ttl_seconds:
+            raise RuntimeError(
+                "PYCODE_TASK_HEARTBEAT_INTERVAL_SECONDS must be below the lease TTL.",
+            )
+        return settings
+
+
+@dataclass(frozen=True)
+class StaleReconciliationSettings:
+    interval_seconds: float = 30.0
+    batch_size: int = 100
+    max_execution_attempts: int = 2
+
+    @classmethod
+    def from_environment(cls) -> "StaleReconciliationSettings":
+        load_environment()
+        settings = cls(
+            interval_seconds=_positive_float(
+                "PYCODE_STALE_RECONCILE_INTERVAL_SECONDS", "30",
+            ),
+            batch_size=int(os.environ.get(
+                "PYCODE_STALE_RECONCILE_BATCH_SIZE", "100",
+            )),
+            max_execution_attempts=int(os.environ.get(
+                "PYCODE_STALE_MAX_EXECUTION_ATTEMPTS", "2",
+            )),
+        )
+        if settings.batch_size <= 0 or settings.max_execution_attempts <= 0:
+            raise RuntimeError("Stale reconciliation settings must be positive.")
+        return settings
+
+
+@dataclass(frozen=True)
+class CeleryDeliverySettings:
+    visibility_timeout_seconds: int = 21_600
+
+    @classmethod
+    def from_environment(cls) -> "CeleryDeliverySettings":
+        load_environment()
+        timeout = int(os.environ.get(
+            "PYCODE_CELERY_VISIBILITY_TIMEOUT_SECONDS", "21600",
+        ))
+        if timeout <= 0:
+            raise RuntimeError(
+                "PYCODE_CELERY_VISIBILITY_TIMEOUT_SECONDS must be positive.",
+            )
+        return cls(visibility_timeout_seconds=timeout)

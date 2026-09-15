@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -256,6 +256,30 @@ class SqlAlchemyAgentRunRepository:
         self.session.flush()
         return _agent_run(record)
 
+    def requeue_running(self, run_id: UUID) -> AgentRun:
+        statement = (
+            update(AgentRunORM)
+            .where(
+                AgentRunORM.id == run_id,
+                AgentRunORM.status == AgentRunStatus.RUNNING.value,
+                AgentRunORM.core_started_at.is_(None),
+            )
+            .values(
+                status=AgentRunStatus.QUEUED.value,
+                started_at=None, finished_at=None, result=None,
+                error_message=None,
+            )
+            .returning(AgentRunORM)
+            .execution_options(populate_existing=True)
+        )
+        record = self.session.scalars(statement).one_or_none()
+        if record is None:
+            raise BackendError(
+                "agent_run_state_conflict",
+                "Agent run cannot make the requested state transition.",
+            )
+        return _agent_run(record)
+
     def mark_core_started(self, run_id: UUID) -> AgentCoreStart:
         statement = (
             update(AgentRunORM)
@@ -501,7 +525,11 @@ class SqlAlchemyBackgroundTaskRepository:
         record = self.session.scalars(statement).first()
         return _background_task(record) if record is not None else None
 
-    def claim(self, task_id: UUID) -> BackgroundTaskClaim:
+    def claim(
+        self, task_id: UUID, *, lease_ttl_seconds: float = 420.0,
+        worker_id: str | None = None,
+    ) -> BackgroundTaskClaim:
+        execution_token = uuid4()
         statement = (
             update(BackgroundTaskORM)
             .where(
@@ -511,10 +539,14 @@ class SqlAlchemyBackgroundTaskRepository:
             .values(
                 status=BackgroundTaskStatus.RUNNING.value,
                 attempt_count=BackgroundTaskORM.attempt_count + 1,
-                started_at=_now(),
+                started_at=func.now(),
                 finished_at=None,
                 error_code=None,
                 error_message=None,
+                execution_token=execution_token,
+                last_heartbeat_at=func.now(),
+                lease_expires_at=func.now() + timedelta(seconds=lease_ttl_seconds),
+                worker_id=worker_id,
             )
             .returning(BackgroundTaskORM)
             .execution_options(populate_existing=True)
@@ -535,6 +567,157 @@ class SqlAlchemyBackgroundTaskRepository:
                 BackgroundTaskClaimStatus.ALREADY_RUNNING, task,
             )
         return BackgroundTaskClaim(BackgroundTaskClaimStatus.TERMINAL, task)
+
+    def heartbeat(
+        self, task_id: UUID, execution_token: UUID, *, lease_ttl_seconds: float,
+    ) -> BackgroundTask | None:
+        statement = (
+            update(BackgroundTaskORM)
+            .where(
+                BackgroundTaskORM.id == task_id,
+                BackgroundTaskORM.status == BackgroundTaskStatus.RUNNING.value,
+                BackgroundTaskORM.execution_token == execution_token,
+            )
+            .values(
+                last_heartbeat_at=func.now(),
+                lease_expires_at=func.now() + timedelta(seconds=lease_ttl_seconds),
+            )
+            .returning(BackgroundTaskORM)
+            .execution_options(populate_existing=True)
+        )
+        record = self.session.scalars(statement).one_or_none()
+        return _background_task(record) if record is not None else None
+
+    def guard_execution(
+        self, task_id: UUID, execution_token: UUID,
+    ) -> BackgroundTask | None:
+        statement = (
+            select(BackgroundTaskORM)
+            .where(
+                BackgroundTaskORM.id == task_id,
+                BackgroundTaskORM.status == BackgroundTaskStatus.RUNNING.value,
+                BackgroundTaskORM.execution_token == execution_token,
+            )
+            .with_for_update()
+        )
+        record = self.session.scalars(statement).one_or_none()
+        return _background_task(record) if record is not None else None
+
+    def bind_snapshot_if_owner(
+        self, task_id: UUID, execution_token: UUID, snapshot_id: UUID,
+    ) -> BackgroundTask | None:
+        snapshot = self.session.get(ProjectSnapshotORM, snapshot_id)
+        if snapshot is None:
+            return None
+        statement = (
+            update(BackgroundTaskORM)
+            .where(
+                BackgroundTaskORM.id == task_id,
+                BackgroundTaskORM.status == BackgroundTaskStatus.RUNNING.value,
+                BackgroundTaskORM.execution_token == execution_token,
+                BackgroundTaskORM.project_id == snapshot.project_id,
+                or_(
+                    BackgroundTaskORM.snapshot_id.is_(None),
+                    BackgroundTaskORM.snapshot_id == snapshot_id,
+                ),
+            )
+            .values(snapshot_id=snapshot_id)
+            .returning(BackgroundTaskORM)
+            .execution_options(populate_existing=True)
+        )
+        record = self.session.scalars(statement).one_or_none()
+        return _background_task(record) if record is not None else None
+
+    def list_stale_running(self, batch_size: int) -> list[BackgroundTask]:
+        statement = (
+            select(BackgroundTaskORM)
+            .where(
+                BackgroundTaskORM.status == BackgroundTaskStatus.RUNNING.value,
+                or_(
+                    BackgroundTaskORM.lease_expires_at.is_(None),
+                    BackgroundTaskORM.lease_expires_at < func.now(),
+                ),
+            )
+            .order_by(
+                BackgroundTaskORM.lease_expires_at.asc().nullsfirst(),
+                BackgroundTaskORM.id,
+            )
+            .limit(batch_size)
+        )
+        return [_background_task(record) for record in self.session.scalars(statement)]
+
+    @staticmethod
+    def _stale_owner_conditions(
+        task_id: UUID, execution_token: UUID | None,
+    ) -> tuple[Any, ...]:
+        token_condition = (
+            BackgroundTaskORM.execution_token.is_(None)
+            if execution_token is None
+            else BackgroundTaskORM.execution_token == execution_token
+        )
+        return (
+            BackgroundTaskORM.id == task_id,
+            BackgroundTaskORM.status == BackgroundTaskStatus.RUNNING.value,
+            token_condition,
+            or_(
+                BackgroundTaskORM.lease_expires_at.is_(None),
+                BackgroundTaskORM.lease_expires_at < func.now(),
+            ),
+        )
+
+    def requeue_if_stale(
+        self, task_id: UUID, execution_token: UUID | None,
+    ) -> BackgroundTask | None:
+        statement = (
+            update(BackgroundTaskORM)
+            .where(*self._stale_owner_conditions(task_id, execution_token))
+            .values(
+                status=BackgroundTaskStatus.QUEUED.value,
+                started_at=None, finished_at=None, execution_token=None,
+                lease_expires_at=None, last_heartbeat_at=None, worker_id=None,
+                error_code=None, error_message=None, enqueue_confirmed_at=None,
+                next_enqueue_attempt_at=func.now(),
+            )
+            .returning(BackgroundTaskORM)
+            .execution_options(populate_existing=True)
+        )
+        record = self.session.scalars(statement).one_or_none()
+        return _background_task(record) if record is not None else None
+
+    def complete_if_stale(
+        self, task_id: UUID, execution_token: UUID | None,
+    ) -> BackgroundTask | None:
+        statement = (
+            update(BackgroundTaskORM)
+            .where(*self._stale_owner_conditions(task_id, execution_token))
+            .values(
+                status=BackgroundTaskStatus.COMPLETED.value,
+                finished_at=func.now(), lease_expires_at=None,
+                error_code=None, error_message=None,
+            )
+            .returning(BackgroundTaskORM)
+            .execution_options(populate_existing=True)
+        )
+        record = self.session.scalars(statement).one_or_none()
+        return _background_task(record) if record is not None else None
+
+    def fail_if_stale(
+        self, task_id: UUID, execution_token: UUID | None, *,
+        error_code: str, error_message: str,
+    ) -> BackgroundTask | None:
+        statement = (
+            update(BackgroundTaskORM)
+            .where(*self._stale_owner_conditions(task_id, execution_token))
+            .values(
+                status=BackgroundTaskStatus.FAILED.value,
+                finished_at=func.now(), lease_expires_at=None,
+                error_code=error_code, error_message=error_message,
+            )
+            .returning(BackgroundTaskORM)
+            .execution_options(populate_existing=True)
+        )
+        record = self.session.scalars(statement).one_or_none()
+        return _background_task(record) if record is not None else None
 
     def reserve_enqueue_attempt(
         self, task_id: UUID, attempted_at: datetime,
@@ -607,7 +790,43 @@ class SqlAlchemyBackgroundTaskRepository:
 
     def mark_completed(
         self, task_id: UUID, *, snapshot_id: UUID | None = None,
-    ) -> BackgroundTask:
+        execution_token: UUID | None = None,
+    ) -> BackgroundTask | None:
+        if execution_token is not None:
+            values: dict[str, Any] = {
+                "status": BackgroundTaskStatus.COMPLETED.value,
+                "finished_at": func.now(), "error_code": None,
+                "error_message": None, "lease_expires_at": None,
+            }
+            if snapshot_id is not None:
+                snapshot = self.session.get(ProjectSnapshotORM, snapshot_id)
+                if snapshot is None:
+                    raise BackendError(
+                        "database_conflict", "A related persistent record is invalid.",
+                    )
+                values["snapshot_id"] = snapshot_id
+            statement = (
+                update(BackgroundTaskORM)
+                .where(
+                    BackgroundTaskORM.id == task_id,
+                    BackgroundTaskORM.status == BackgroundTaskStatus.RUNNING.value,
+                    BackgroundTaskORM.execution_token == execution_token,
+                )
+                .values(**values)
+                .returning(BackgroundTaskORM)
+                .execution_options(populate_existing=True)
+            )
+            record = self.session.scalars(statement).one_or_none()
+            if record is None:
+                return None
+            if snapshot_id is not None and (
+                record.project_id is None or snapshot.project_id != record.project_id
+                or snapshot.status != "ready"
+            ):
+                raise BackendError(
+                    "database_conflict", "A related persistent record is invalid.",
+                )
+            return _background_task(record)
         record = self._expect(task_id, BackgroundTaskStatus.RUNNING)
         if snapshot_id is not None:
             snapshot = self.session.get(ProjectSnapshotORM, snapshot_id)
@@ -622,17 +841,38 @@ class SqlAlchemyBackgroundTaskRepository:
         record.finished_at = _now()
         record.error_code = None
         record.error_message = None
+        record.lease_expires_at = None
         self.session.flush()
         return _background_task(record)
 
     def mark_failed(
         self, task_id: UUID, *, error_code: str, error_message: str,
-    ) -> BackgroundTask:
+        execution_token: UUID | None = None,
+    ) -> BackgroundTask | None:
+        if execution_token is not None:
+            statement = (
+                update(BackgroundTaskORM)
+                .where(
+                    BackgroundTaskORM.id == task_id,
+                    BackgroundTaskORM.status == BackgroundTaskStatus.RUNNING.value,
+                    BackgroundTaskORM.execution_token == execution_token,
+                )
+                .values(
+                    status=BackgroundTaskStatus.FAILED.value,
+                    error_code=error_code, error_message=error_message,
+                    finished_at=func.now(), lease_expires_at=None,
+                )
+                .returning(BackgroundTaskORM)
+                .execution_options(populate_existing=True)
+            )
+            record = self.session.scalars(statement).one_or_none()
+            return _background_task(record) if record is not None else None
         record = self._expect(task_id, BackgroundTaskStatus.RUNNING)
         record.status = BackgroundTaskStatus.FAILED.value
         record.error_code = error_code
         record.error_message = error_message
         record.finished_at = _now()
+        record.lease_expires_at = None
         self.session.flush()
         return _background_task(record)
 
@@ -731,4 +971,6 @@ def _background_task(record: BackgroundTaskORM) -> BackgroundTask:
         record.idempotency_key, record.request_fingerprint,
         record.enqueue_attempt_count, record.last_enqueue_attempt_at,
         record.enqueue_confirmed_at, record.next_enqueue_attempt_at,
+        record.execution_token, record.lease_expires_at,
+        record.last_heartbeat_at, record.worker_id,
     )

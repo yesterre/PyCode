@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from uuid import UUID, uuid4
 
 import pytest
+from celery.exceptions import Reject
 from fastapi.testclient import TestClient
 
 from backend.app.core.errors import BackendError
@@ -189,7 +190,8 @@ def test_health_celery_task_is_a_thin_service_adapter(monkeypatch):
     called: list[UUID] = []
 
     class FakeService:
-        def execute_health(self, task_id: UUID) -> None:
+        def execute_health(self, task_id: UUID, *, worker_id: str | None = None) -> None:
+            assert worker_id
             called.append(task_id)
 
     @contextmanager
@@ -200,3 +202,20 @@ def test_health_celery_task_is_a_thin_service_adapter(monkeypatch):
     task_id = uuid4()
     health.run_health_task.run(str(task_id))
     assert called == [task_id]
+
+
+def test_health_worker_rejects_database_infrastructure_failure(monkeypatch):
+    from backend.app.tasks import health
+
+    class FakeService:
+        def execute_health(self, task_id, *, worker_id=None):
+            raise BackendError("database_unavailable", "Database unavailable.")
+
+    @contextmanager
+    def fake_service():
+        yield FakeService()
+
+    monkeypatch.setattr(health, "worker_background_task_service", fake_service)
+    with pytest.raises(Reject) as rejected:
+        health.run_health_task.run(str(uuid4()))
+    assert rejected.value.requeue is True

@@ -6,7 +6,10 @@ from uuid import UUID
 
 from celery import Celery
 
-from backend.app.config import QueuedReconciliationSettings
+from backend.app.config import (
+    CeleryDeliverySettings, QueuedReconciliationSettings,
+    StaleReconciliationSettings,
+)
 from backend.app.infrastructure.redis import RedisSettings
 from backend.app.services.background_tasks import (
     AGENT_RUN_CELERY_TASK_NAME, HEALTH_CELERY_TASK_NAME,
@@ -15,10 +18,14 @@ from backend.app.services.background_tasks import (
 from backend.app.services.queued_reconciliation import (
     RECONCILE_QUEUED_CELERY_TASK_NAME,
 )
+from backend.app.services.stale_reconciliation import (
+    RECONCILE_STALE_RUNNING_CELERY_TASK_NAME,
+)
 
 
 def create_celery_app(redis_url: str | None = None) -> Celery:
     redis = RedisSettings(redis_url) if redis_url else RedisSettings.from_environment()
+    delivery = CeleryDeliverySettings.from_environment()
     broker_url = redis.url
     app = Celery(
         "pycode", broker=broker_url,
@@ -27,6 +34,7 @@ def create_celery_app(redis_url: str | None = None) -> Celery:
             "backend.app.tasks.indexing",
             "backend.app.tasks.agent_runs",
             "backend.app.tasks.reconciliation",
+            "backend.app.tasks.stale_reconciliation",
         ],
     )
     app.conf.update(
@@ -36,17 +44,26 @@ def create_celery_app(redis_url: str | None = None) -> Celery:
         broker_transport_options={
             "socket_connect_timeout": redis.connect_timeout_seconds,
             "socket_timeout": redis.socket_timeout_seconds,
+            "visibility_timeout": delivery.visibility_timeout_seconds,
         },
         enable_utc=True,
         result_backend=None,
         task_default_queue="pycode",
         task_ignore_result=True,
+        task_acks_late=True,
+        task_acks_on_failure_or_timeout=True,
+        task_reject_on_worker_lost=True,
         task_serializer="json",
         timezone="UTC",
+        worker_prefetch_multiplier=1,
         beat_schedule={
             "reconcile-queued-background-tasks": {
                 "task": RECONCILE_QUEUED_CELERY_TASK_NAME,
                 "schedule": QueuedReconciliationSettings.from_environment().interval_seconds,
+            },
+            "reconcile-stale-running-background-tasks": {
+                "task": RECONCILE_STALE_RUNNING_CELERY_TASK_NAME,
+                "schedule": StaleReconciliationSettings.from_environment().interval_seconds,
             },
         },
     )

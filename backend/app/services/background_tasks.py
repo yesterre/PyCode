@@ -3,11 +3,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
+from contextlib import AbstractContextManager
 from typing import Protocol
 from uuid import UUID
 
 from backend.app.core.errors import BackendError
-from backend.app.config import QueuedReconciliationSettings
+from backend.app.config import ExecutionLeaseSettings, QueuedReconciliationSettings
 from backend.app.core.models import (
     BackgroundTask, BackgroundTaskClaimStatus, Project,
 )
@@ -39,6 +40,10 @@ class BackgroundTaskService:
         self, unit_of_work: UnitOfWork,
         dispatcher: BackgroundTaskDispatcher | None = None,
         reconciliation_settings: QueuedReconciliationSettings | None = None,
+        lease_settings: ExecutionLeaseSettings | None = None,
+        heartbeat_factory: Callable[
+            [BackgroundTask], AbstractContextManager
+        ] | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.unit_of_work = unit_of_work
@@ -47,6 +52,8 @@ class BackgroundTaskService:
             reconciliation_settings or QueuedReconciliationSettings()
         )
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.lease_settings = lease_settings or ExecutionLeaseSettings()
+        self.heartbeat_factory = heartbeat_factory
 
     def create_health_task(self) -> BackgroundTask:
         if self.dispatcher is None:
@@ -102,24 +109,32 @@ class BackgroundTaskService:
         )
 
     def execute_health(
-        self, task_id: UUID, operation: Callable[[], None] | None = None,
+        self, task_id: UUID, operation: Callable[[], None] | None = None, *,
+        worker_id: str | None = None,
     ) -> BackgroundTask:
         return self._execute(
             task_id, HEALTH_TASK_TYPE,
-            lambda _: (operation or _health_operation)(),
+            lambda _, _ownership: (operation or _health_operation)(),
             error_mapper=_health_task_error,
+            worker_id=worker_id,
         )
 
     def execute_repository_index(
-        self, task_id: UUID, index_project: Callable[[UUID], Project],
+        self, task_id: UUID, index_project: Callable[[UUID], Project], *,
+        owned_operation: Callable[[BackgroundTask, object], Project] | None = None,
+        worker_id: str | None = None,
     ) -> BackgroundTask:
-        def operation(task: BackgroundTask) -> UUID:
+        def operation(task: BackgroundTask, ownership) -> UUID:
             if task.project_id is None:  # pragma: no cover - persistent invariant
                 raise BackendError(
                     "background_task_state_conflict",
                     "Background task cannot make the requested state transition.",
                 )
-            project = index_project(task.project_id)
+            project = (
+                owned_operation(task, ownership)
+                if owned_operation is not None
+                else index_project(task.project_id)
+            )
             if project.current_snapshot_id is None:  # pragma: no cover - Phase 4 invariant
                 raise BackendError(
                     "database_conflict", "A related persistent record is invalid.",
@@ -129,15 +144,21 @@ class BackgroundTaskService:
         return self._execute(
             task_id, REPOSITORY_INDEX_TASK_TYPE, operation,
             error_mapper=_repository_index_task_error,
+            worker_id=worker_id,
         )
 
     def _execute(
         self, task_id: UUID, expected_type: str,
-        operation: Callable[[BackgroundTask], UUID | None], *,
+        operation: Callable[[BackgroundTask, object], UUID | None], *,
         error_mapper: Callable[[Exception], tuple[str, str]],
+        worker_id: str | None = None,
     ) -> BackgroundTask:
         with self.unit_of_work.transaction():
-            claim = self.unit_of_work.background_tasks.claim(task_id)
+            claim = self.unit_of_work.background_tasks.claim(
+                task_id,
+                lease_ttl_seconds=self.lease_settings.ttl_seconds,
+                worker_id=worker_id,
+            )
             if claim.status == BackgroundTaskClaimStatus.NOT_FOUND:
                 raise BackendError(
                     "background_task_not_found", "Background task does not exist.",
@@ -145,38 +166,98 @@ class BackgroundTaskService:
             task = claim.task
             if task is None:  # pragma: no cover - repository contract
                 raise RuntimeError("Background task claim returned no task.")
-            if task.task_type != expected_type:
-                raise BackendError(
-                    "background_task_state_conflict",
-                    "Background task cannot make the requested state transition.",
-                )
-            if claim.status != BackgroundTaskClaimStatus.CLAIMED:
-                logger.info(
-                    "Duplicate background task delivery ignored task_id=%s "
-                    "task_type=%s claim_status=%s",
-                    task_id, expected_type, claim.status,
-                )
-                return task
 
-        try:
-            snapshot_id = operation(task)
-        except Exception as exc:
-            error_code, error_message = error_mapper(exc)
-            logger.error(
-                "Background task execution failed task_id=%s task_type=%s error_code=%s",
-                task_id, expected_type, error_code,
-                exc_info=(type(exc), exc, exc.__traceback__),
+        if task.task_type != expected_type:
+            error = BackendError(
+                "background_task_state_conflict",
+                "Background task cannot make the requested state transition.",
             )
+            if claim.status == BackgroundTaskClaimStatus.CLAIMED:
+                with self.unit_of_work.transaction():
+                    self.unit_of_work.background_tasks.mark_failed(
+                        task_id,
+                        error_code=error.code,
+                        error_message=error.message,
+                        execution_token=task.execution_token,
+                    )
+            raise error
+        if claim.status != BackgroundTaskClaimStatus.CLAIMED:
+            logger.info(
+                "Duplicate background task delivery ignored task_id=%s "
+                "task_type=%s claim_status=%s",
+                task_id, expected_type, claim.status,
+            )
+            return task
+
+        logger.info(
+            "Background task execution claimed task_id=%s task_type=%s "
+            "worker_id=%s execution_token=%s lease_expires_at=%s attempt_count=%s",
+            task.id, task.task_type, task.worker_id,
+            str(task.execution_token)[:8], task.lease_expires_at,
+            task.attempt_count,
+        )
+
+        execution_token = task.execution_token
+        if execution_token is None:  # pragma: no cover - owner claim invariant
+            raise RuntimeError("Claimed background task has no execution token.")
+
+        with self._heartbeat(task) as ownership:
+            try:
+                ownership.ensure_owned()
+                snapshot_id = operation(task, ownership)
+                ownership.ensure_owned()
+            except Exception as exc:
+                error_code, error_message = error_mapper(exc)
+                logger.error(
+                    "Background task execution failed task_id=%s task_type=%s error_code=%s",
+                    task_id, expected_type, error_code,
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
+                if error_code == "database_unavailable":
+                    # Ownership is unknown during an infrastructure outage.
+                    # Leave the durable running lease for stale reconciliation
+                    # and let the Celery adapter reject/requeue the delivery.
+                    raise
+                with self.unit_of_work.transaction():
+                    failed = self.unit_of_work.background_tasks.mark_failed(
+                        task_id, error_code=error_code, error_message=error_message,
+                        execution_token=execution_token,
+                    )
+                if failed is None:
+                    logger.warning(
+                        "Stale task failure write rejected task_id=%s task_type=%s "
+                        "execution_token=%s",
+                        task_id, expected_type, str(execution_token)[:8],
+                    )
+                    return self.get(task_id)
+                raise
+
             with self.unit_of_work.transaction():
-                self.unit_of_work.background_tasks.mark_failed(
-                    task_id, error_code=error_code, error_message=error_message,
+                completed = self.unit_of_work.background_tasks.mark_completed(
+                    task_id, snapshot_id=snapshot_id,
+                    execution_token=execution_token,
                 )
-            raise
+            if completed is None:
+                logger.warning(
+                    "Stale task completion write rejected task_id=%s task_type=%s "
+                    "execution_token=%s",
+                    task_id, expected_type, str(execution_token)[:8],
+                )
+                return self.get(task_id)
+            return completed
 
-        with self.unit_of_work.transaction():
-            return self.unit_of_work.background_tasks.mark_completed(
-                task_id, snapshot_id=snapshot_id,
-            )
+    def _heartbeat(self, task: BackgroundTask) -> AbstractContextManager:
+        if self.heartbeat_factory is not None:
+            return self.heartbeat_factory(task)
+        from backend.app.infrastructure.execution import InlineExecutionOwnership
+
+        def check(task_id: UUID, token: UUID) -> bool:
+            with self.unit_of_work.transaction():
+                return self.unit_of_work.background_tasks.guard_execution(
+                    task_id, token,
+                ) is not None
+
+        return InlineExecutionOwnership(task, check)
 
     def _enqueue(
         self, task: BackgroundTask, enqueue: Callable[[UUID], None],

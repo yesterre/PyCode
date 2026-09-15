@@ -141,6 +141,10 @@ class BackgroundTask:
     last_enqueue_attempt_at: datetime | None = None
     enqueue_confirmed_at: datetime | None = None
     next_enqueue_attempt_at: datetime | None = None
+    execution_token: UUID | None = None
+    lease_expires_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
+    worker_id: str | None = None
 
 
 @dataclass(frozen=True)

@@ -68,6 +68,8 @@ ERROR_CATALOG.update({
         "agent_run_state_conflict": 409,
         "background_task_state_conflict": 409,
         "background_task_consistency_error": 500,
+        "worker_execution_lost": 500,
+        "worker_lost_after_agent_core": 500,
     }.items()
 })
 ERROR_CATALOG.update({

@@ -4,9 +4,11 @@ from contextlib import contextmanager
 from uuid import UUID, uuid4
 
 import pytest
+from celery.exceptions import Reject
 from fastapi.testclient import TestClient
 
 from backend.app.core.models import BackgroundTaskStatus, ProjectStatus
+from backend.app.core.errors import BackendError
 from backend.app.infrastructure.celery import CeleryTaskDispatcher, create_celery_app
 from backend.app.main import create_app
 from backend.app.repositories import InMemoryPersistence
@@ -155,7 +157,11 @@ def test_index_celery_task_is_a_thin_service_adapter(monkeypatch):
     called: list[tuple[UUID, object]] = []
 
     class FakeBackgroundTasks:
-        def execute_repository_index(self, task_id: UUID, operation) -> None:
+        def execute_repository_index(
+            self, task_id: UUID, operation, *, owned_operation=None, worker_id=None,
+        ) -> None:
+            assert owned_operation is not None
+            assert worker_id
             called.append((task_id, operation))
 
     class FakeProjects:
@@ -174,6 +180,27 @@ def test_index_celery_task_is_a_thin_service_adapter(monkeypatch):
     indexing.run_repository_index_task.run(str(task_id))
 
     assert called == [(task_id, projects.index)]
+
+
+def test_index_worker_rejects_database_infrastructure_failure(monkeypatch):
+    from backend.app.tasks import indexing
+
+    class FakeBackgroundTasks:
+        def execute_repository_index(self, *args, **kwargs):
+            raise BackendError("database_unavailable", "Database unavailable.")
+
+    class FakeProjects:
+        def index(self, project_id):
+            raise AssertionError("must not execute")
+
+    @contextmanager
+    def fake_services():
+        yield FakeBackgroundTasks(), FakeProjects()
+
+    monkeypatch.setattr(indexing, "worker_repository_index_services", fake_services)
+    with pytest.raises(Reject) as rejected:
+        indexing.run_repository_index_task.run(str(uuid4()))
+    assert rejected.value.requeue is True
 
 
 def test_worker_registers_health_and_repository_index_tasks():

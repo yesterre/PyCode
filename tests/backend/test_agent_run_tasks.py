@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
+from celery.exceptions import Reject
 
 from backend.app.core.errors import BackendError
 from backend.app.core.models import AgentRunStatus, BackgroundTaskStatus, IndexSummary
@@ -310,7 +311,8 @@ def test_agent_dispatcher_and_worker_adapter_are_thin(monkeypatch):
     called = []
 
     class FakeService:
-        def execute(self, received):
+        def execute(self, received, *, worker_id=None):
+            assert worker_id
             called.append(received)
 
     @contextmanager
@@ -324,6 +326,23 @@ def test_agent_dispatcher_and_worker_adapter_are_thin(monkeypatch):
     app = create_celery_app("redis://localhost:6379/15")
     app.loader.import_default_modules()
     assert AGENT_RUN_CELERY_TASK_NAME in app.tasks
+
+
+def test_agent_worker_rejects_database_infrastructure_failure(monkeypatch):
+    from backend.app.tasks import agent_runs
+
+    class FakeService:
+        def execute(self, task_id, *, worker_id=None):
+            raise BackendError("database_unavailable", "Database unavailable.")
+
+    @contextmanager
+    def fake_service():
+        yield FakeService()
+
+    monkeypatch.setattr(agent_runs, "worker_agent_run_service", fake_service)
+    with pytest.raises(Reject) as rejected:
+        agent_runs.run_agent_task.run(str(uuid4()))
+    assert rejected.value.requeue is True
 
 
 def test_agent_run_repositories_reject_invalid_transitions(persistence):

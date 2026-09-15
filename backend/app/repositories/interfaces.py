@@ -72,6 +72,8 @@ class AgentRunRepository(Protocol):
 
     def mark_running(self, run_id: UUID) -> AgentRun: ...
 
+    def requeue_running(self, run_id: UUID) -> AgentRun: ...
+
     def mark_core_started(self, run_id: UUID) -> AgentCoreStart: ...
 
     def complete(
@@ -114,7 +116,37 @@ class BackgroundTaskRepository(Protocol):
         self, task_id: UUID, agent_run_id: UUID, snapshot_id: UUID,
     ) -> BackgroundTask: ...
 
-    def claim(self, task_id: UUID) -> BackgroundTaskClaim: ...
+    def claim(
+        self, task_id: UUID, *, lease_ttl_seconds: float = 420.0,
+        worker_id: str | None = None,
+    ) -> BackgroundTaskClaim: ...
+
+    def heartbeat(
+        self, task_id: UUID, execution_token: UUID, *, lease_ttl_seconds: float,
+    ) -> BackgroundTask | None: ...
+
+    def guard_execution(
+        self, task_id: UUID, execution_token: UUID,
+    ) -> BackgroundTask | None: ...
+
+    def bind_snapshot_if_owner(
+        self, task_id: UUID, execution_token: UUID, snapshot_id: UUID,
+    ) -> BackgroundTask | None: ...
+
+    def list_stale_running(self, batch_size: int) -> list[BackgroundTask]: ...
+
+    def requeue_if_stale(
+        self, task_id: UUID, execution_token: UUID | None,
+    ) -> BackgroundTask | None: ...
+
+    def complete_if_stale(
+        self, task_id: UUID, execution_token: UUID | None,
+    ) -> BackgroundTask | None: ...
+
+    def fail_if_stale(
+        self, task_id: UUID, execution_token: UUID | None, *,
+        error_code: str, error_message: str,
+    ) -> BackgroundTask | None: ...
 
     def reserve_enqueue_attempt(
         self, task_id: UUID, attempted_at: datetime,
@@ -134,11 +166,13 @@ class BackgroundTaskRepository(Protocol):
 
     def mark_completed(
         self, task_id: UUID, *, snapshot_id: UUID | None = None,
-    ) -> BackgroundTask: ...
+        execution_token: UUID | None = None,
+    ) -> BackgroundTask | None: ...
 
     def mark_failed(
         self, task_id: UUID, *, error_code: str, error_message: str,
-    ) -> BackgroundTask: ...
+        execution_token: UUID | None = None,
+    ) -> BackgroundTask | None: ...
 
 
 class UnitOfWork(Protocol):

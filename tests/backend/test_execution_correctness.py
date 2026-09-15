@@ -219,7 +219,7 @@ def test_agent_duplicate_failed_delivery_preserves_terminal_state(
     assert application.state.persistence.background_tasks[task_id].attempt_count == 1
 
 
-def test_agent_claim_rolls_back_when_linked_state_is_inconsistent(
+def test_agent_claim_terminalizes_linked_state_when_inconsistent(
     client, ready_url, application, agent_worker,
 ):
     accepted = client.post(
@@ -239,8 +239,12 @@ def test_agent_claim_rolls_back_when_linked_state_is_inconsistent(
         agent_worker.execute(task_id)
 
     assert failure.value.code == "background_task_consistency_error"
-    assert application.state.persistence.background_tasks[task_id].status == "queued"
-    assert application.state.persistence.background_tasks[task_id].attempt_count == 0
+    task = application.state.persistence.background_tasks[task_id]
+    run = application.state.persistence.agent_runs[run_id]
+    assert task.status == "failed"
+    assert task.error_code == "background_task_consistency_error"
+    assert task.attempt_count == 1
+    assert run.status == "failed"
 
 
 def test_project_lock_same_project_excludes_and_different_projects_do_not():

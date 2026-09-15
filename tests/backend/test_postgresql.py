@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import Barrier, Lock
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -12,13 +12,13 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, func, inspect, select, text
+from sqlalchemy import create_engine, func, inspect, select, text, update
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 from backend.app.core.errors import BackendError
-from backend.app.config import QueuedReconciliationSettings
+from backend.app.config import QueuedReconciliationSettings, StaleReconciliationSettings
 from backend.app.core.models import (
     AgentCoreStartStatus, AgentRunStatus, BackgroundTaskClaimStatus,
     BackgroundTaskStatus, IndexSummary, ProjectStatus,
@@ -26,6 +26,10 @@ from backend.app.core.models import (
 from backend.app.infrastructure.repositories import (
     GitRepositorySource, RepositoryRevision, RepositoryWorkspace,
 )
+from backend.app.infrastructure.projects import (
+    InMemoryProjectLockBackend, ProjectOperationLocks,
+)
+from backend.app.infrastructure.artifacts import SnapshotArtifactBundle
 from backend.app.main import create_app
 from backend.app.db.models import AgentRunORM, BackgroundTaskORM
 from backend.app.repositories import SqlAlchemyUnitOfWork
@@ -33,6 +37,8 @@ from backend.app.runtime import build_project_service
 from backend.app.services.background_tasks import BackgroundTaskService
 from backend.app.services.idempotency import agent_run_fingerprint
 from backend.app.services.queued_reconciliation import QueuedTaskReconciler
+from backend.app.services.stale_reconciliation import StaleRunningReconciler
+from backend.app.services.projects import ProjectService
 
 
 MANAGED_TABLES = {
@@ -367,6 +373,339 @@ def test_background_task_postgresql_claim_is_atomic(postgresql_engine):
             task = uow.background_tasks.create("health")
     finally:
         session.close()
+
+
+def _expire_task(engine: Engine, task_id: UUID) -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            update(BackgroundTaskORM)
+            .where(BackgroundTaskORM.id == task_id)
+            .values(lease_expires_at=func.now() - timedelta(seconds=1))
+        )
+
+
+def _project_locks() -> ProjectOperationLocks:
+    return ProjectOperationLocks(
+        InMemoryProjectLockBackend(), ttl_seconds=300,
+        renewal_interval_seconds=60,
+    )
+
+
+def _create_stale_repository_task(engine: Engine):
+    session, uow = _uow(engine)
+    try:
+        project = _create_project(uow)
+        with uow.transaction():
+            snapshot = uow.snapshots.start(project.id, "d" * 40)
+            task = uow.background_tasks.create(
+                "repository_index", project_id=project.id,
+                snapshot_id=snapshot.id,
+            )
+            task = uow.background_tasks.claim(task.id).task
+        assert task is not None and task.execution_token is not None
+    finally:
+        session.close()
+    _expire_task(engine, task.id)
+    return project, snapshot, task
+
+
+def test_postgresql_heartbeat_scanner_race_has_one_winner(postgresql_engine):
+    _, _, task = _create_stale_repository_task(postgresql_engine)
+    barrier = Barrier(2)
+
+    def heartbeat():
+        session, uow = _uow(postgresql_engine)
+        try:
+            barrier.wait(timeout=5)
+            with uow.transaction():
+                return uow.background_tasks.heartbeat(
+                    task.id, task.execution_token, lease_ttl_seconds=420,
+                ) is not None
+        finally:
+            session.close()
+
+    def recover():
+        session, uow = _uow(postgresql_engine)
+        try:
+            barrier.wait(timeout=5)
+            with uow.transaction():
+                return uow.background_tasks.requeue_if_stale(
+                    task.id, task.execution_token,
+                ) is not None
+        finally:
+            session.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        heartbeat_won, scanner_won = list(pool.map(lambda fn: fn(), [heartbeat, recover]))
+    assert int(heartbeat_won) + int(scanner_won) == 1
+    with Session(postgresql_engine) as verification:
+        persisted = verification.get(BackgroundTaskORM, task.id)
+        assert persisted is not None
+        if heartbeat_won:
+            assert persisted.status == "running" and persisted.execution_token == task.execution_token
+        else:
+            assert persisted.status == "queued" and persisted.execution_token is None
+
+
+def test_postgresql_concurrent_stale_scanners_requeue_once(postgresql_engine):
+    _, _, task = _create_stale_repository_task(postgresql_engine)
+    barrier = Barrier(2)
+
+    def scan():
+        session, uow = _uow(postgresql_engine)
+        try:
+            barrier.wait(timeout=5)
+            return StaleRunningReconciler(
+                uow, _project_locks(), StaleReconciliationSettings(),
+            ).reconcile()
+        finally:
+            if session.in_transaction():
+                session.rollback()
+            session.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: scan(), range(2)))
+    assert sum(result.requeued for result in results) == 1
+    with Session(postgresql_engine) as verification:
+        persisted = verification.get(BackgroundTaskORM, task.id)
+        assert persisted is not None and persisted.status == "queued"
+        assert persisted.execution_token is None
+
+
+def test_postgresql_terminal_scanner_race_has_one_transition(postgresql_engine):
+    session, uow = _uow(postgresql_engine)
+    try:
+        with uow.transaction():
+            task = uow.background_tasks.create("health")
+            task = uow.background_tasks.claim(task.id).task
+        assert task is not None and task.execution_token is not None
+    finally:
+        session.close()
+    _expire_task(postgresql_engine, task.id)
+    barrier = Barrier(2)
+
+    def terminal():
+        session, uow = _uow(postgresql_engine)
+        try:
+            barrier.wait(timeout=5)
+            with uow.transaction():
+                return uow.background_tasks.mark_completed(
+                    task.id, execution_token=task.execution_token,
+                ) is not None
+        finally:
+            session.close()
+
+    def scanner():
+        session, uow = _uow(postgresql_engine)
+        try:
+            barrier.wait(timeout=5)
+            with uow.transaction():
+                return uow.background_tasks.fail_if_stale(
+                    task.id, task.execution_token,
+                    error_code="worker_execution_lost", error_message="lost",
+                ) is not None
+        finally:
+            session.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(lambda fn: fn(), [terminal, scanner]))
+    assert sum(outcomes) == 1
+    with Session(postgresql_engine) as verification:
+        persisted = verification.get(BackgroundTaskORM, task.id)
+        assert persisted is not None and persisted.status in {"completed", "failed"}
+
+
+def test_postgresql_agent_marker_scanner_race_is_not_split_brain(postgresql_engine):
+    session, uow = _uow(postgresql_engine)
+    try:
+        project = _create_project(uow)
+        with uow.transaction():
+            snapshot = uow.snapshots.start(project.id, "e" * 40)
+            snapshot = uow.snapshots.mark_ready(
+                snapshot.id, index_artifact_path="index.json",
+                graph_artifact_path="graph.json", summary=IndexSummary(1, 1, 0),
+            )
+            uow.projects.set_current_snapshot(project.id, snapshot.id)
+            uow.projects.set_status(project.id, ProjectStatus.READY)
+            run = uow.agent_runs.create_queued(
+                project.id, snapshot.id, task="analyze", run_type="agent", model=None,
+            )
+            task = uow.background_tasks.create(
+                "agent_run", project_id=project.id, snapshot_id=snapshot.id,
+                agent_run_id=run.id,
+            )
+            task = uow.background_tasks.claim(task.id).task
+            uow.agent_runs.mark_running(run.id)
+        assert task is not None and task.execution_token is not None
+    finally:
+        session.close()
+    _expire_task(postgresql_engine, task.id)
+    barrier = Barrier(2)
+
+    def mark_core():
+        session, uow = _uow(postgresql_engine)
+        try:
+            barrier.wait(timeout=5)
+            with uow.transaction():
+                if uow.background_tasks.guard_execution(
+                    task.id, task.execution_token,
+                ) is None:
+                    return "lost"
+                return uow.agent_runs.mark_core_started(run.id).status.value
+        finally:
+            session.close()
+
+    def scan():
+        session, uow = _uow(postgresql_engine)
+        try:
+            barrier.wait(timeout=5)
+            return StaleRunningReconciler(
+                uow, _project_locks(), StaleReconciliationSettings(),
+            ).reconcile()
+        finally:
+            if session.in_transaction():
+                session.rollback()
+            session.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        marker, _ = list(pool.map(lambda fn: fn(), [mark_core, scan]))
+    with Session(postgresql_engine) as verification:
+        persisted_task = verification.get(BackgroundTaskORM, task.id)
+        persisted_run = verification.get(AgentRunORM, run.id)
+        assert persisted_task is not None and persisted_run is not None
+        states = (persisted_task.status, persisted_run.status)
+        assert states in {("queued", "queued"), ("failed", "failed")}
+        if states == ("queued", "queued"):
+            assert marker == "lost" and persisted_run.core_started_at is None
+        else:
+            assert persisted_task.error_code == "worker_lost_after_agent_core"
+            assert persisted_run.core_started_at is not None
+
+
+def test_postgresql_snapshot_target_binding_is_owner_guarded_and_atomic(
+    postgresql_engine,
+):
+    session, uow = _uow(postgresql_engine)
+    try:
+        project = _create_project(uow)
+        with uow.transaction():
+            first = uow.snapshots.start(project.id, "1" * 40)
+            second = uow.snapshots.start(project.id, "2" * 40)
+            task = uow.background_tasks.create(
+                "repository_index", project_id=project.id,
+            )
+            task = uow.background_tasks.claim(task.id).task
+        assert task is not None and task.execution_token is not None
+        with uow.transaction():
+            assert uow.background_tasks.bind_snapshot_if_owner(
+                task.id, uuid4(), first.id,
+            ) is None
+    finally:
+        session.close()
+
+    barrier = Barrier(2)
+
+    def bind(snapshot_id):
+        worker_session, worker = _uow(postgresql_engine)
+        try:
+            barrier.wait(timeout=5)
+            with worker.transaction():
+                return worker.background_tasks.bind_snapshot_if_owner(
+                    task.id, task.execution_token, snapshot_id,
+                )
+        finally:
+            worker_session.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        bound = list(pool.map(bind, [first.id, second.id]))
+    assert sum(value is not None for value in bound) == 1
+    with Session(postgresql_engine) as verification:
+        persisted = verification.get(BackgroundTaskORM, task.id)
+        assert persisted is not None
+        assert persisted.snapshot_id in {first.id, second.id}
+
+
+def test_postgresql_agent_pre_core_requeue_updates_both_rows(postgresql_engine):
+    session, uow = _uow(postgresql_engine)
+    try:
+        project = _create_project(uow)
+        with uow.transaction():
+            snapshot = uow.snapshots.start(project.id, "3" * 40)
+            snapshot = uow.snapshots.mark_ready(
+                snapshot.id, index_artifact_path="index.json",
+                graph_artifact_path="graph.json", summary=IndexSummary(1, 1, 0),
+            )
+            uow.projects.set_current_snapshot(project.id, snapshot.id)
+            uow.projects.set_status(project.id, ProjectStatus.READY)
+            run = uow.agent_runs.create_queued(
+                project.id, snapshot.id, task="analyze", run_type="agent", model=None,
+            )
+            task = uow.background_tasks.create(
+                "agent_run", project_id=project.id, snapshot_id=snapshot.id,
+                agent_run_id=run.id,
+            )
+            task = uow.background_tasks.claim(task.id).task
+            uow.agent_runs.mark_running(run.id)
+        assert task is not None
+    finally:
+        session.close()
+    _expire_task(postgresql_engine, task.id)
+
+    worker_session, worker = _uow(postgresql_engine)
+    try:
+        result = StaleRunningReconciler(
+            worker, _project_locks(), StaleReconciliationSettings(),
+        ).reconcile()
+        assert result.requeued == 1
+    finally:
+        worker_session.close()
+    with Session(postgresql_engine) as verification:
+        persisted_task = verification.get(BackgroundTaskORM, task.id)
+        persisted_run = verification.get(AgentRunORM, run.id)
+        assert persisted_task is not None and persisted_run is not None
+        assert persisted_task.status == "queued"
+        assert persisted_run.status == "queued"
+        assert persisted_task.enqueue_confirmed_at is None
+        assert persisted_task.execution_token is None
+
+
+def test_postgresql_repository_activation_rejects_stale_owner(postgresql_engine):
+    session, uow = _uow(postgresql_engine)
+    try:
+        project = _create_project(uow)
+        with uow.transaction():
+            snapshot = uow.snapshots.start(project.id, "4" * 40)
+            task = uow.background_tasks.create(
+                "repository_index", project_id=project.id,
+                snapshot_id=snapshot.id,
+            )
+            task = uow.background_tasks.claim(task.id).task
+        assert task is not None
+        service = ProjectService(
+            uow, adapter=object(), workspace=object(),
+            operations=_project_locks(), artifacts=object(),
+        )
+        bundle = SnapshotArtifactBundle(
+            Path("index.json"), Path("graph.json"),
+            "index.json", "graph.json", IndexSummary(1, 1, 0),
+        )
+        with pytest.raises(BackendError) as failure:
+            service._activate(
+                project.id, snapshot, bundle, finalize=True,
+                task_id=task.id, execution_token=uuid4(),
+            )
+        assert failure.value.code == "worker_execution_lost"
+    finally:
+        session.close()
+    with Session(postgresql_engine) as verification:
+        persisted_task = verification.get(BackgroundTaskORM, task.id)
+        assert persisted_task is not None and persisted_task.status == "running"
+        persisted_project = verification.execute(
+            text("SELECT status, current_snapshot_id FROM projects WHERE id=:id"),
+            {"id": project.id},
+        ).one()
+        assert persisted_project.status == "created"
+        assert persisted_project.current_snapshot_id is None
 
 
 def test_postgresql_concurrent_queued_scanners_reserve_and_publish_once(

@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from collections.abc import Callable
 from threading import RLock
 from typing import Any, Iterator
@@ -225,6 +225,20 @@ class InMemoryAgentRunRepository:
         self.state.agent_runs[run.id] = run
         return run
 
+    def requeue_running(self, run_id: UUID) -> AgentRun:
+        run = self._expect(run_id, AgentRunStatus.RUNNING)
+        if run.core_started_at is not None:
+            raise BackendError(
+                "agent_run_state_conflict",
+                "Agent run cannot make the requested state transition.",
+            )
+        queued = replace(
+            run, status=AgentRunStatus.QUEUED, started_at=None,
+            finished_at=None, result=None, error_message=None,
+        )
+        self.state.agent_runs[run_id] = queued
+        return queued
+
     def mark_core_started(self, run_id: UUID) -> AgentCoreStart:
         run = self.state.agent_runs.get(run_id)
         if run is None:
@@ -434,7 +448,10 @@ class InMemoryBackgroundTaskRepository:
                 "database_conflict", "A persistent record conflicts with existing data.",
             )
 
-    def claim(self, task_id: UUID) -> BackgroundTaskClaim:
+    def claim(
+        self, task_id: UUID, *, lease_ttl_seconds: float = 420.0,
+        worker_id: str | None = None,
+    ) -> BackgroundTaskClaim:
         task = self.state.background_tasks.get(task_id)
         if task is None:
             return BackgroundTaskClaim(BackgroundTaskClaimStatus.NOT_FOUND, None)
@@ -446,13 +463,124 @@ class InMemoryBackgroundTaskRepository:
             BackgroundTaskStatus.COMPLETED, BackgroundTaskStatus.FAILED,
         }:
             return BackgroundTaskClaim(BackgroundTaskClaimStatus.TERMINAL, task)
+        now = _now()
         updated = replace(
             task, status=BackgroundTaskStatus.RUNNING,
-            attempt_count=task.attempt_count + 1, started_at=_now(),
-            error_code=None, error_message=None,
+            attempt_count=task.attempt_count + 1, started_at=now,
+            error_code=None, error_message=None, execution_token=uuid4(),
+            last_heartbeat_at=now,
+            lease_expires_at=now + timedelta(seconds=lease_ttl_seconds),
+            worker_id=worker_id,
         )
         self.state.background_tasks[task_id] = updated
         return BackgroundTaskClaim(BackgroundTaskClaimStatus.CLAIMED, updated)
+
+    def heartbeat(
+        self, task_id: UUID, execution_token: UUID, *, lease_ttl_seconds: float,
+    ) -> BackgroundTask | None:
+        task = self.state.background_tasks.get(task_id)
+        if (
+            task is None
+            or task.status != BackgroundTaskStatus.RUNNING
+            or task.execution_token != execution_token
+        ):
+            return None
+        now = _now()
+        updated = replace(
+            task, last_heartbeat_at=now,
+            lease_expires_at=now + timedelta(seconds=lease_ttl_seconds),
+        )
+        self.state.background_tasks[task_id] = updated
+        return updated
+
+    def guard_execution(
+        self, task_id: UUID, execution_token: UUID,
+    ) -> BackgroundTask | None:
+        task = self.state.background_tasks.get(task_id)
+        if (
+            task is None
+            or task.status != BackgroundTaskStatus.RUNNING
+            or task.execution_token != execution_token
+        ):
+            return None
+        return task
+
+    def bind_snapshot_if_owner(
+        self, task_id: UUID, execution_token: UUID, snapshot_id: UUID,
+    ) -> BackgroundTask | None:
+        task = self.guard_execution(task_id, execution_token)
+        snapshot = self.state.snapshots.get(snapshot_id)
+        if task is None or snapshot is None or snapshot.project_id != task.project_id:
+            return None
+        if task.snapshot_id is not None and task.snapshot_id != snapshot_id:
+            return None
+        updated = replace(task, snapshot_id=snapshot_id)
+        self.state.background_tasks[task_id] = updated
+        return updated
+
+    def list_stale_running(self, batch_size: int) -> list[BackgroundTask]:
+        now = _now()
+        return sorted((
+            task for task in self.state.background_tasks.values()
+            if task.status == BackgroundTaskStatus.RUNNING
+            and (task.lease_expires_at is None or task.lease_expires_at < now)
+        ), key=lambda task: (task.lease_expires_at or task.started_at, str(task.id)))[:batch_size]
+
+    def _stale_owner(
+        self, task_id: UUID, execution_token: UUID | None,
+    ) -> BackgroundTask | None:
+        task = self.state.background_tasks.get(task_id)
+        if task is None or task.status != BackgroundTaskStatus.RUNNING:
+            return None
+        if task.execution_token != execution_token:
+            return None
+        if task.lease_expires_at is not None and task.lease_expires_at >= _now():
+            return None
+        return task
+
+    def requeue_if_stale(
+        self, task_id: UUID, execution_token: UUID | None,
+    ) -> BackgroundTask | None:
+        task = self._stale_owner(task_id, execution_token)
+        if task is None:
+            return None
+        updated = replace(
+            task, status=BackgroundTaskStatus.QUEUED,
+            started_at=None, finished_at=None, execution_token=None,
+            lease_expires_at=None, last_heartbeat_at=None, worker_id=None,
+            error_code=None, error_message=None, enqueue_confirmed_at=None,
+            next_enqueue_attempt_at=_now(),
+        )
+        self.state.background_tasks[task_id] = updated
+        return updated
+
+    def complete_if_stale(
+        self, task_id: UUID, execution_token: UUID | None,
+    ) -> BackgroundTask | None:
+        task = self._stale_owner(task_id, execution_token)
+        if task is None:
+            return None
+        updated = replace(
+            task, status=BackgroundTaskStatus.COMPLETED, finished_at=_now(),
+            lease_expires_at=None, error_code=None, error_message=None,
+        )
+        self.state.background_tasks[task_id] = updated
+        return updated
+
+    def fail_if_stale(
+        self, task_id: UUID, execution_token: UUID | None, *,
+        error_code: str, error_message: str,
+    ) -> BackgroundTask | None:
+        task = self._stale_owner(task_id, execution_token)
+        if task is None:
+            return None
+        updated = replace(
+            task, status=BackgroundTaskStatus.FAILED, finished_at=_now(),
+            lease_expires_at=None, error_code=error_code,
+            error_message=error_message,
+        )
+        self.state.background_tasks[task_id] = updated
+        return updated
 
     def reserve_enqueue_attempt(
         self, task_id: UUID, attempted_at: datetime,
@@ -523,8 +651,16 @@ class InMemoryBackgroundTaskRepository:
 
     def mark_completed(
         self, task_id: UUID, *, snapshot_id: UUID | None = None,
-    ) -> BackgroundTask:
-        task = self._expect(task_id, BackgroundTaskStatus.RUNNING)
+        execution_token: UUID | None = None,
+    ) -> BackgroundTask | None:
+        task = self.get(task_id)
+        if execution_token is None:
+            task = self._expect(task_id, BackgroundTaskStatus.RUNNING)
+        elif (
+            task.status != BackgroundTaskStatus.RUNNING
+            or task.execution_token != execution_token
+        ):
+            return None
         if snapshot_id is not None:
             snapshot = self.state.snapshots.get(snapshot_id)
             if (snapshot is None or task.project_id is None
@@ -536,18 +672,27 @@ class InMemoryBackgroundTaskRepository:
         updated = replace(
             task, status=BackgroundTaskStatus.COMPLETED, finished_at=_now(),
             snapshot_id=snapshot_id if snapshot_id is not None else task.snapshot_id,
-            error_code=None, error_message=None,
+            error_code=None, error_message=None, lease_expires_at=None,
         )
         self.state.background_tasks[task_id] = updated
         return updated
 
     def mark_failed(
         self, task_id: UUID, *, error_code: str, error_message: str,
-    ) -> BackgroundTask:
-        task = self._expect(task_id, BackgroundTaskStatus.RUNNING)
+        execution_token: UUID | None = None,
+    ) -> BackgroundTask | None:
+        task = self.get(task_id)
+        if execution_token is None:
+            task = self._expect(task_id, BackgroundTaskStatus.RUNNING)
+        elif (
+            task.status != BackgroundTaskStatus.RUNNING
+            or task.execution_token != execution_token
+        ):
+            return None
         updated = replace(
             task, status=BackgroundTaskStatus.FAILED, finished_at=_now(),
             error_code=error_code, error_message=error_message,
+            lease_expires_at=None,
         )
         self.state.background_tasks[task_id] = updated
         return updated
