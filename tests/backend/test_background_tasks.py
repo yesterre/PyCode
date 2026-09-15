@@ -118,16 +118,15 @@ def test_background_task_backend_error_keeps_public_code_and_message():
     assert failed.error_message == "The health probe failed safely."
 
 
-def test_background_task_rejects_invalid_state_transition():
+def test_background_task_duplicate_terminal_delivery_is_safe_noop():
     service, _, _ = _service()
     task = service.create_health_task()
     service.execute_health(task.id)
 
-    with pytest.raises(BackendError) as failure:
-        service.execute_health(task.id)
+    duplicate = service.execute_health(task.id)
 
-    assert failure.value.code == "background_task_state_conflict"
-    assert service.get(task.id).status == BackgroundTaskStatus.COMPLETED
+    assert duplicate.status == BackgroundTaskStatus.COMPLETED
+    assert duplicate.attempt_count == 1
 
 
 def test_task_http_create_and_query_without_real_redis():

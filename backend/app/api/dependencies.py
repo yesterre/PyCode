@@ -56,7 +56,11 @@ def get_background_task_service(
         if session is None:  # pragma: no cover - dependency invariant
             raise RuntimeError("Database Session dependency is unavailable.")
         unit_of_work = SqlAlchemyUnitOfWork(session)
-    return BackgroundTaskService(unit_of_work, request.app.state.task_dispatcher)
+    return BackgroundTaskService(
+        unit_of_work,
+        request.app.state.task_dispatcher,
+        request.app.state.reconciliation_settings,
+    )
 
 
 def get_agent_run_service(
@@ -69,7 +73,9 @@ def get_agent_run_service(
             raise RuntimeError("Database Session dependency is unavailable.")
         unit_of_work = SqlAlchemyUnitOfWork(session)
     background_tasks = BackgroundTaskService(
-        unit_of_work, request.app.state.task_dispatcher,
+        unit_of_work,
+        request.app.state.task_dispatcher,
+        request.app.state.reconciliation_settings,
     )
     projects = build_project_service(
         unit_of_work,

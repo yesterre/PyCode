@@ -3,10 +3,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from backend.app.config import load_environment
+from backend.app.config import RepositoryRetrySettings, load_environment
 from backend.app.infrastructure.artifacts import SnapshotArtifactStore
 from backend.app.infrastructure.agent_workspace import AgentSnapshotWorkspace
-from backend.app.infrastructure.projects import ProjectOperationLocks
+from backend.app.infrastructure.projects import (
+    ProjectOperationLocks, RedisProjectLockBackend,
+)
 from backend.app.infrastructure.repositories import (
     DEFAULT_GIT_HOSTS, GitRepositorySource, RepositoryWorkspace,
 )
@@ -28,9 +30,23 @@ def repository_workspace_from_environment() -> RepositoryWorkspace:
     source = GitRepositorySource(
         allowed_hosts=allowed_hosts,
         timeout=float(os.environ.get("PYCODE_GIT_TIMEOUT_SECONDS", "120")),
+        retry_settings=RepositoryRetrySettings.from_environment(),
     )
     return RepositoryWorkspace(
         Path(os.environ.get("PYCODE_WORKSPACE_ROOT", ".pycode-workspaces")), source,
+    )
+
+
+def project_operation_locks_from_environment() -> ProjectOperationLocks:
+    """Build the shared Redis project-lock namespace without connecting eagerly."""
+    load_environment()
+    ttl = float(os.environ.get("PYCODE_PROJECT_LOCK_TTL_SECONDS", "300"))
+    raw_renewal = os.environ.get("PYCODE_PROJECT_LOCK_RENEW_SECONDS", "").strip()
+    renewal = float(raw_renewal) if raw_renewal else None
+    return ProjectOperationLocks(
+        RedisProjectLockBackend(),
+        ttl_seconds=ttl,
+        renewal_interval_seconds=renewal,
     )
 
 

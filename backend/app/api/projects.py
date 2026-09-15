@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 
 from backend.app.api.dependencies import get_background_task_service, get_project_service
+from backend.app.api.idempotency import IdempotencyKeyHeader
 from backend.app.schemas.projects import (
     AnalysisResponse, AskRequest, CreateProjectRequest, ErrorResponse,
     ImpactRequest, ProjectResponse,
@@ -35,8 +36,11 @@ def get_project(project_id: UUID, service: Service):
     "/{project_id}/index", status_code=202,
     response_model=RepositoryIndexTaskResponse,
 )
-def index_project(project_id: UUID, service: TaskService):
-    task = service.create_repository_index_task(project_id)
+def index_project(
+    project_id: UUID, service: TaskService,
+    idempotency_key: IdempotencyKeyHeader = None,
+):
+    task = service.create_repository_index_task(project_id, idempotency_key)
     return RepositoryIndexTaskResponse(
         task_id=task.id, project_id=project_id, status=task.status,
     )

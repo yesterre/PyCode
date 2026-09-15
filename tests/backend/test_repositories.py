@@ -348,10 +348,9 @@ def test_preparing_holds_lock_and_does_not_block_queries(
             assert entered.wait(5)
             assert client.get(project_url).json()["status"] == "preparing"
             assert client.get("/health").status_code == 200
-            second = index_worker.submit(client, project_url)
-            with pytest.raises(BackendError) as failure:
-                index_worker.execute(UUID(second.json()["task_id"]))
-            assert failure.value.code == "project_busy"
+            second = client.post(project_url + "/index")
+            assert second.status_code == 409
+            assert second.json()["detail"]["code"] == "repository_index_in_progress"
             assert client.post(project_url + "/ask", json={"question": "entry"}).status_code == 409
         finally:
             release.set()

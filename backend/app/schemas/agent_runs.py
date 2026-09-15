@@ -34,4 +34,5 @@ class AgentRunResponse(BaseModel):
     error_message: str | None
     created_at: datetime
     started_at: datetime | None
+    core_started_at: datetime | None
     finished_at: datetime | None

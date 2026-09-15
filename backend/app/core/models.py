@@ -20,11 +20,25 @@ class AgentRunStatus(StrEnum):
     FAILED = "failed"
 
 
+class AgentCoreStartStatus(StrEnum):
+    MARKED = "marked"
+    ALREADY_MARKED = "already_marked"
+    INVALID_STATE = "invalid_state"
+    NOT_FOUND = "not_found"
+
+
 class BackgroundTaskStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class BackgroundTaskClaimStatus(StrEnum):
+    CLAIMED = "claimed"
+    ALREADY_RUNNING = "already_running"
+    TERMINAL = "terminal"
+    NOT_FOUND = "not_found"
 
 
 class SnapshotStatus(StrEnum):
@@ -87,6 +101,13 @@ class AgentRun:
     started_at: datetime | None
     finished_at: datetime | None
     created_at: datetime
+    core_started_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class AgentCoreStart:
+    status: AgentCoreStartStatus
+    run: AgentRun | None
 
 
 @dataclass(frozen=True)
@@ -114,6 +135,24 @@ class BackgroundTask:
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    idempotency_key: str | None = None
+    request_fingerprint: str | None = None
+    enqueue_attempt_count: int = 0
+    last_enqueue_attempt_at: datetime | None = None
+    enqueue_confirmed_at: datetime | None = None
+    next_enqueue_attempt_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class BackgroundTaskClaim:
+    status: BackgroundTaskClaimStatus
+    task: BackgroundTask | None
+
+
+@dataclass(frozen=True)
+class BackgroundTaskCreation:
+    task: BackgroundTask
+    created: bool
 
 
 @dataclass(frozen=True)

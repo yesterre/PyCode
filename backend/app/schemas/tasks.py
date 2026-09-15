@@ -21,6 +21,10 @@ class BackgroundTaskResponse(BaseModel):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    enqueue_attempt_count: int
+    last_enqueue_attempt_at: datetime | None
+    enqueue_confirmed_at: datetime | None
+    next_enqueue_attempt_at: datetime | None
 
 
 class RepositoryIndexTaskResponse(BaseModel):

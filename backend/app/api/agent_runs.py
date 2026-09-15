@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 
 from backend.app.api.dependencies import get_agent_run_service
+from backend.app.api.idempotency import IdempotencyKeyHeader
 from backend.app.schemas.agent_runs import (
     AgentRunAcceptedResponse,
     AgentRunResponse,
@@ -22,8 +23,11 @@ router = APIRouter(
 
 
 @router.post("", status_code=202, response_model=AgentRunAcceptedResponse)
-def create_agent_run(body: CreateAgentRunRequest, service: Service):
-    submission = service.submit(body.project_id, body.task)
+def create_agent_run(
+    body: CreateAgentRunRequest, service: Service,
+    idempotency_key: IdempotencyKeyHeader = None,
+):
+    submission = service.submit(body.project_id, body.task, idempotency_key)
     return AgentRunAcceptedResponse(
         run_id=submission.run.id,
         task_id=submission.background_task.id,

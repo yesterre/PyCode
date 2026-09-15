@@ -4,13 +4,16 @@ from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timezone
+from collections.abc import Callable
 from threading import RLock
 from typing import Any, Iterator
 from uuid import UUID, uuid4
 
 from backend.app.core.errors import BackendError
 from backend.app.core.models import (
-    AgentRun, AgentRunStatus, BackgroundTask, BackgroundTaskStatus, IndexSummary,
+    AgentCoreStart, AgentCoreStartStatus, AgentRun, AgentRunStatus,
+    BackgroundTask, BackgroundTaskClaim, BackgroundTaskCreation,
+    BackgroundTaskClaimStatus, BackgroundTaskStatus, IndexSummary,
     Project, ProjectSnapshot, ProjectStatus, TraceEvent,
 )
 
@@ -222,6 +225,18 @@ class InMemoryAgentRunRepository:
         self.state.agent_runs[run.id] = run
         return run
 
+    def mark_core_started(self, run_id: UUID) -> AgentCoreStart:
+        run = self.state.agent_runs.get(run_id)
+        if run is None:
+            return AgentCoreStart(AgentCoreStartStatus.NOT_FOUND, None)
+        if run.core_started_at is not None:
+            return AgentCoreStart(AgentCoreStartStatus.ALREADY_MARKED, run)
+        if run.status != AgentRunStatus.RUNNING:
+            return AgentCoreStart(AgentCoreStartStatus.INVALID_STATE, run)
+        marked = replace(run, core_started_at=_now())
+        self.state.agent_runs[run_id] = marked
+        return AgentCoreStart(AgentCoreStartStatus.MARKED, marked)
+
     def complete(
         self, run_id: UUID, result: str | None, *,
         prompt_tokens: int | None = None, completion_tokens: int | None = None,
@@ -291,6 +306,81 @@ class InMemoryBackgroundTaskRepository:
     def create(
         self, task_type: str, *, project_id: UUID | None = None,
         snapshot_id: UUID | None = None, agent_run_id: UUID | None = None,
+        idempotency_key: str | None = None, request_fingerprint: str | None = None,
+        next_enqueue_attempt_at: datetime | None = None,
+    ) -> BackgroundTask:
+        if project_id is not None:
+            return self.create_submission(
+                task_type,
+                project_id=project_id,
+                snapshot_id=snapshot_id,
+                agent_run_id=agent_run_id,
+                idempotency_key=idempotency_key,
+                request_fingerprint=request_fingerprint,
+                next_enqueue_attempt_at=next_enqueue_attempt_at,
+            ).task
+        self._validate_idempotency_pair(idempotency_key, request_fingerprint)
+        return self._insert(
+            task_type,
+            project_id=project_id,
+            snapshot_id=snapshot_id,
+            agent_run_id=agent_run_id,
+            idempotency_key=idempotency_key,
+            request_fingerprint=request_fingerprint,
+            next_enqueue_attempt_at=next_enqueue_attempt_at,
+        )
+
+    def create_submission(
+        self, task_type: str, *, project_id: UUID,
+        snapshot_id: UUID | None = None, agent_run_id: UUID | None = None,
+        idempotency_key: str | None = None, request_fingerprint: str | None = None,
+        next_enqueue_attempt_at: datetime | None = None,
+    ) -> BackgroundTaskCreation:
+        self._validate_idempotency_pair(idempotency_key, request_fingerprint)
+        if idempotency_key is not None:
+            existing = next((
+                task for task in self.state.background_tasks.values()
+                if task.task_type == task_type
+                and task.project_id == project_id
+                and task.idempotency_key == idempotency_key
+            ), None)
+            if existing is not None:
+                if existing.request_fingerprint != request_fingerprint:
+                    raise BackendError(
+                        "idempotency_conflict",
+                        "The Idempotency-Key was already used for a different request.",
+                    )
+                return BackgroundTaskCreation(existing, False)
+        if task_type == "repository_index":
+            active = next((
+                task for task in self.state.background_tasks.values()
+                if task.task_type == task_type
+                and task.project_id == project_id
+                and task.status in {
+                    BackgroundTaskStatus.QUEUED, BackgroundTaskStatus.RUNNING,
+                }
+            ), None)
+            if active is not None:
+                raise BackendError(
+                    "repository_index_in_progress",
+                    "An index operation is already queued or running for this project.",
+                )
+        task = self._insert(
+            task_type,
+            project_id=project_id,
+            snapshot_id=snapshot_id,
+            agent_run_id=agent_run_id,
+            idempotency_key=idempotency_key,
+            request_fingerprint=request_fingerprint,
+            next_enqueue_attempt_at=next_enqueue_attempt_at,
+        )
+        return BackgroundTaskCreation(task, True)
+
+    def _insert(
+        self, task_type: str, *, project_id: UUID | None,
+        snapshot_id: UUID | None, agent_run_id: UUID | None,
+        idempotency_key: str | None, request_fingerprint: str | None,
+        next_enqueue_attempt_at: datetime | None,
     ) -> BackgroundTask:
         if project_id is not None:
             InMemoryProjectRepository(self.state).get(project_id)
@@ -298,10 +388,12 @@ class InMemoryBackgroundTaskRepository:
             raise BackendError("database_conflict", "A related persistent record is invalid.")
         if agent_run_id is not None and agent_run_id not in self.state.agent_runs:
             raise BackendError("database_conflict", "A related persistent record is invalid.")
+        now = _now()
         task = BackgroundTask(
             uuid4(), task_type, BackgroundTaskStatus.QUEUED,
             project_id, snapshot_id, agent_run_id, 0, None, None,
-            _now(), None, None,
+            now, None, None, idempotency_key, request_fingerprint,
+            0, None, None, next_enqueue_attempt_at or now,
         )
         self.state.background_tasks[task.id] = task
         return task
@@ -314,15 +406,120 @@ class InMemoryBackgroundTaskRepository:
                 "background_task_not_found", "Background task does not exist.",
             ) from None
 
-    def mark_running(self, task_id: UUID) -> BackgroundTask:
-        task = self._expect(task_id, BackgroundTaskStatus.QUEUED)
+    def link_agent_run(
+        self, task_id: UUID, agent_run_id: UUID, snapshot_id: UUID,
+    ) -> BackgroundTask:
+        task = self.get(task_id)
+        if (
+            task.task_type != "agent_run"
+            or task.agent_run_id is not None
+            or agent_run_id not in self.state.agent_runs
+            or snapshot_id not in self.state.snapshots
+        ):
+            raise BackendError(
+                "database_conflict", "A related persistent record is invalid.",
+            )
+        updated = replace(
+            task, agent_run_id=agent_run_id, snapshot_id=snapshot_id,
+        )
+        self.state.background_tasks[task_id] = updated
+        return updated
+
+    @staticmethod
+    def _validate_idempotency_pair(
+        idempotency_key: str | None, request_fingerprint: str | None,
+    ) -> None:
+        if (idempotency_key is None) != (request_fingerprint is None):
+            raise BackendError(
+                "database_conflict", "A persistent record conflicts with existing data.",
+            )
+
+    def claim(self, task_id: UUID) -> BackgroundTaskClaim:
+        task = self.state.background_tasks.get(task_id)
+        if task is None:
+            return BackgroundTaskClaim(BackgroundTaskClaimStatus.NOT_FOUND, None)
+        if task.status == BackgroundTaskStatus.RUNNING:
+            return BackgroundTaskClaim(
+                BackgroundTaskClaimStatus.ALREADY_RUNNING, task,
+            )
+        if task.status in {
+            BackgroundTaskStatus.COMPLETED, BackgroundTaskStatus.FAILED,
+        }:
+            return BackgroundTaskClaim(BackgroundTaskClaimStatus.TERMINAL, task)
         updated = replace(
             task, status=BackgroundTaskStatus.RUNNING,
             attempt_count=task.attempt_count + 1, started_at=_now(),
             error_code=None, error_message=None,
         )
         self.state.background_tasks[task_id] = updated
+        return BackgroundTaskClaim(BackgroundTaskClaimStatus.CLAIMED, updated)
+
+    def reserve_enqueue_attempt(
+        self, task_id: UUID, attempted_at: datetime,
+        next_attempt_at: Callable[[int], datetime],
+    ) -> BackgroundTask:
+        task = self.get(task_id)
+        if (
+            task.status != BackgroundTaskStatus.QUEUED
+            or task.enqueue_confirmed_at is not None
+        ):
+            raise BackendError(
+                "background_task_state_conflict",
+                "Background task cannot make the requested state transition.",
+            )
+        attempt = task.enqueue_attempt_count + 1
+        updated = replace(
+            task,
+            enqueue_attempt_count=attempt,
+            last_enqueue_attempt_at=attempted_at,
+            next_enqueue_attempt_at=next_attempt_at(attempt),
+        )
+        self.state.background_tasks[task_id] = updated
         return updated
+
+    def reserve_queued_enqueue_candidates(
+        self, now: datetime, batch_size: int,
+        next_attempt_at: Callable[[int], datetime],
+    ) -> list[BackgroundTask]:
+        candidates = sorted(
+            (
+                task for task in self.state.background_tasks.values()
+                if task.status == BackgroundTaskStatus.QUEUED
+                and task.enqueue_confirmed_at is None
+                and task.next_enqueue_attempt_at is not None
+                and task.next_enqueue_attempt_at <= now
+            ),
+            key=lambda task: (
+                task.next_enqueue_attempt_at, task.created_at, str(task.id),
+            ),
+        )[:batch_size]
+        return [
+            self.reserve_enqueue_attempt(task.id, now, next_attempt_at)
+            for task in candidates
+        ]
+
+    def mark_enqueue_confirmed(
+        self, task_id: UUID, confirmed_at: datetime,
+    ) -> BackgroundTask:
+        task = self.get(task_id)
+        updated = replace(
+            task,
+            enqueue_confirmed_at=confirmed_at,
+            next_enqueue_attempt_at=None,
+        )
+        self.state.background_tasks[task_id] = updated
+        return updated
+
+    def mark_running(self, task_id: UUID) -> BackgroundTask:
+        claim = self.claim(task_id)
+        if claim.status != BackgroundTaskClaimStatus.CLAIMED or claim.task is None:
+            if claim.status == BackgroundTaskClaimStatus.NOT_FOUND:
+                return self.get(task_id)
+            raise BackendError(
+                "background_task_state_conflict",
+                "Background task cannot make the requested state transition.",
+            )
+        return claim.task
 
     def mark_completed(
         self, task_id: UUID, *, snapshot_id: UUID | None = None,

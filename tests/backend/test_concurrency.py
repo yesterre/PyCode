@@ -41,10 +41,9 @@ def test_index_lock_keeps_health_get_and_other_projects_responsive(
                                    ("impact", {"json": {"file_path": "main.py"}})]:
                 response = client.post(ready_url + "/" + suffix, **kwargs)
                 assert response.status_code == 409 and response.json()["detail"]["code"] == "project_busy"
-            competing = index_worker.submit(client, ready_url)
-            with pytest.raises(BackendError) as failure:
-                index_worker.execute(UUID(competing.json()["task_id"]))
-            assert failure.value.code == "project_busy"
+            competing = client.post(ready_url + "/index")
+            assert competing.status_code == 409
+            assert competing.json()["detail"]["code"] == "repository_index_in_progress"
             assert index_worker.run(client, other_url).status_code == 200
             answer = client.post(other_url + "/ask", json={"question": "entry"}).json()
             assert "app.py" in answer["evidence"] and "main.py" not in answer["evidence"]

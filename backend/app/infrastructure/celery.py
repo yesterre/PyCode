@@ -6,32 +6,49 @@ from uuid import UUID
 
 from celery import Celery
 
+from backend.app.config import QueuedReconciliationSettings
 from backend.app.infrastructure.redis import RedisSettings
 from backend.app.services.background_tasks import (
     AGENT_RUN_CELERY_TASK_NAME, HEALTH_CELERY_TASK_NAME,
     REPOSITORY_INDEX_CELERY_TASK_NAME,
 )
+from backend.app.services.queued_reconciliation import (
+    RECONCILE_QUEUED_CELERY_TASK_NAME,
+)
 
 
 def create_celery_app(redis_url: str | None = None) -> Celery:
-    broker_url = redis_url or RedisSettings.from_environment().url
+    redis = RedisSettings(redis_url) if redis_url else RedisSettings.from_environment()
+    broker_url = redis.url
     app = Celery(
         "pycode", broker=broker_url,
         include=[
             "backend.app.tasks.health",
             "backend.app.tasks.indexing",
             "backend.app.tasks.agent_runs",
+            "backend.app.tasks.reconciliation",
         ],
     )
     app.conf.update(
         accept_content=["json"],
+        broker_connection_timeout=redis.connect_timeout_seconds,
         broker_connection_retry_on_startup=True,
+        broker_transport_options={
+            "socket_connect_timeout": redis.connect_timeout_seconds,
+            "socket_timeout": redis.socket_timeout_seconds,
+        },
         enable_utc=True,
         result_backend=None,
         task_default_queue="pycode",
         task_ignore_result=True,
         task_serializer="json",
         timezone="UTC",
+        beat_schedule={
+            "reconcile-queued-background-tasks": {
+                "task": RECONCILE_QUEUED_CELERY_TASK_NAME,
+                "schedule": QueuedReconciliationSettings.from_environment().interval_seconds,
+            },
+        },
     )
     return app
 

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from contextlib import AbstractContextManager
+from collections.abc import Callable
+from datetime import datetime
 from typing import Any, Protocol
 from uuid import UUID
 
 from backend.app.core.models import (
-    AgentRun, BackgroundTask, IndexSummary, Project, ProjectSnapshot, ProjectStatus, TraceEvent,
+    AgentCoreStart, AgentRun, BackgroundTask, BackgroundTaskClaim,
+    BackgroundTaskCreation, IndexSummary, Project, ProjectSnapshot,
+    ProjectStatus, TraceEvent,
 )
 
 
@@ -68,6 +72,8 @@ class AgentRunRepository(Protocol):
 
     def mark_running(self, run_id: UUID) -> AgentRun: ...
 
+    def mark_core_started(self, run_id: UUID) -> AgentCoreStart: ...
+
     def complete(
         self, run_id: UUID, result: str | None, *,
         prompt_tokens: int | None = None, completion_tokens: int | None = None,
@@ -91,9 +97,38 @@ class BackgroundTaskRepository(Protocol):
     def create(
         self, task_type: str, *, project_id: UUID | None = None,
         snapshot_id: UUID | None = None, agent_run_id: UUID | None = None,
+        idempotency_key: str | None = None, request_fingerprint: str | None = None,
+        next_enqueue_attempt_at: datetime | None = None,
     ) -> BackgroundTask: ...
 
+    def create_submission(
+        self, task_type: str, *, project_id: UUID,
+        snapshot_id: UUID | None = None, agent_run_id: UUID | None = None,
+        idempotency_key: str | None = None, request_fingerprint: str | None = None,
+        next_enqueue_attempt_at: datetime | None = None,
+    ) -> BackgroundTaskCreation: ...
+
     def get(self, task_id: UUID) -> BackgroundTask: ...
+
+    def link_agent_run(
+        self, task_id: UUID, agent_run_id: UUID, snapshot_id: UUID,
+    ) -> BackgroundTask: ...
+
+    def claim(self, task_id: UUID) -> BackgroundTaskClaim: ...
+
+    def reserve_enqueue_attempt(
+        self, task_id: UUID, attempted_at: datetime,
+        next_attempt_at: Callable[[int], datetime],
+    ) -> BackgroundTask: ...
+
+    def reserve_queued_enqueue_candidates(
+        self, now: datetime, batch_size: int,
+        next_attempt_at: Callable[[int], datetime],
+    ) -> list[BackgroundTask]: ...
+
+    def mark_enqueue_confirmed(
+        self, task_id: UUID, confirmed_at: datetime,
+    ) -> BackgroundTask: ...
 
     def mark_running(self, task_id: UUID) -> BackgroundTask: ...
 

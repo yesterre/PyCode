@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any, Iterator
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.app.core.errors import BackendError
 from backend.app.core.models import (
-    AgentRun, AgentRunStatus, BackgroundTask, BackgroundTaskStatus, IndexSummary,
+    AgentCoreStart, AgentCoreStartStatus, AgentRun, AgentRunStatus,
+    BackgroundTask, BackgroundTaskClaim, BackgroundTaskCreation,
+    BackgroundTaskClaimStatus, BackgroundTaskStatus, IndexSummary,
     Project, ProjectSnapshot, ProjectStatus, TraceEvent,
 )
 from backend.app.db.models import (
@@ -253,6 +256,30 @@ class SqlAlchemyAgentRunRepository:
         self.session.flush()
         return _agent_run(record)
 
+    def mark_core_started(self, run_id: UUID) -> AgentCoreStart:
+        statement = (
+            update(AgentRunORM)
+            .where(
+                AgentRunORM.id == run_id,
+                AgentRunORM.status == AgentRunStatus.RUNNING.value,
+                AgentRunORM.core_started_at.is_(None),
+            )
+            .values(core_started_at=_now())
+            .returning(AgentRunORM)
+            .execution_options(populate_existing=True)
+        )
+        record = self.session.execute(statement).scalar_one_or_none()
+        if record is not None:
+            return AgentCoreStart(AgentCoreStartStatus.MARKED, _agent_run(record))
+        record = self.session.get(AgentRunORM, run_id, populate_existing=True)
+        if record is None:
+            return AgentCoreStart(AgentCoreStartStatus.NOT_FOUND, None)
+        if record.core_started_at is not None:
+            status = AgentCoreStartStatus.ALREADY_MARKED
+        else:
+            status = AgentCoreStartStatus.INVALID_STATE
+        return AgentCoreStart(status, _agent_run(record))
+
     def complete(
         self, run_id: UUID, result: str | None, *,
         prompt_tokens: int | None = None, completion_tokens: int | None = None,
@@ -332,29 +359,251 @@ class SqlAlchemyBackgroundTaskRepository:
     def create(
         self, task_type: str, *, project_id: UUID | None = None,
         snapshot_id: UUID | None = None, agent_run_id: UUID | None = None,
+        idempotency_key: str | None = None, request_fingerprint: str | None = None,
+        next_enqueue_attempt_at: datetime | None = None,
     ) -> BackgroundTask:
+        if project_id is not None:
+            return self.create_submission(
+                task_type,
+                project_id=project_id,
+                snapshot_id=snapshot_id,
+                agent_run_id=agent_run_id,
+                idempotency_key=idempotency_key,
+                request_fingerprint=request_fingerprint,
+                next_enqueue_attempt_at=next_enqueue_attempt_at,
+            ).task
+        now = _now()
         record = BackgroundTaskORM(
             id=uuid4(), task_type=task_type,
             status=BackgroundTaskStatus.QUEUED.value,
             project_id=project_id, snapshot_id=snapshot_id,
-            agent_run_id=agent_run_id, attempt_count=0, created_at=_now(),
+            agent_run_id=agent_run_id, attempt_count=0, created_at=now,
+            idempotency_key=idempotency_key,
+            request_fingerprint=request_fingerprint,
+            enqueue_attempt_count=0,
+            next_enqueue_attempt_at=next_enqueue_attempt_at or now,
         )
         self.session.add(record)
         self.session.flush()
         return _background_task(record)
 
+    def create_submission(
+        self, task_type: str, *, project_id: UUID,
+        snapshot_id: UUID | None = None, agent_run_id: UUID | None = None,
+        idempotency_key: str | None = None, request_fingerprint: str | None = None,
+        next_enqueue_attempt_at: datetime | None = None,
+    ) -> BackgroundTaskCreation:
+        if (idempotency_key is None) != (request_fingerprint is None):
+            raise BackendError(
+                "database_conflict", "A persistent record conflicts with existing data.",
+            )
+        now = _now()
+        statement = (
+            insert(BackgroundTaskORM)
+            .values(
+                id=uuid4(), task_type=task_type,
+                status=BackgroundTaskStatus.QUEUED.value,
+                project_id=project_id, snapshot_id=snapshot_id,
+                agent_run_id=agent_run_id, attempt_count=0,
+                error_code=None, error_message=None,
+                idempotency_key=idempotency_key,
+                request_fingerprint=request_fingerprint,
+                enqueue_attempt_count=0,
+                last_enqueue_attempt_at=None,
+                enqueue_confirmed_at=None,
+                next_enqueue_attempt_at=next_enqueue_attempt_at or now,
+                created_at=now, started_at=None, finished_at=None,
+            )
+            .on_conflict_do_nothing()
+            .returning(BackgroundTaskORM)
+            .execution_options(populate_existing=True)
+        )
+        record = self.session.scalars(statement).one_or_none()
+        if record is not None:
+            self.session.flush()
+            return BackgroundTaskCreation(_background_task(record), True)
+
+        if idempotency_key is not None:
+            existing = self._get_by_idempotency_scope(
+                task_type, project_id, idempotency_key,
+            )
+            if existing is not None:
+                if existing.request_fingerprint != request_fingerprint:
+                    raise BackendError(
+                        "idempotency_conflict",
+                        "The Idempotency-Key was already used for a different request.",
+                    )
+                return BackgroundTaskCreation(existing, False)
+
+        if task_type == "repository_index":
+            active = self._get_active_repository_index(project_id)
+            if active is not None:
+                raise BackendError(
+                    "repository_index_in_progress",
+                    "An index operation is already queued or running for this project.",
+                )
+        raise BackendError(
+            "database_conflict", "A persistent record conflicts with existing data.",
+        )
+
     def get(self, task_id: UUID) -> BackgroundTask:
         return _background_task(self._get_record(task_id))
 
-    def mark_running(self, task_id: UUID) -> BackgroundTask:
-        record = self._expect(task_id, BackgroundTaskStatus.QUEUED)
-        record.status = BackgroundTaskStatus.RUNNING.value
-        record.attempt_count += 1
-        record.started_at = _now()
-        record.error_code = None
-        record.error_message = None
+    def link_agent_run(
+        self, task_id: UUID, agent_run_id: UUID, snapshot_id: UUID,
+    ) -> BackgroundTask:
+        statement = (
+            update(BackgroundTaskORM)
+            .where(
+                BackgroundTaskORM.id == task_id,
+                BackgroundTaskORM.task_type == "agent_run",
+                BackgroundTaskORM.agent_run_id.is_(None),
+            )
+            .values(agent_run_id=agent_run_id, snapshot_id=snapshot_id)
+            .returning(BackgroundTaskORM)
+            .execution_options(populate_existing=True)
+        )
+        record = self.session.scalars(statement).one_or_none()
+        if record is None:
+            raise BackendError(
+                "database_conflict", "A related persistent record is invalid.",
+            )
         self.session.flush()
         return _background_task(record)
+
+    def _get_by_idempotency_scope(
+        self, task_type: str, project_id: UUID, idempotency_key: str,
+    ) -> BackgroundTask | None:
+        statement = select(BackgroundTaskORM).where(
+            BackgroundTaskORM.task_type == task_type,
+            BackgroundTaskORM.project_id == project_id,
+            BackgroundTaskORM.idempotency_key == idempotency_key,
+        )
+        record = self.session.scalars(statement).one_or_none()
+        return _background_task(record) if record is not None else None
+
+    def _get_active_repository_index(
+        self, project_id: UUID,
+    ) -> BackgroundTask | None:
+        statement = (
+            select(BackgroundTaskORM)
+            .where(
+                BackgroundTaskORM.task_type == "repository_index",
+                BackgroundTaskORM.project_id == project_id,
+                BackgroundTaskORM.status.in_((
+                    BackgroundTaskStatus.QUEUED.value,
+                    BackgroundTaskStatus.RUNNING.value,
+                )),
+            )
+            .order_by(BackgroundTaskORM.created_at, BackgroundTaskORM.id)
+            .limit(1)
+        )
+        record = self.session.scalars(statement).first()
+        return _background_task(record) if record is not None else None
+
+    def claim(self, task_id: UUID) -> BackgroundTaskClaim:
+        statement = (
+            update(BackgroundTaskORM)
+            .where(
+                BackgroundTaskORM.id == task_id,
+                BackgroundTaskORM.status == BackgroundTaskStatus.QUEUED.value,
+            )
+            .values(
+                status=BackgroundTaskStatus.RUNNING.value,
+                attempt_count=BackgroundTaskORM.attempt_count + 1,
+                started_at=_now(),
+                finished_at=None,
+                error_code=None,
+                error_message=None,
+            )
+            .returning(BackgroundTaskORM)
+            .execution_options(populate_existing=True)
+        )
+        record = self.session.scalars(statement).one_or_none()
+        if record is not None:
+            self.session.flush()
+            return BackgroundTaskClaim(
+                BackgroundTaskClaimStatus.CLAIMED, _background_task(record),
+            )
+
+        record = self.session.get(BackgroundTaskORM, task_id, populate_existing=True)
+        if record is None:
+            return BackgroundTaskClaim(BackgroundTaskClaimStatus.NOT_FOUND, None)
+        task = _background_task(record)
+        if task.status == BackgroundTaskStatus.RUNNING:
+            return BackgroundTaskClaim(
+                BackgroundTaskClaimStatus.ALREADY_RUNNING, task,
+            )
+        return BackgroundTaskClaim(BackgroundTaskClaimStatus.TERMINAL, task)
+
+    def reserve_enqueue_attempt(
+        self, task_id: UUID, attempted_at: datetime,
+        next_attempt_at: Callable[[int], datetime],
+    ) -> BackgroundTask:
+        record = self._get_record(task_id)
+        if (
+            record.status != BackgroundTaskStatus.QUEUED.value
+            or record.enqueue_confirmed_at is not None
+        ):
+            raise BackendError(
+                "background_task_state_conflict",
+                "Background task cannot make the requested state transition.",
+            )
+        attempt = record.enqueue_attempt_count + 1
+        record.enqueue_attempt_count = attempt
+        record.last_enqueue_attempt_at = attempted_at
+        record.next_enqueue_attempt_at = next_attempt_at(attempt)
+        self.session.flush()
+        return _background_task(record)
+
+    def reserve_queued_enqueue_candidates(
+        self, now: datetime, batch_size: int,
+        next_attempt_at: Callable[[int], datetime],
+    ) -> list[BackgroundTask]:
+        statement = (
+            select(BackgroundTaskORM)
+            .where(
+                BackgroundTaskORM.status == BackgroundTaskStatus.QUEUED.value,
+                BackgroundTaskORM.enqueue_confirmed_at.is_(None),
+                BackgroundTaskORM.next_enqueue_attempt_at.is_not(None),
+                BackgroundTaskORM.next_enqueue_attempt_at <= now,
+            )
+            .order_by(
+                BackgroundTaskORM.next_enqueue_attempt_at,
+                BackgroundTaskORM.created_at,
+                BackgroundTaskORM.id,
+            )
+            .limit(batch_size)
+            .with_for_update(skip_locked=True)
+        )
+        records = list(self.session.scalars(statement))
+        for record in records:
+            attempt = record.enqueue_attempt_count + 1
+            record.enqueue_attempt_count = attempt
+            record.last_enqueue_attempt_at = now
+            record.next_enqueue_attempt_at = next_attempt_at(attempt)
+        self.session.flush()
+        return [_background_task(record) for record in records]
+
+    def mark_enqueue_confirmed(
+        self, task_id: UUID, confirmed_at: datetime,
+    ) -> BackgroundTask:
+        record = self._get_record(task_id)
+        record.enqueue_confirmed_at = confirmed_at
+        record.next_enqueue_attempt_at = None
+        self.session.flush()
+        return _background_task(record)
+
+    def mark_running(self, task_id: UUID) -> BackgroundTask:
+        claim = self.claim(task_id)
+        if claim.status != BackgroundTaskClaimStatus.CLAIMED or claim.task is None:
+            if claim.status == BackgroundTaskClaimStatus.NOT_FOUND:
+                return self.get(task_id)
+            raise BackendError(
+                "background_task_state_conflict",
+                "Background task cannot make the requested state transition.",
+            )
+        return claim.task
 
     def mark_completed(
         self, task_id: UUID, *, snapshot_id: UUID | None = None,
@@ -462,6 +711,7 @@ def _agent_run(record: AgentRunORM) -> AgentRun:
         AgentRunStatus(record.status), record.model, record.prompt_tokens,
         record.completion_tokens, record.result, record.error_message,
         record.started_at, record.finished_at, record.created_at,
+        core_started_at=record.core_started_at,
     )
 
 
@@ -478,4 +728,7 @@ def _background_task(record: BackgroundTaskORM) -> BackgroundTask:
         record.project_id, record.snapshot_id, record.agent_run_id,
         record.attempt_count, record.error_code, record.error_message,
         record.created_at, record.started_at, record.finished_at,
+        record.idempotency_key, record.request_fingerprint,
+        record.enqueue_attempt_count, record.last_enqueue_attempt_at,
+        record.enqueue_confirmed_at, record.next_enqueue_attempt_at,
     )

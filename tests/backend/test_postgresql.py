@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import os
 import shutil
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from threading import Barrier, Lock
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -9,22 +12,27 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, func, inspect, select, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 from backend.app.core.errors import BackendError
+from backend.app.config import QueuedReconciliationSettings
 from backend.app.core.models import (
-    AgentRunStatus, BackgroundTaskStatus, IndexSummary, ProjectStatus,
+    AgentCoreStartStatus, AgentRunStatus, BackgroundTaskClaimStatus,
+    BackgroundTaskStatus, IndexSummary, ProjectStatus,
 )
 from backend.app.infrastructure.repositories import (
     GitRepositorySource, RepositoryRevision, RepositoryWorkspace,
 )
 from backend.app.main import create_app
+from backend.app.db.models import AgentRunORM, BackgroundTaskORM
 from backend.app.repositories import SqlAlchemyUnitOfWork
 from backend.app.runtime import build_project_service
 from backend.app.services.background_tasks import BackgroundTaskService
+from backend.app.services.idempotency import agent_run_fingerprint
+from backend.app.services.queued_reconciliation import QueuedTaskReconciler
 
 
 MANAGED_TABLES = {
@@ -231,6 +239,75 @@ def test_agent_runs_and_trace_events_persist_jsonb_order_and_unique(postgresql_e
         session.close()
 
 
+def test_agent_core_marker_persists_and_survives_terminal_transition(postgresql_engine):
+    session, uow = _uow(postgresql_engine)
+    try:
+        project = _create_project(uow)
+        with uow.transaction():
+            run = uow.agent_runs.create_queued(
+                project.id, None, task="agent", run_type="agent", model=None,
+            )
+            assert run.core_started_at is None
+            invalid = uow.agent_runs.mark_core_started(run.id)
+        assert invalid.status == AgentCoreStartStatus.INVALID_STATE
+
+        with uow.transaction():
+            uow.agent_runs.mark_running(run.id)
+            marked = uow.agent_runs.mark_core_started(run.id)
+        assert marked.status == AgentCoreStartStatus.MARKED
+        assert marked.run is not None and marked.run.core_started_at is not None
+        marker = marked.run.core_started_at
+
+        with uow.transaction():
+            already = uow.agent_runs.mark_core_started(run.id)
+            completed = uow.agent_runs.complete(run.id, "answer")
+        assert already.status == AgentCoreStartStatus.ALREADY_MARKED
+        assert completed.core_started_at == marker
+    finally:
+        session.close()
+
+    with Session(postgresql_engine) as verification:
+        persisted = verification.get(AgentRunORM, run.id)
+        assert persisted is not None
+        assert persisted.core_started_at == marker
+        assert persisted.status == "completed"
+
+
+def test_postgresql_concurrent_agent_core_marker_has_one_winner(postgresql_engine):
+    session, uow = _uow(postgresql_engine)
+    try:
+        project = _create_project(uow)
+        with uow.transaction():
+            run = uow.agent_runs.create_queued(
+                project.id, None, task="agent", run_type="agent", model=None,
+            )
+            uow.agent_runs.mark_running(run.id)
+    finally:
+        session.close()
+
+    barrier = Barrier(2)
+
+    def mark():
+        worker_session, worker = _uow(postgresql_engine)
+        try:
+            barrier.wait()
+            with worker.transaction():
+                return worker.agent_runs.mark_core_started(run.id).status
+        finally:
+            worker_session.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        statuses = list(executor.map(lambda _: mark(), range(2)))
+
+    assert sorted(statuses) == sorted([
+        AgentCoreStartStatus.MARKED,
+        AgentCoreStartStatus.ALREADY_MARKED,
+    ])
+    with Session(postgresql_engine) as verification:
+        persisted = verification.get(AgentRunORM, run.id)
+        assert persisted is not None and persisted.core_started_at is not None
+
+
 def test_transaction_failure_rolls_back_all_new_records(postgresql_engine):
     session, uow = _uow(postgresql_engine)
     project_id = uuid4()
@@ -283,6 +360,176 @@ def test_background_task_lifecycle_persists_across_sessions(postgresql_engine):
         other_session.close()
 
 
+def test_background_task_postgresql_claim_is_atomic(postgresql_engine):
+    session, uow = _uow(postgresql_engine)
+    try:
+        with uow.transaction():
+            task = uow.background_tasks.create("health")
+    finally:
+        session.close()
+
+
+def test_postgresql_concurrent_queued_scanners_reserve_and_publish_once(
+    postgresql_engine,
+):
+    now = datetime(2026, 9, 14, 8, 0, tzinfo=timezone.utc)
+    session, uow = _uow(postgresql_engine)
+    try:
+        project = _create_project(uow)
+        with uow.transaction():
+            task = uow.background_tasks.create(
+                "repository_index",
+                project_id=project.id,
+                next_enqueue_attempt_at=now,
+            )
+    finally:
+        session.close()
+
+    class Dispatcher:
+        def __init__(self):
+            self.task_ids: list[UUID] = []
+            self.guard = Lock()
+
+        def enqueue_health(self, task_id: UUID) -> None:
+            raise AssertionError("unexpected task type")
+
+        def enqueue_repository_index(self, task_id: UUID) -> None:
+            with self.guard:
+                self.task_ids.append(task_id)
+
+        def enqueue_agent_run(self, task_id: UUID) -> None:
+            raise AssertionError("unexpected task type")
+
+    dispatcher = Dispatcher()
+    settings = QueuedReconciliationSettings(0, 1, 10, 60)
+    barrier = Barrier(2)
+
+    def reconcile():
+        worker_session, worker_uow = _uow(postgresql_engine)
+        try:
+            barrier.wait()
+            return QueuedTaskReconciler(
+                worker_uow, dispatcher, settings, clock=lambda: now,
+            ).run()
+        finally:
+            if worker_session.in_transaction():
+                worker_session.rollback()
+            worker_session.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: reconcile(), range(2)))
+
+    assert sum(result.candidate_count for result in results) == 1
+    assert dispatcher.task_ids == [task.id]
+    with Session(postgresql_engine) as verification:
+        persisted = verification.get(BackgroundTaskORM, task.id)
+        assert persisted is not None
+        assert persisted.status == "queued"
+        assert persisted.enqueue_attempt_count == 1
+        assert persisted.enqueue_confirmed_at == now
+        assert persisted.next_enqueue_attempt_at is None
+        assert persisted.attempt_count == 0
+        assert verification.scalar(
+            select(func.count()).select_from(BackgroundTaskORM)
+        ) == 1
+
+
+def test_postgresql_agent_orphan_reconciliation_preserves_run_task_and_snapshot(
+    postgresql_engine,
+):
+    now = datetime(2026, 9, 14, 8, 0, tzinfo=timezone.utc)
+    session, uow = _uow(postgresql_engine)
+    try:
+        project = _create_project(uow)
+        with uow.transaction():
+            snapshot = uow.snapshots.upsert(
+                project.id, "a" * 40,
+                index_artifact_path="index.json", graph_artifact_path="graph.json",
+                summary=IndexSummary(1, 2, 1),
+            )
+            run = uow.agent_runs.create_queued(
+                project.id, snapshot.id,
+                task="Analyze", run_type="agent", model=None,
+            )
+            task = uow.background_tasks.create(
+                "agent_run",
+                project_id=project.id,
+                snapshot_id=snapshot.id,
+                agent_run_id=run.id,
+                next_enqueue_attempt_at=now,
+            )
+    finally:
+        session.close()
+
+    class Dispatcher:
+        def __init__(self):
+            self.task_ids: list[UUID] = []
+
+        def enqueue_health(self, task_id: UUID) -> None:
+            raise AssertionError("unexpected task type")
+
+        def enqueue_repository_index(self, task_id: UUID) -> None:
+            raise AssertionError("unexpected task type")
+
+        def enqueue_agent_run(self, task_id: UUID) -> None:
+            self.task_ids.append(task_id)
+
+    dispatcher = Dispatcher()
+    worker_session, worker_uow = _uow(postgresql_engine)
+    try:
+        result = QueuedTaskReconciler(
+            worker_uow,
+            dispatcher,
+            QueuedReconciliationSettings(0, 1, 10, 60),
+            clock=lambda: now,
+        ).run()
+    finally:
+        if worker_session.in_transaction():
+            worker_session.rollback()
+        worker_session.close()
+
+    assert result.confirmed_count == 1
+    assert dispatcher.task_ids == [task.id]
+    with Session(postgresql_engine) as verification:
+        assert verification.scalar(select(func.count()).select_from(AgentRunORM)) == 1
+        assert verification.scalar(
+            select(func.count()).select_from(BackgroundTaskORM)
+        ) == 1
+        persisted_run = verification.get(AgentRunORM, run.id)
+        persisted_task = verification.get(BackgroundTaskORM, task.id)
+        assert persisted_run is not None and persisted_task is not None
+        assert persisted_run.snapshot_id == snapshot.id
+        assert persisted_task.agent_run_id == run.id
+        assert persisted_task.snapshot_id == snapshot.id
+
+    barrier = Barrier(2)
+
+    def claim():
+        worker_session, worker_uow = _uow(postgresql_engine)
+        try:
+            barrier.wait(timeout=5)
+            with worker_uow.transaction():
+                return worker_uow.background_tasks.claim(task.id).status
+        finally:
+            worker_session.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: claim(), range(2)))
+
+    assert sorted(results) == [
+        BackgroundTaskClaimStatus.ALREADY_RUNNING,
+        BackgroundTaskClaimStatus.CLAIMED,
+    ]
+    session, uow = _uow(postgresql_engine)
+    try:
+        with uow.transaction():
+            persisted = uow.background_tasks.get(task.id)
+        assert persisted.status == BackgroundTaskStatus.RUNNING
+        assert persisted.attempt_count == 1
+    finally:
+        session.close()
+
+
 def test_background_task_foreign_keys_are_checked(postgresql_engine):
     session, uow = _uow(postgresql_engine)
     try:
@@ -292,6 +539,247 @@ def test_background_task_foreign_keys_are_checked(postgresql_engine):
         assert failure.value.code == "database_conflict"
     finally:
         session.close()
+
+
+def _ready_postgresql_project(postgresql_engine):
+    session, uow = _uow(postgresql_engine)
+    try:
+        project = _create_project(uow, "Idempotent")
+        with uow.transaction():
+            snapshot = uow.snapshots.upsert(
+                project.id,
+                "e" * 40,
+                index_artifact_path="artifacts/e/index.json",
+                graph_artifact_path="artifacts/e/code_graph.json",
+                summary=IndexSummary(1, 1, 0),
+            )
+            uow.projects.set_current_snapshot(project.id, snapshot.id)
+        return project, snapshot
+    finally:
+        session.close()
+
+
+def _concurrent_post(apps, path: str, *, headers, json=None):
+    barrier = Barrier(len(apps))
+
+    def submit(app):
+        with TestClient(app) as client:
+            barrier.wait(timeout=10)
+            payload = json(app) if callable(json) else json
+            response = client.post(path, headers=headers(app), json=payload)
+            return response.status_code, response.json()
+
+    with ThreadPoolExecutor(max_workers=len(apps)) as pool:
+        return list(pool.map(submit, apps))
+
+
+def _postgresql_submission_apps(
+    postgresql_engine, application, task_dispatcher_factory,
+):
+    database_url = _safe_test_database_url()
+    dispatcher = task_dispatcher_factory()
+    apps = [
+        create_app(
+            adapter=application.state.adapter,
+            workspace=application.state.workspace,
+            database_url=database_url,
+            task_dispatcher=dispatcher,
+        )
+        for _ in range(2)
+    ]
+    return apps, dispatcher
+
+
+def test_postgresql_concurrent_index_same_key_returns_one_task(
+    postgresql_engine, application, task_dispatcher_factory,
+):
+    session, uow = _uow(postgresql_engine)
+    try:
+        project = _create_project(uow, "Same index key")
+    finally:
+        session.close()
+    apps, dispatcher = _postgresql_submission_apps(
+        postgresql_engine, application, task_dispatcher_factory,
+    )
+
+    results = _concurrent_post(
+        apps,
+        f"/api/v1/projects/{project.id}/index",
+        headers=lambda _: {"Idempotency-Key": "postgres-index-same"},
+    )
+
+    assert [status for status, _ in results] == [202, 202]
+    assert len({body["task_id"] for _, body in results}) == 1
+    assert len(dispatcher.repository_index_task_ids) == 1
+    with Session(postgresql_engine) as verification:
+        count = verification.scalar(
+            select(func.count()).select_from(BackgroundTaskORM).where(
+                BackgroundTaskORM.task_type == "repository_index",
+                BackgroundTaskORM.project_id == project.id,
+            )
+        )
+    assert count == 1
+
+
+def test_postgresql_concurrent_index_different_keys_has_one_active_task(
+    postgresql_engine, application, task_dispatcher_factory,
+):
+    session, uow = _uow(postgresql_engine)
+    try:
+        project = _create_project(uow, "Active index")
+    finally:
+        session.close()
+    apps, dispatcher = _postgresql_submission_apps(
+        postgresql_engine, application, task_dispatcher_factory,
+    )
+    keys = iter(("postgres-index-a", "postgres-index-b"))
+
+    results = _concurrent_post(
+        apps,
+        f"/api/v1/projects/{project.id}/index",
+        headers=lambda _: {"Idempotency-Key": next(keys)},
+    )
+
+    assert sorted(status for status, _ in results) == [202, 409]
+    conflict = next(body for status, body in results if status == 409)
+    assert conflict["detail"]["code"] == "repository_index_in_progress"
+    assert len(dispatcher.repository_index_task_ids) == 1
+    with Session(postgresql_engine) as verification:
+        active_count = verification.scalar(
+            select(func.count()).select_from(BackgroundTaskORM).where(
+                BackgroundTaskORM.task_type == "repository_index",
+                BackgroundTaskORM.project_id == project.id,
+                BackgroundTaskORM.status.in_(("queued", "running")),
+            )
+        )
+    assert active_count == 1
+
+
+def test_postgresql_concurrent_agent_same_key_has_one_run_and_task(
+    postgresql_engine, application, task_dispatcher_factory,
+):
+    project, snapshot = _ready_postgresql_project(postgresql_engine)
+    apps, dispatcher = _postgresql_submission_apps(
+        postgresql_engine, application, task_dispatcher_factory,
+    )
+    payload = {"project_id": str(project.id), "task": "分析并发提交"}
+
+    results = _concurrent_post(
+        apps,
+        "/api/v1/agent-runs",
+        headers=lambda _: {"Idempotency-Key": "postgres-agent-same"},
+        json=payload,
+    )
+
+    assert [status for status, _ in results] == [202, 202]
+    assert len({body["run_id"] for _, body in results}) == 1
+    assert len({body["task_id"] for _, body in results}) == 1
+    assert len(dispatcher.agent_run_task_ids) == 1
+    with Session(postgresql_engine) as verification:
+        run_count = verification.scalar(
+            select(func.count()).select_from(AgentRunORM).where(
+                AgentRunORM.project_id == project.id,
+                AgentRunORM.snapshot_id == snapshot.id,
+            )
+        )
+        task_count = verification.scalar(
+            select(func.count()).select_from(BackgroundTaskORM).where(
+                BackgroundTaskORM.task_type == "agent_run",
+                BackgroundTaskORM.project_id == project.id,
+                BackgroundTaskORM.idempotency_key == "postgres-agent-same",
+            )
+        )
+        persisted_task = verification.scalar(
+            select(BackgroundTaskORM).where(
+                BackgroundTaskORM.task_type == "agent_run",
+                BackgroundTaskORM.project_id == project.id,
+                BackgroundTaskORM.idempotency_key == "postgres-agent-same",
+            )
+        )
+    assert run_count == task_count == 1
+    assert persisted_task is not None
+    assert str(persisted_task.agent_run_id) == results[0][1]["run_id"]
+
+
+def test_postgresql_agent_same_key_different_task_conflicts(
+    postgresql_engine, application, task_dispatcher_factory,
+):
+    project, _ = _ready_postgresql_project(postgresql_engine)
+    apps, dispatcher = _postgresql_submission_apps(
+        postgresql_engine, application, task_dispatcher_factory,
+    )
+    headers = {"Idempotency-Key": "postgres-agent-conflict"}
+    with TestClient(apps[0]) as client:
+        first = client.post(
+            "/api/v1/agent-runs",
+            headers=headers,
+            json={"project_id": str(project.id), "task": "分析主要调用链"},
+        )
+        conflict = client.post(
+            "/api/v1/agent-runs",
+            headers=headers,
+            json={"project_id": str(project.id), "task": "分析数据库模块"},
+        )
+
+    assert first.status_code == 202
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "idempotency_conflict"
+    assert len(dispatcher.agent_run_task_ids) == 1
+    with Session(postgresql_engine) as verification:
+        runs = verification.scalars(
+            select(AgentRunORM).where(AgentRunORM.project_id == project.id)
+        ).all()
+        tasks = verification.scalars(
+            select(BackgroundTaskORM).where(
+                BackgroundTaskORM.task_type == "agent_run",
+                BackgroundTaskORM.project_id == project.id,
+            )
+        ).all()
+    assert len(runs) == len(tasks) == 1
+    assert runs[0].task == "分析主要调用链"
+    assert tasks[0].request_fingerprint == agent_run_fingerprint(
+        project.id, "分析主要调用链",
+    )
+
+
+def test_postgresql_concurrent_agent_same_key_different_tasks_conflict(
+    postgresql_engine, application, task_dispatcher_factory,
+):
+    project, _ = _ready_postgresql_project(postgresql_engine)
+    apps, dispatcher = _postgresql_submission_apps(
+        postgresql_engine, application, task_dispatcher_factory,
+    )
+    submitted_tasks = iter(("分析主要调用链", "分析数据库模块"))
+
+    results = _concurrent_post(
+        apps,
+        "/api/v1/agent-runs",
+        headers=lambda _: {"Idempotency-Key": "postgres-agent-race-conflict"},
+        json=lambda _: {
+            "project_id": str(project.id),
+            "task": next(submitted_tasks),
+        },
+    )
+
+    assert sorted(status for status, _ in results) == [202, 409]
+    conflict = next(body for status, body in results if status == 409)
+    assert conflict["detail"]["code"] == "idempotency_conflict"
+    assert len(dispatcher.agent_run_task_ids) == 1
+    with Session(postgresql_engine) as verification:
+        runs = verification.scalars(
+            select(AgentRunORM).where(AgentRunORM.project_id == project.id)
+        ).all()
+        tasks = verification.scalars(
+            select(BackgroundTaskORM).where(
+                BackgroundTaskORM.task_type == "agent_run",
+                BackgroundTaskORM.project_id == project.id,
+            )
+        ).all()
+    assert len(runs) == len(tasks) == 1
+    assert runs[0].task in {"分析主要调用链", "分析数据库模块"}
+    assert tasks[0].request_fingerprint == agent_run_fingerprint(
+        project.id, runs[0].task,
+    )
 
 
 class RestartCopySource(GitRepositorySource):

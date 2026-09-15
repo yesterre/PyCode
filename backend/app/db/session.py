@@ -9,7 +9,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.core.errors import BackendError
-from backend.app.config import load_environment
+from backend.app.config import DatabaseSettings, load_environment
 
 
 class DatabaseSessionManager:
@@ -36,6 +36,7 @@ class DatabaseSessionManager:
                         database_url,
                         pool_pre_ping=True,
                         hide_parameters=True,
+                        connect_args=_connect_args(database_url),
                     )
                     self._session_factory = sessionmaker(
                         bind=self._engine,
@@ -55,3 +56,13 @@ def require_database_url(variable: str = "DATABASE_URL") -> str:
     if not value:
         raise RuntimeError(f"{variable} is required.")
     return value
+
+
+def _connect_args(database_url: str) -> dict[str, int]:
+    """Bound PostgreSQL connect only; do not impose a statement timeout."""
+
+    if not database_url.lower().startswith(("postgresql", "postgres:")):
+        return {}
+    return {
+        "connect_timeout": DatabaseSettings.from_environment().connect_timeout_seconds,
+    }

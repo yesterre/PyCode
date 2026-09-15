@@ -43,7 +43,7 @@ class ProjectService:
     def index(self, project_id: UUID) -> Project:
         with self.uow.transaction():
             self.uow.projects.get(project_id)
-        with self.operations.operation(project_id):
+        with self.operations.operation(project_id) as project_lock:
             workspace_path = self.workspace.persistent_path_for(project_id)
             with self.uow.transaction():
                 project = self.uow.projects.set_status(
@@ -53,6 +53,7 @@ class ProjectService:
             try:
                 project = self._reconcile_legacy_snapshots(project)
                 root, revision = self.workspace.synchronize(project)
+                project_lock.ensure_owned()
                 with self.uow.transaction():
                     project = self.uow.projects.get(project_id)
                     existing = self.uow.snapshots.get_by_commit(
@@ -71,6 +72,7 @@ class ProjectService:
                         self.workspace.protect_snapshot(
                             project, existing.id, revision.commit_sha,
                         )
+                        project_lock.ensure_owned()
                         return self._activate(project_id, existing, bundle)
 
                 if existing is not None and existing.status != "ready":
@@ -86,8 +88,10 @@ class ProjectService:
                         self.workspace.protect_snapshot(
                             project, existing.id, revision.commit_sha,
                         )
+                        project_lock.ensure_owned()
                         return self._activate(project_id, existing, recovered, finalize=True)
 
+                project_lock.ensure_owned()
                 with self.uow.transaction():
                     project = self.uow.projects.get(project_id)
                     if (existing is not None
@@ -102,21 +106,30 @@ class ProjectService:
                 self.workspace.protect_snapshot(
                     project, target_snapshot.id, revision.commit_sha,
                 )
+                project_lock.ensure_owned()
                 root = self.workspace.checkout_exact(project, revision.commit_sha)
                 self.workspace.assert_head(project, revision.commit_sha)
+
+                def before_publish() -> None:
+                    self.workspace.assert_head(project, revision.commit_sha)
+                    project_lock.ensure_owned()
+
                 bundle = self.artifacts.build_and_publish(
                     project_id, target_snapshot.id, revision.commit_sha,
                     lambda index_path, graph_path: self.adapter.index(
                         root, index_path=index_path, graph_path=graph_path,
                     ),
-                    before_publish=lambda: self.workspace.assert_head(
-                        project, revision.commit_sha,
-                    ),
+                    before_publish=before_publish,
                 )
+                project_lock.ensure_owned()
                 return self._activate(
                     project_id, target_snapshot, bundle, finalize=True,
                 )
             except Exception as exc:
+                if isinstance(exc, BackendError) and exc.code == "project_lock_lost":
+                    # A newer owner may already be operating on this Project.
+                    # Do not let the old owner overwrite shared Project/Snapshot state.
+                    raise
                 # Keep public metadata free of raw exceptions (which may include
                 # source text or credentials); the HTTP handler logs the error.
                 with self.uow.transaction():
@@ -145,7 +158,7 @@ class ProjectService:
         operation: Callable[[Path, ProjectSnapshot, SnapshotArtifactBundle], T],
     ) -> T:
         """Run a caller operation against one persisted exact ready Snapshot."""
-        with self.operations.operation(project_id):
+        with self.operations.operation(project_id) as project_lock:
             with self.uow.transaction():
                 project = self.uow.projects.get(project_id)
                 snapshot = self.uow.snapshots.get(snapshot_id)
@@ -154,14 +167,17 @@ class ProjectService:
                         "project_not_ready", "Build the project index before analysis.",
                     )
             root, snapshot, bundle = self._analysis_snapshot(project, snapshot)
-            return operation(root, snapshot, bundle)
+            project_lock.ensure_owned()
+            result = operation(root, snapshot, bundle)
+            project_lock.ensure_owned()
+            return result
 
     def _analyze(
         self, project_id: UUID, text: str, model: str | None, *, impact: bool,
     ) -> ProjectAnalysis:
         with self.uow.transaction():
             self.uow.projects.get(project_id)
-        with self.operations.operation(project_id):
+        with self.operations.operation(project_id) as project_lock:
             with self.uow.transaction():
                 project = self.uow.projects.get(project_id)
                 if project.current_snapshot_id is None:
@@ -179,6 +195,7 @@ class ProjectService:
                 root, snapshot, bundle = self._analysis_snapshot(
                     project, snapshot,
                 )
+                project_lock.ensure_owned()
                 if impact:
                     target = self._impact_target(root, text)
                     result = self.adapter.impact(
@@ -192,6 +209,7 @@ class ProjectService:
                         index_path=bundle.index_path,
                         graph_path=bundle.graph_path,
                     )
+                project_lock.ensure_owned()
             except BackendError as exc:
                 with self.uow.transaction():
                     if exc.code in {
@@ -211,6 +229,7 @@ class ProjectService:
                     self.uow.agent_runs.fail(run.id, _safe_analysis_error(exc))
                 raise
             with self.uow.transaction():
+                project_lock.ensure_owned()
                 self.uow.agent_runs.complete(run.id, result.answer)
             return ProjectAnalysis(project_id, result.answer, result.intent, result.evidence)
 

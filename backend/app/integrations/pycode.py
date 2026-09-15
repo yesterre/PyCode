@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from pathlib import Path
 
 from backend.app.core.errors import BackendError
@@ -20,9 +21,13 @@ class PyCodeAdapter:
 
     def __init__(
         self, *, engine: PyCodeEngine | None = None, llm_client: LLMClient | None = None,
+        llm_client_factory: Callable[[str | None], LLMClient] | None = None,
     ) -> None:
+        if llm_client is not None and llm_client_factory is not None:
+            raise ValueError("Use either an LLM client or an LLM client factory.")
         self.engine = engine if engine is not None else PyCodeEngine()
         self.llm_client = llm_client
+        self.llm_client_factory = llm_client_factory
 
     def index(
         self, root: Path, *, index_path: Path | None = None,
@@ -46,7 +51,7 @@ class PyCodeAdapter:
         index_path, graph_path = self._check_artifacts(root, index_path, graph_path)
         try:
             result = self.engine.ask(
-                root, question, model=model, llm_client=self.llm_client,
+                root, question, model=model, llm_client=self._llm_client(model),
                 index_path=index_path, graph_path=graph_path,
             )
         except LLMError as exc:
@@ -60,7 +65,7 @@ class PyCodeAdapter:
         index_path, graph_path = self._check_artifacts(root, index_path, graph_path)
         try:
             result = self.engine.impact(
-                root, file_path, model=model, llm_client=self.llm_client,
+                root, file_path, model=model, llm_client=self._llm_client(model),
                 index_path=index_path, graph_path=graph_path,
             )
         except LLMError as exc:
@@ -71,7 +76,7 @@ class PyCodeAdapter:
         """Invoke the existing Agent facade without changing its runtime defaults."""
         try:
             return self.engine.run_agent(
-                root, task, llm_client=self.llm_client,
+                root, task, llm_client=self._llm_client(None),
             )
         except LLMError as exc:
             raise _model_error(exc) from exc
@@ -106,6 +111,11 @@ class PyCodeAdapter:
                 "artifacts_unavailable", "Index or graph is unavailable. Rebuild the project index.",
             ) from exc
         return index_path, graph_path
+
+    def _llm_client(self, model: str | None) -> LLMClient | None:
+        if self.llm_client_factory is not None:
+            return self.llm_client_factory(model)
+        return self.llm_client
 
 
 def _analysis(result: AnswerResult) -> Analysis:

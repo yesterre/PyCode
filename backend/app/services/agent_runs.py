@@ -6,7 +6,10 @@ from typing import Any
 from uuid import UUID
 
 from backend.app.core.errors import BackendError
-from backend.app.core.models import AgentRun, BackgroundTask
+from backend.app.core.models import (
+    AgentCoreStartStatus, AgentRun, AgentRunStatus, BackgroundTask,
+    BackgroundTaskClaimStatus, BackgroundTaskStatus,
+)
 from backend.app.infrastructure.agent_workspace import AgentSnapshotWorkspace
 from backend.app.infrastructure.artifacts import SnapshotArtifactBundle
 from backend.app.integrations.agent_trace import map_agent_trace
@@ -16,6 +19,7 @@ from backend.app.services.background_tasks import (
     AGENT_RUN_TASK_TYPE,
     BackgroundTaskService,
 )
+from backend.app.services.idempotency import agent_run_fingerprint
 from backend.app.services.projects import ProjectService
 
 
@@ -45,9 +49,44 @@ class AgentRunService:
         self.adapter = adapter
         self.agent_workspace = agent_workspace
 
-    def submit(self, project_id: UUID, task_text: str) -> AgentRunSubmission:
+    def submit(
+        self, project_id: UUID, task_text: str,
+        idempotency_key: str | None = None,
+    ) -> AgentRunSubmission:
+        fingerprint = (
+            agent_run_fingerprint(project_id, task_text)
+            if idempotency_key is not None else None
+        )
         with self.unit_of_work.transaction():
             project = self.unit_of_work.projects.get(project_id)
+            creation = self.unit_of_work.background_tasks.create_submission(
+                AGENT_RUN_TASK_TYPE,
+                project_id=project_id,
+                idempotency_key=idempotency_key,
+                request_fingerprint=fingerprint,
+                next_enqueue_attempt_at=self.background_tasks.initial_enqueue_due_at(),
+            )
+            if not creation.created:
+                background_task = creation.task
+                if (
+                    background_task.agent_run_id is None
+                    or background_task.snapshot_id is None
+                ):
+                    raise self._consistency_error()
+                try:
+                    run = self.unit_of_work.agent_runs.get(
+                        background_task.agent_run_id,
+                    )
+                except BackendError as exc:
+                    if exc.code == "agent_run_not_found":
+                        raise self._consistency_error() from exc
+                    raise
+                if (
+                    run.project_id != project_id
+                    or run.snapshot_id != background_task.snapshot_id
+                ):
+                    raise self._consistency_error()
+                return AgentRunSubmission(run, background_task)
             if project.current_snapshot_id is None:
                 raise BackendError(
                     "project_not_ready", "Build the project index before analysis.",
@@ -64,13 +103,10 @@ class AgentRunService:
                 run_type="agent",
                 model=None,
             )
-            background_task = self.unit_of_work.background_tasks.create(
-                AGENT_RUN_TASK_TYPE,
-                project_id=project_id,
-                snapshot_id=snapshot.id,
-                agent_run_id=run.id,
+            background_task = self.unit_of_work.background_tasks.link_agent_run(
+                creation.task.id, run.id, snapshot.id,
             )
-        self.background_tasks.enqueue_agent_run(background_task)
+        background_task = self.background_tasks.enqueue_agent_run(background_task)
         return AgentRunSubmission(run, background_task)
 
     def get(self, run_id: UUID) -> AgentRun:
@@ -79,29 +115,58 @@ class AgentRunService:
 
     def execute(self, task_id: UUID) -> AgentRun:
         with self.unit_of_work.transaction():
-            background_task = self.unit_of_work.background_tasks.get(task_id)
+            claim = self.unit_of_work.background_tasks.claim(task_id)
+            if claim.status == BackgroundTaskClaimStatus.NOT_FOUND:
+                raise BackendError(
+                    "background_task_not_found", "Background task does not exist.",
+                )
+            background_task = claim.task
+            if background_task is None:  # pragma: no cover - repository contract
+                raise RuntimeError("Background task claim returned no task.")
             if (
                 background_task.task_type != AGENT_RUN_TASK_TYPE
                 or background_task.agent_run_id is None
                 or background_task.project_id is None
                 or background_task.snapshot_id is None
             ):
-                raise self._state_conflict()
-            run = self.unit_of_work.agent_runs.get(background_task.agent_run_id)
+                raise self._consistency_error()
+            try:
+                run = self.unit_of_work.agent_runs.get(background_task.agent_run_id)
+            except BackendError as exc:
+                if exc.code == "agent_run_not_found":
+                    raise self._consistency_error() from exc
+                raise
             if (
                 run.project_id != background_task.project_id
                 or run.snapshot_id != background_task.snapshot_id
             ):
-                raise self._state_conflict()
+                raise self._consistency_error()
+
+            if claim.status != BackgroundTaskClaimStatus.CLAIMED:
+                expected_run_status = {
+                    BackgroundTaskStatus.RUNNING: AgentRunStatus.RUNNING,
+                    BackgroundTaskStatus.COMPLETED: AgentRunStatus.COMPLETED,
+                    BackgroundTaskStatus.FAILED: AgentRunStatus.FAILED,
+                }.get(background_task.status)
+                if expected_run_status is None or run.status != expected_run_status:
+                    raise self._consistency_error()
+                logger.info(
+                    "Duplicate agent task delivery ignored task_id=%s run_id=%s "
+                    "claim_status=%s",
+                    task_id, run.id, claim.status,
+                )
+                return run
+
+            if run.status != AgentRunStatus.QUEUED:
+                raise self._consistency_error()
             run = self.unit_of_work.agent_runs.mark_running(run.id)
-            self.unit_of_work.background_tasks.mark_running(task_id)
 
         try:
             result = self.projects.execute_on_snapshot(
                 run.project_id,
                 background_task.snapshot_id,
                 lambda root, _snapshot, bundle: self._run_agent(
-                    root, bundle, run.task,
+                    root, bundle, run.task, task_id=task_id, run_id=run.id,
                 ),
             )
         except Exception as exc:
@@ -140,8 +205,32 @@ class AgentRunService:
         repository,
         bundle: SnapshotArtifactBundle,
         task_text: str,
+        *,
+        task_id: UUID,
+        run_id: UUID,
     ) -> Any:
         self.agent_workspace.prepare(repository, bundle)
+        with self.unit_of_work.transaction():
+            background_task = self.unit_of_work.background_tasks.get(task_id)
+            current_run = self.unit_of_work.agent_runs.get(run_id)
+            if (
+                background_task.status != BackgroundTaskStatus.RUNNING
+                or background_task.agent_run_id != run_id
+                or current_run.status != AgentRunStatus.RUNNING
+                or current_run.project_id != background_task.project_id
+                or current_run.snapshot_id != background_task.snapshot_id
+            ):
+                raise self._consistency_error()
+            marked = self.unit_of_work.agent_runs.mark_core_started(run_id)
+            if marked.status != AgentCoreStartStatus.MARKED or marked.run is None:
+                # ALREADY_MARKED is a historical no-retry boundary, not
+                # permission to transparently enter Core again.
+                raise self._consistency_error()
+        logger.info(
+            "Agent Core boundary persisted run_id=%s core_started_at=%s",
+            run_id,
+            marked.run.core_started_at,
+        )
         return self.adapter.run_agent(repository, task_text)
 
     def _fail(
@@ -173,10 +262,10 @@ class AgentRunService:
             )
 
     @staticmethod
-    def _state_conflict() -> BackendError:
+    def _consistency_error() -> BackendError:
         return BackendError(
-            "background_task_state_conflict",
-            "Background task cannot make the requested state transition.",
+            "background_task_consistency_error",
+            "Background task and Agent run state are inconsistent.",
         )
 
 

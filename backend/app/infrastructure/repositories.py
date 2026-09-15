@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import re
+import shutil
 import stat
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,6 +18,8 @@ from uuid import UUID
 
 from backend.app.core.errors import BackendError
 from backend.app.core.models import Project
+from backend.app.config import RepositoryRetrySettings
+from backend.app.infrastructure.retry import run_with_bounded_retry
 
 
 DEFAULT_GIT_HOSTS = frozenset({"github.com", "gitlab.com", "gitee.com"})
@@ -27,6 +32,12 @@ GIT_NETWORK_ENVIRONMENT = frozenset({
 # CURL_CA_BUNDLE is a curl-command variable, not Git's documented TLS control;
 # Git uses GIT_SSL_CAINFO (or the deliberately isolated http.sslCAInfo config).
 GIT_STDERR_LIMIT = 2048
+RETRYABLE_NETWORK_STAGES = frozenset({
+    "resolve_remote_branch",
+    "clone_repository",
+    "fetch_remote_branch",
+    "unshallow_repository",
+})
 
 
 @dataclass(frozen=True)
@@ -39,11 +50,16 @@ class GitRepositorySource:
     """Public HTTPS Git only, with isolated configuration and bounded commands."""
 
     def __init__(self, *, allowed_hosts: set[str] | frozenset[str] = DEFAULT_GIT_HOSTS,
-                 timeout: float = 120) -> None:
+                 timeout: float = 120,
+                 retry_settings: RepositoryRetrySettings | None = None,
+                 sleeper=time.sleep, jitter=random.random) -> None:
         self.allowed_hosts = frozenset(host.lower() for host in allowed_hosts)
         if timeout <= 0:
             raise ValueError("Git timeout must be positive.")
         self.timeout = timeout
+        self.retry_settings = retry_settings or RepositoryRetrySettings()
+        self.sleeper = sleeper
+        self.jitter = jitter
 
     def validate(self, repo_url: str, branch: str | None) -> None:
         try:
@@ -343,6 +359,51 @@ class GitRepositorySource:
         remote_host: str | None = None,
         branch: str | None = None,
     ) -> bytes:
+        before_retry = None
+        if stage == "clone_repository":
+            destination = Path(args[-1])
+            before_retry = lambda _attempt, _exc: self._reset_clone_staging(
+                destination, cwd,
+            )
+        return run_with_bounded_retry(
+            lambda: self._run_once(
+                args,
+                cwd=cwd,
+                control=control,
+                stage=stage,
+                failure_code=failure_code,
+                failure_message=failure_message,
+                mapped_returncodes=mapped_returncodes,
+                project_id=project_id,
+                remote_host=remote_host,
+                branch=branch,
+            ),
+            operation_name=stage,
+            project_id=project_id,
+            settings=self.retry_settings,
+            should_retry=lambda exc: (
+                stage in RETRYABLE_NETWORK_STAGES
+                and isinstance(exc, BackendError)
+                and exc.code == "repository_timeout"
+            ),
+            sleeper=self.sleeper,
+            jitter=self.jitter,
+            logger=GIT_LOGGER,
+            before_retry=before_retry,
+        )
+
+    def _run_once(
+        self, args: list[str], *, cwd: Path, control: Path,
+        stage: str,
+        failure_code: str = "repository_failed",
+        failure_message: str = (
+            "Repository preparation failed. Check the public URL, branch and server connectivity."
+        ),
+        mapped_returncodes: set[int] | None = None,
+        project_id: UUID | None = None,
+        remote_host: str | None = None,
+        branch: str | None = None,
+    ) -> bytes:
         env = {
             key: value for key, value in os.environ.items()
             if (key.upper() in {
@@ -390,6 +451,29 @@ class GitRepositorySource:
                 ) from exc
             raise BackendError(failure_code, failure_message) from exc
         return result.stdout
+
+    @staticmethod
+    def _reset_clone_staging(destination: Path, parent: Path) -> None:
+        """Remove only this attempt's owned clone destination before retry."""
+
+        parent = parent.resolve()
+        destination = destination if destination.is_absolute() else parent / destination
+        if destination.is_symlink():
+            raise BackendError(
+                "unsafe_repository", "Clone staging path is not an owned directory.",
+            )
+        resolved = destination.resolve(strict=False)
+        if resolved == parent or resolved.parent != parent:
+            raise BackendError(
+                "unsafe_repository", "Clone staging path is outside its owned directory.",
+            )
+        if not destination.exists():
+            return
+        if not destination.is_dir():
+            raise BackendError(
+                "unsafe_repository", "Clone staging path is not an owned directory.",
+            )
+        shutil.rmtree(destination)
 
     def _log_failure(
         self, stage: str, operation: str, project_id: UUID | None,
