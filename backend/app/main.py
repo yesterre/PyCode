@@ -1,5 +1,6 @@
 """Run with: python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000."""
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -40,6 +41,8 @@ def create_app(*, adapter: PyCodeAdapter | None = None,
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         yield
+        if app.state.realtime_redis is not None:
+            await app.state.realtime_redis.aclose()
         if database is not None:
             database.dispose()
 
@@ -58,6 +61,8 @@ def create_app(*, adapter: PyCodeAdapter | None = None,
     )
     app.state.persistence = persistence
     app.state.database = database
+    app.state.realtime_redis = None
+    app.state.realtime_redis_lock = asyncio.Lock()
     app.state.project_operations = (
         project_operations
         if project_operations is not None

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from time import perf_counter
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from pycode.agent._time_utils import format_timestamp, utc_now
@@ -130,8 +130,12 @@ class AgentTrace:
 
 
 class TraceRecorder:
-    def __init__(self, task: AgentTask) -> None:
+    def __init__(
+        self, task: AgentTask,
+        observer: Callable[[str, Any], None] | None = None,
+    ) -> None:
         self._started_counter = perf_counter()
+        self._observer = observer
         self.trace = AgentTrace(
             run_id=str(uuid4()),
             task_description=task.description,
@@ -155,7 +159,17 @@ class TraceRecorder:
             data=summarize_mapping(data or {}),
         )
         self.trace.events.append(event)
+        if event_type == "NextActionDecided":
+            self.observe("reason", event)
         return event
+
+    def observe(self, kind: str, value: Any) -> None:
+        """Notify an optional observer without changing Core behavior."""
+        if self._observer is not None:
+            try:
+                self._observer(kind, value)
+            except Exception:
+                pass
 
     def start_tool(self, turn_index: int, tool_call: ToolCall) -> ToolTrace:
         tool_trace = ToolTrace(
@@ -165,18 +179,21 @@ class TraceRecorder:
             arguments=summarize_mapping(tool_call.arguments),
         )
         self.trace.tools.append(tool_trace)
+        self.observe("tool_started", tool_trace)
         return tool_trace
 
     def start_llm(self, purpose: str, *, turn_index: int | None = None) -> TraceEvent:
         data: dict[str, Any] = {"purpose": purpose}
         if turn_index is not None:
             data["turn_index"] = turn_index
-        return self.record_event(
+        event = self.record_event(
             "LLMCallStarted",
             f"LLM {purpose} operation started.",
             status="running",
             data=data,
         )
+        self.observe("llm_started", event)
+        return event
 
     def finish_llm(
         self,
@@ -209,18 +226,21 @@ class TraceRecorder:
                     data["error"] = f"{type(error).__name__}: {error}"
                 except Exception:  # pragma: no cover - hostile exception objects
                     data["error"] = type(error).__name__
-        return self.record_event(
+        event = self.record_event(
             "LLMCallFinished",
             f"LLM {purpose} operation finished.",
             status="ok" if success else "failed",
             data=data,
         )
+        self.observe("llm_finished", event)
+        return event
 
     def finish_tool(self, turn_index: int, result: ToolResult) -> ToolTrace | None:
         tool_trace = self._find_tool(turn_index, result.tool)
         if tool_trace is None:
             return None
         tool_trace.finish(result)
+        self.observe("tool_finished", tool_trace)
         return tool_trace
 
     def deny_tool(
@@ -235,6 +255,7 @@ class TraceRecorder:
         if tool_trace is None:
             return None
         tool_trace.deny(denied_by, summary, error)
+        self.observe("tool_finished", tool_trace)
         return tool_trace
 
     def finish(self, stop_reason: str, *, status: str = "finished") -> AgentTrace:

@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from inspect import signature
 from pathlib import Path
 
 from backend.app.core.errors import BackendError
@@ -72,12 +73,15 @@ class PyCodeAdapter:
             raise _model_error(exc) from exc
         return _analysis(result)
 
-    def run_agent(self, root: Path, task: str) -> AgentResult:
+    def run_agent(self, root: Path, task: str, *, trace_observer=None) -> AgentResult:
         """Invoke the existing Agent facade without changing its runtime defaults."""
         try:
-            return self.engine.run_agent(
-                root, task, llm_client=self._llm_client(None),
-            )
+            kwargs = {"llm_client": self._llm_client(None)}
+            if trace_observer is not None and "trace_observer" in signature(
+                self.engine.run_agent
+            ).parameters:
+                kwargs["trace_observer"] = trace_observer
+            return self.engine.run_agent(root, task, **kwargs)
         except LLMError as exc:
             raise _model_error(exc) from exc
 

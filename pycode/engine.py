@@ -148,6 +148,7 @@ class PyCodeEngine:
         llm_client: LLMClient | None = None, tools: dict[str, ToolSpec] | None = None,
         max_steps: int = 8, use_llm_planner: bool = True,
         enable_memory: bool = True, enable_memory_extraction: bool = True,
+        trace_observer=None,
     ) -> AgentResult:
         """Run the existing harness with a fresh task and its existing policy.
 
@@ -166,6 +167,7 @@ class PyCodeEngine:
             plan_only=plan_only, use_llm_planner=use_llm_planner,
             enable_memory=enable_memory,
             enable_memory_extraction=enable_memory_extraction,
+            trace_observer=trace_observer,
         )
 
 

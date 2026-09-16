@@ -80,3 +80,5 @@ docs/project_pitch.md
 
 # Celery Beat runtime files
 celerybeat-schedule*
+
+.tmp/

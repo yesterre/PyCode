@@ -40,6 +40,8 @@ ERROR_CATALOG: dict[str, ErrorSpec] = {
         "model_failed": 502,
         "idempotency_conflict": 409,
         "repository_index_in_progress": 409,
+        "invalid_last_event_id": 422,
+        "realtime_trace_gap": 409,
     }.items()
 }
 ERROR_CATALOG.update({
@@ -54,6 +56,7 @@ ERROR_CATALOG.update({
         "model_unavailable": 503,
         "database_unavailable": 503,
         "task_queue_unavailable": 503,
+        "realtime_trace_unavailable": 503,
     }.items()
 })
 ERROR_CATALOG.update({

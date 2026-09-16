@@ -12,6 +12,7 @@ from backend.app.infrastructure.celery import CeleryTaskDispatcher
 from backend.app.infrastructure.artifacts import SnapshotArtifactStore
 from backend.app.infrastructure.agent_workspace import AgentSnapshotWorkspace
 from backend.app.infrastructure.execution import ExecutionOwnership
+from backend.app.infrastructure.realtime_trace import RedisStreamPublisher
 from backend.app.integrations.pycode import PyCodeAdapter
 from backend.app.integrations.llm import backend_llm_client_factory_from_environment
 from backend.app.repositories import SqlAlchemyUnitOfWork
@@ -40,6 +41,7 @@ _reconciliation_settings = QueuedReconciliationSettings.from_environment()
 _lease_settings = ExecutionLeaseSettings.from_environment()
 _stale_settings = StaleReconciliationSettings.from_environment()
 _dispatcher = CeleryTaskDispatcher()
+_trace_publisher = RedisStreamPublisher()
 
 if _lease_settings.ttl_seconds <= (
     _project_operations.ttl_ms / 1000
@@ -113,6 +115,7 @@ def worker_agent_run_service() -> Iterator[AgentRunService]:
             projects=projects,
             adapter=_adapter,
             agent_workspace=_agent_workspace,
+            trace_publisher=_trace_publisher,
         )
     finally:
         if session.in_transaction():

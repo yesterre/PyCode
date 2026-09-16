@@ -87,6 +87,7 @@ def run_agent_task(
     use_llm_planner: bool = True,
     enable_memory: bool = True,
     enable_memory_extraction: bool = True,
+    trace_observer=None,
 ) -> AgentResult:
     """Run the Agent runtime loop and optionally ask an LLM to summarize evidence."""
     from pycode.agent.runtime import run_agent_runtime
@@ -110,4 +111,5 @@ def run_agent_task(
         ),
         tools=tools,
         llm_client=llm_client,
+        trace_observer=trace_observer,
     )

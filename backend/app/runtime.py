@@ -68,6 +68,7 @@ def build_agent_run_service(
     projects: ProjectService,
     adapter: PyCodeAdapter,
     agent_workspace: AgentSnapshotWorkspace,
+    trace_publisher=None,
 ) -> AgentRunService:
     return AgentRunService(
         unit_of_work,
@@ -75,4 +76,5 @@ def build_agent_run_service(
         projects,
         adapter,
         agent_workspace,
+        trace_publisher=trace_publisher,
     )

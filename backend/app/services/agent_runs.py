@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+from inspect import signature
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
 from backend.app.core.errors import BackendError
+from backend.app.core.realtime_trace import RealtimeTraceSession
 from backend.app.core.application_trace import (
     ApplicationTraceFailure,
     ApplicationTraceEvent,
@@ -51,6 +53,7 @@ class AgentRunService:
         projects: ProjectService,
         adapter: PyCodeAdapter,
         agent_workspace: AgentSnapshotWorkspace,
+        trace_publisher=None,
     ) -> None:
         self.unit_of_work = unit_of_work
         self.background_tasks = background_tasks
@@ -58,6 +61,7 @@ class AgentRunService:
         self.adapter = adapter
         self.agent_workspace = agent_workspace
         self.trace_normalizer = ApplicationTraceNormalizer()
+        self.trace_publisher = trace_publisher
 
     def submit(
         self, project_id: UUID, task_text: str,
@@ -218,6 +222,7 @@ class AgentRunService:
             raise RuntimeError("Claimed Agent task has no execution token.")
 
         with self.background_tasks._heartbeat(background_task) as ownership:
+            trace_holder: list[RealtimeTraceSession] = []
             try:
                 ownership.ensure_owned()
                 result = self.projects.execute_on_snapshot(
@@ -226,6 +231,7 @@ class AgentRunService:
                     lambda root, _snapshot, bundle: self._run_agent(
                         root, bundle, run.task, task_id=task_id, run_id=run.id,
                         execution_token=execution_token, ownership=ownership,
+                        trace_holder=trace_holder,
                     ),
                 )
                 ownership.ensure_owned()
@@ -246,6 +252,7 @@ class AgentRunService:
                 if not self._fail(
                     task_id, run.id, execution_token, error_code, error_message,
                     failure=_failure_for_exception(error_code, exc),
+                    trace_session=trace_holder[0] if trace_holder else None,
                 ):
                     return self.get(run.id)
                 raise
@@ -261,6 +268,7 @@ class AgentRunService:
                     error_message,
                     result=result,
                     failure=_failure_for_result(result),
+                    trace_session=trace_holder[0] if trace_holder else None,
                 ):
                     return self.get(run.id)
                 raise BackendError(error_code, error_message)
@@ -274,8 +282,21 @@ class AgentRunService:
                     completed = self.unit_of_work.agent_runs.complete(
                         run.id, result.answer,
                     )
-                    normalized = self._normalize_trace(completed, result=result)
-                    self._persist_trace(run.id, normalized.events)
+                    trace_session = trace_holder[0] if trace_holder else None
+                    if trace_session is not None and trace_session.observed:
+                        try:
+                            terminal_event = trace_session.append_terminal(completed, result=result)
+                        except Exception:
+                            logger.warning("Realtime Trace terminal projection degraded run_id=%s", run.id, exc_info=True)
+                            terminal_event = None
+                            normalized = self._normalize_trace(completed, result=None)
+                            self._persist_trace(run.id, normalized.events)
+                        else:
+                            self._persist_trace(run.id, trace_session.events)
+                    else:
+                        terminal_event = None
+                        normalized = self._normalize_trace(completed, result=result)
+                        self._persist_trace(run.id, normalized.events)
                     task = self.unit_of_work.background_tasks.mark_completed(
                         task_id, execution_token=execution_token,
                     )
@@ -284,6 +305,8 @@ class AgentRunService:
             if completed is None:
                 self._log_stale_write(task_id, run.id, execution_token)
                 return self.get(run.id)
+            if terminal_event is not None:
+                trace_session.publish(terminal_event)
             return completed
 
     def _terminalize_invalid_claim(
@@ -332,6 +355,7 @@ class AgentRunService:
         run_id: UUID,
         execution_token: UUID,
         ownership,
+        trace_holder: list[RealtimeTraceSession],
     ) -> Any:
         self.agent_workspace.prepare(repository, bundle)
         ownership.ensure_owned()
@@ -358,7 +382,18 @@ class AgentRunService:
             run_id,
             marked.run.core_started_at,
         )
-        return self.adapter.run_agent(repository, task_text)
+        try:
+            trace_session = RealtimeTraceSession(
+                marked.run, ownership, self.trace_publisher,
+            )
+            trace_holder.append(trace_session)
+        except Exception:
+            logger.warning("Realtime Trace activation degraded run_id=%s", run_id, exc_info=True)
+            return self.adapter.run_agent(repository, task_text)
+        run_agent = self.adapter.run_agent
+        if "trace_observer" in signature(run_agent).parameters:
+            return run_agent(repository, task_text, trace_observer=trace_session.observe)
+        return run_agent(repository, task_text)
 
     def _fail(
         self,
@@ -370,6 +405,7 @@ class AgentRunService:
         *,
         result=None,
         failure: ApplicationTraceFailure | None = None,
+        trace_session: RealtimeTraceSession | None = None,
     ) -> bool:
         with self.unit_of_work.transaction():
             if self.unit_of_work.background_tasks.guard_execution(
@@ -378,10 +414,26 @@ class AgentRunService:
                 self._log_stale_write(task_id, run_id, execution_token)
                 return False
             failed_run = self.unit_of_work.agent_runs.fail(run_id, error_message)
-            normalized = self._normalize_trace(
-                failed_run, result=result, failure=failure,
-            )
-            self._persist_trace(run_id, normalized.events)
+            if trace_session is not None and trace_session.observed and result is not None:
+                try:
+                    terminal_event = trace_session.append_terminal(
+                        failed_run, result=result, failure=failure,
+                    )
+                except Exception:
+                    logger.warning("Realtime Trace terminal projection degraded run_id=%s", run_id, exc_info=True)
+                    terminal_event = None
+                    normalized = self._normalize_trace(
+                        failed_run, result=None, failure=failure,
+                    )
+                    self._persist_trace(run_id, normalized.events)
+                else:
+                    self._persist_trace(run_id, trace_session.events)
+            else:
+                terminal_event = None
+                normalized = self._normalize_trace(
+                    failed_run, result=result, failure=failure,
+                )
+                self._persist_trace(run_id, normalized.events)
             failed = self.unit_of_work.background_tasks.mark_failed(
                 task_id,
                 error_code=error_code,
@@ -390,6 +442,8 @@ class AgentRunService:
             )
             if failed is None:  # pragma: no cover - row guard is held
                 raise self._consistency_error()
+        if terminal_event is not None:
+            trace_session.publish(terminal_event)
         return True
 
     @staticmethod

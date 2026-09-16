@@ -209,7 +209,7 @@ def test_agent_exception_is_safely_persisted(
     assert background.error_message == run.error_message
 
 
-def test_trace_normalizer_failure_does_not_change_successful_run(
+def test_live_trace_does_not_regenerate_events_at_terminal(
     client, ready_url, application, agent_worker, monkeypatch,
 ):
     accepted = _submit_ready_agent(client, ready_url).json()
@@ -226,10 +226,12 @@ def test_trace_normalizer_failure_does_not_change_successful_run(
     assert completed.status == AgentRunStatus.COMPLETED
     assert application.state.persistence.agent_runs[run_id].status == AgentRunStatus.COMPLETED
     assert application.state.persistence.background_tasks[task_id].status == BackgroundTaskStatus.COMPLETED
-    assert [
+    events = [
         event for event in application.state.persistence.trace_events.values()
         if event.run_id == run_id
-    ] == []
+    ]
+    assert events[0].event_type == "run_started"
+    assert events[-1].event_type == "run_completed"
 
 
 def test_agent_worker_uses_snapshot_fixed_at_submission(

@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Any, Callable
 
 from pycode.agent.hooks import (
     HookContext,
@@ -50,6 +51,7 @@ def run_agent_runtime(
     llm_client: LLMClient | None = None,
     context: ToolContext | None = None,
     hook_registry: HookRegistry | None = None,
+    trace_observer: Callable[[str, Any], None] | None = None,
 ) -> AgentResult:
     """Run an observe-decide-act Agent loop over planned tool calls.
 
@@ -57,7 +59,10 @@ def run_agent_runtime(
     """
     runtime_config = config or RuntimeConfig(max_turns=task.max_steps)
     messages = [AgentMessage(role="user", content=task.description)]
-    trace_recorder = TraceRecorder(task) if runtime_config.enable_trace else None
+    trace_recorder = (
+        TraceRecorder(task, observer=trace_observer)
+        if runtime_config.enable_trace else None
+    )
     hooks = create_default_hook_registry()
     tool_registry = tools or TOOLS
     if hook_registry is not None:
@@ -859,7 +864,7 @@ def _record_planner_event(
 ) -> None:
     if trace_recorder is None:
         return
-    trace_recorder.record_event(
+    event = trace_recorder.record_event(
         event_type,
         message,
         status=status,
@@ -878,6 +883,7 @@ def _record_planner_event(
             "warnings": list(warnings or []),
         },
     )
+    trace_recorder.observe("plan", (event_type, steps, event.timestamp))
 
 
 def _record_loop_event(
@@ -1016,6 +1022,7 @@ def _record_context_event(
     event.data["skipped_section_names"] = [
         str(section.name) for section in context.skipped_sections
     ]
+    trace_recorder.observe("context", event)
 
 
 def _record_stop_decision(

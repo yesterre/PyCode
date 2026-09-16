@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from backend.app.api.dependencies import get_agent_run_service
 from backend.app.api.idempotency import IdempotencyKeyHeader
@@ -14,6 +14,7 @@ from backend.app.schemas.agent_runs import (
 )
 from backend.app.schemas.projects import ErrorResponse
 from backend.app.services.agent_runs import AgentRunService
+from backend.app.api.realtime_trace import stream_agent_run_events
 
 
 Service = Annotated[AgentRunService, Depends(get_agent_run_service)]
@@ -52,3 +53,8 @@ def get_agent_run_trace(run_id: UUID, service: Service):
             for event in events
         ],
     )
+
+
+@router.get("/{run_id}/events")
+async def get_agent_run_events(run_id: UUID, request: Request):
+    return await stream_agent_run_events(request, run_id)

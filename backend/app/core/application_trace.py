@@ -613,13 +613,17 @@ class ApplicationTraceNormalizer:
 
     @staticmethod
     def _plan_payload(kind: str, result: Any) -> dict[str, Any]:
+        return ApplicationTraceNormalizer.plan_payload_from_steps(kind, getattr(result, "steps", []))
+
+    @staticmethod
+    def plan_payload_from_steps(kind: str, raw_steps: Any) -> dict[str, Any]:
         source, fallback = {
             "LLMPlanGenerated": ("llm", False),
             "LLMPlanFallback": ("fallback", True),
             "PlannerSelected": ("rule", False),
         }[kind]
         steps = []
-        for index, step in enumerate(list(getattr(result, "steps", []) or [])):
+        for index, step in enumerate(list(raw_steps or [])):
             tool = getattr(step, "tool", None)
             steps.append({
                 "step_index": index,
