@@ -4,9 +4,16 @@ import logging
 from dataclasses import dataclass
 
 from backend.app.config import StaleReconciliationSettings
+from backend.app.core.application_trace import (
+    ApplicationTraceFailure,
+    FailureStage,
+    PublicErrorCategory,
+    normalize_error,
+)
 from backend.app.core.errors import BackendError
 from backend.app.core.models import AgentRunStatus, BackgroundTask, ProjectStatus
 from backend.app.infrastructure.projects import ProjectOperationLocks
+from backend.app.integrations.agent_trace import ApplicationTraceNormalizer
 from backend.app.repositories import UnitOfWork
 from backend.app.services.background_tasks import (
     AGENT_RUN_TASK_TYPE, REPOSITORY_INDEX_TASK_TYPE,
@@ -253,5 +260,24 @@ class StaleRunningReconciler:
                 if run.status == AgentRunStatus.QUEUED:
                     run = self.uow.agent_runs.mark_running(run.id)
                 if run.status == AgentRunStatus.RUNNING:
-                    self.uow.agent_runs.fail(run.id, error_message)
+                    run = self.uow.agent_runs.fail(run.id, error_message)
+                    if post_core:
+                        normalized = ApplicationTraceNormalizer().normalize(
+                            run,
+                            failure=ApplicationTraceFailure(
+                                FailureStage.BACKEND,
+                                normalize_error(
+                                    PublicErrorCategory.WORKER_LOST.value,
+                                    code="worker_lost_after_agent_core",
+                                ),
+                            ),
+                        )
+                        for event in normalized.events:
+                            self.uow.trace_events.create(
+                                run.id,
+                                event.sequence,
+                                event.event_type.value,
+                                tool_name=event.tool_name,
+                                payload=event.database_payload(),
+                            )
             return "failed"

@@ -170,9 +170,26 @@ def run_agent_runtime(
     if direct_answer is not None:
         answer = direct_answer
     elif llm_client is not None and stop_reason != AgentStopReason.ERROR:
+        if trace_recorder is not None:
+            trace_recorder.start_llm("summary")
         try:
             answer = llm_client.generate(prompt)
+            if trace_recorder is not None:
+                if answer:
+                    trace_recorder.finish_llm(
+                        "summary", success=True, fallback_used=False,
+                    )
+                else:
+                    trace_recorder.finish_llm(
+                        "summary", success=False, fallback_used=False,
+                        error_category="invalid_response",
+                        error_code="empty_response",
+                    )
         except Exception as exc:
+            if trace_recorder is not None:
+                trace_recorder.finish_llm(
+                    "summary", success=False, fallback_used=False, error=exc,
+                )
             summary_error = f"{type(exc).__name__}: {exc}"
             _record_loop_event(
                 trace_recorder,
@@ -586,6 +603,8 @@ def _decide_next_action(
     trace_recorder: TraceRecorder | None,
 ) -> tuple[AgentAction, dict]:
     if config.use_llm_planner and llm_client is not None:
+        if trace_recorder is not None:
+            trace_recorder.start_llm("next_action", turn_index=turn_index)
         _record_loop_event(
             trace_recorder,
             "LLMNextActionStarted",
@@ -606,6 +625,11 @@ def _decide_next_action(
                 tool_results=tool_results,
                 todos=list(todo_manager.items),
             )
+            if trace_recorder is not None:
+                trace_recorder.finish_llm(
+                    "next_action", success=True, fallback_used=False,
+                    turn_index=turn_index,
+                )
             _record_loop_event(
                 trace_recorder,
                 "LLMNextActionFinished",
@@ -679,6 +703,17 @@ def _fallback_next_action(
 ) -> tuple[AgentAction, dict]:
     error = f"{type(exc).__name__}: {exc}"
     category = classify_llm_error(exc)
+    if trace_recorder is not None:
+        trace_recorder.finish_llm(
+            "next_action", success=False, fallback_used=True,
+            turn_index=turn_index, error=exc,
+            error_category=(
+                "schema_validation"
+                if failure_kind == "schema_parse_failed"
+                else category
+            ),
+            error_code=failure_kind,
+        )
     _record_loop_event(
         trace_recorder,
         "LLMNextActionSchemaFailed",
@@ -747,6 +782,8 @@ def build_runtime_plan(
     trace_recorder: TraceRecorder | None = None,
 ) -> tuple[list[AgentStep], str, str | None]:
     if config.use_llm_planner and llm_client is not None:
+        if trace_recorder is not None:
+            trace_recorder.start_llm("plan")
         try:
             result = plan_task_with_llm(
                 task,
@@ -755,6 +792,10 @@ def build_runtime_plan(
                 memory_index=memory_index,
                 relevant_memories=relevant_memories or [],
             )
+            if trace_recorder is not None:
+                trace_recorder.finish_llm(
+                    "plan", success=True, fallback_used=False,
+                )
             _record_planner_event(
                 trace_recorder,
                 "LLMPlanGenerated",
@@ -766,6 +807,13 @@ def build_runtime_plan(
             )
             return result.steps, PLANNER_SOURCE_LLM, None
         except Exception as exc:
+            if trace_recorder is not None:
+                trace_recorder.finish_llm(
+                    "plan", success=False, fallback_used=True, error=exc,
+                    error_category=(
+                        "schema_validation" if isinstance(exc, ValueError) else None
+                    ),
+                )
             error = f"{type(exc).__name__}: {exc}"
             steps = plan_task(task)
             _record_planner_event(
@@ -929,8 +977,9 @@ def _record_context_event(
     turn_index: int,
     context,
 ) -> None:
-    _record_loop_event(
-        trace_recorder,
+    if trace_recorder is None:
+        return
+    event = trace_recorder.record_event(
         "ContextAssembled",
         f"Context assembled for turn {turn_index}.",
         status="ok" if not context.warnings else "warning",
@@ -958,6 +1007,15 @@ def _record_context_event(
             "warnings": list(context.warnings),
         },
     )
+    # These compact identifier lists deliberately bypass debug summarization.
+    # They contain names only and are the lossless observation used by the
+    # Backend Application Trace projection.
+    event.data["included_section_names"] = [
+        str(section.name) for section in context.sections
+    ]
+    event.data["skipped_section_names"] = [
+        str(section.name) for section in context.skipped_sections
+    ]
 
 
 def _record_stop_decision(
@@ -1106,6 +1164,7 @@ def _prepare_memory_context(
                 messages=messages,
                 llm_client=llm_client,
                 max_memories=config.max_relevant_memories,
+                trace_recorder=trace_recorder,
             )
             memory_info.relevant_memories = relevant
             memory_info.selection_error = selection_error
@@ -1158,6 +1217,7 @@ def _extract_memory_after_answer(
         tool_results=tool_results,
         answer=answer,
         llm_client=llm_client,
+        trace_recorder=trace_recorder,
     )
     memory_info.extracted_memories = created
     memory_info.extraction_error = error

@@ -6,13 +6,22 @@ from typing import Any
 from uuid import UUID
 
 from backend.app.core.errors import BackendError
+from backend.app.core.application_trace import (
+    ApplicationTraceFailure,
+    ApplicationTraceEvent,
+    ApplicationTraceNormalization,
+    FailureStage,
+    PublicErrorCategory,
+    application_event_from_record,
+    normalize_error,
+)
 from backend.app.core.models import (
     AgentCoreStartStatus, AgentRun, AgentRunStatus, BackgroundTask,
     BackgroundTaskClaimStatus, BackgroundTaskStatus,
 )
 from backend.app.infrastructure.agent_workspace import AgentSnapshotWorkspace
 from backend.app.infrastructure.artifacts import SnapshotArtifactBundle
-from backend.app.integrations.agent_trace import map_agent_trace
+from backend.app.integrations.agent_trace import ApplicationTraceNormalizer
 from backend.app.integrations.pycode import PyCodeAdapter
 from backend.app.repositories import UnitOfWork
 from backend.app.services.background_tasks import (
@@ -48,6 +57,7 @@ class AgentRunService:
         self.projects = projects
         self.adapter = adapter
         self.agent_workspace = agent_workspace
+        self.trace_normalizer = ApplicationTraceNormalizer()
 
     def submit(
         self, project_id: UUID, task_text: str,
@@ -112,6 +122,18 @@ class AgentRunService:
     def get(self, run_id: UUID) -> AgentRun:
         with self.unit_of_work.transaction():
             return self.unit_of_work.agent_runs.get(run_id)
+
+    def get_trace(self, run_id: UUID) -> list[ApplicationTraceEvent]:
+        with self.unit_of_work.transaction():
+            run = self.unit_of_work.agent_runs.get(run_id)
+            if run.status in {AgentRunStatus.QUEUED, AgentRunStatus.RUNNING}:
+                return []
+            events = []
+            for record in self.unit_of_work.trace_events.list_for_run(run_id):
+                event = application_event_from_record(record)
+                if event is not None:
+                    events.append(event)
+            return events
 
     def execute(self, task_id: UUID, *, worker_id: str | None = None) -> AgentRun:
         with self.unit_of_work.transaction():
@@ -223,11 +245,11 @@ class AgentRunService:
                     raise
                 if not self._fail(
                     task_id, run.id, execution_token, error_code, error_message,
+                    failure=_failure_for_exception(error_code, exc),
                 ):
                     return self.get(run.id)
                 raise
 
-            trace_events = map_agent_trace(result.trace)
             if not result.ok:
                 error_code = "agent_run_failed"
                 error_message = "Agent execution did not complete successfully."
@@ -237,7 +259,8 @@ class AgentRunService:
                     execution_token,
                     error_code,
                     error_message,
-                    trace_events=trace_events,
+                    result=result,
+                    failure=_failure_for_result(result),
                 ):
                     return self.get(run.id)
                 raise BackendError(error_code, error_message)
@@ -248,10 +271,11 @@ class AgentRunService:
                 ) is None:
                     completed = None
                 else:
-                    self._persist_trace(run.id, trace_events)
                     completed = self.unit_of_work.agent_runs.complete(
                         run.id, result.answer,
                     )
+                    normalized = self._normalize_trace(completed, result=result)
+                    self._persist_trace(run.id, normalized.events)
                     task = self.unit_of_work.background_tasks.mark_completed(
                         task_id, execution_token=execution_token,
                     )
@@ -344,7 +368,8 @@ class AgentRunService:
         error_code: str,
         error_message: str,
         *,
-        trace_events=None,
+        result=None,
+        failure: ApplicationTraceFailure | None = None,
     ) -> bool:
         with self.unit_of_work.transaction():
             if self.unit_of_work.background_tasks.guard_execution(
@@ -352,8 +377,11 @@ class AgentRunService:
             ) is None:
                 self._log_stale_write(task_id, run_id, execution_token)
                 return False
-            self._persist_trace(run_id, trace_events or [])
-            self.unit_of_work.agent_runs.fail(run_id, error_message)
+            failed_run = self.unit_of_work.agent_runs.fail(run_id, error_message)
+            normalized = self._normalize_trace(
+                failed_run, result=result, failure=failure,
+            )
+            self._persist_trace(run_id, normalized.events)
             failed = self.unit_of_work.background_tasks.mark_failed(
                 task_id,
                 error_code=error_code,
@@ -372,14 +400,35 @@ class AgentRunService:
             task_id, run_id, str(token)[:8],
         )
 
+    def _normalize_trace(self, run, *, result=None, failure=None):
+        try:
+            return self.trace_normalizer.normalize(
+                run, result=result, failure=failure,
+            )
+        except Exception:
+            logger.exception(
+                "Application Trace normalization degraded run_id=%s", run.id,
+            )
+            # A malformed Core result must not alter the terminal business
+            # outcome. Retry with durable state only to preserve lifecycle.
+            try:
+                return self.trace_normalizer.normalize(
+                    run, result=None, failure=failure,
+                )
+            except Exception:
+                logger.exception(
+                    "Application Trace lifecycle fallback failed run_id=%s", run.id,
+                )
+                return ApplicationTraceNormalization([], False)
+
     def _persist_trace(self, run_id: UUID, events) -> None:
-        for sequence, event_type, tool_name, payload in events:
+        for event in events:
             self.unit_of_work.trace_events.create(
                 run_id,
-                sequence,
-                event_type,
-                tool_name=tool_name,
-                payload=payload,
+                event.sequence,
+                event.event_type.value,
+                tool_name=event.tool_name,
+                payload=event.database_payload(),
             )
 
     @staticmethod
@@ -400,3 +449,46 @@ def _agent_run_error(exc: Exception) -> tuple[str, str]:
     if isinstance(exc, (SyntaxError, UnicodeError)):
         return "invalid_source", "Python source could not be parsed or decoded."
     return "agent_run_failed", "Agent execution failed."
+
+
+def _failure_for_exception(error_code: str, exc: Exception) -> ApplicationTraceFailure:
+    if error_code in {"model_unavailable", "model_timeout", "model_failed"}:
+        category = {
+            "model_unavailable": PublicErrorCategory.CONFIGURATION,
+            "model_timeout": PublicErrorCategory.TIMEOUT,
+            "model_failed": PublicErrorCategory.UNKNOWN,
+        }[error_code]
+        return ApplicationTraceFailure(
+            FailureStage.LLM,
+            normalize_error(category.value, code=error_code),
+        )
+    if isinstance(exc, BackendError):
+        return ApplicationTraceFailure(
+            FailureStage.BACKEND,
+            normalize_error(PublicErrorCategory.BACKEND_ERROR.value, code=error_code),
+        )
+    return ApplicationTraceFailure(
+        FailureStage.AGENT_CORE,
+        normalize_error(PublicErrorCategory.AGENT_ERROR.value, code=error_code),
+    )
+
+
+def _failure_for_result(result: Any) -> ApplicationTraceFailure:
+    steps = list(getattr(result, "steps", []) or [])
+    tool_results = list(getattr(result, "tool_results", []) or [])
+    for index, step in enumerate(steps):
+        if not bool(getattr(step, "required", False)) or index >= len(tool_results):
+            continue
+        tool_result = tool_results[index]
+        if not bool(getattr(tool_result, "ok", False)):
+            return ApplicationTraceFailure(
+                FailureStage.TOOL,
+                normalize_error(PublicErrorCategory.TOOL_ERROR.value, code="required_tool_failed"),
+            )
+    return ApplicationTraceFailure(
+        FailureStage.AGENT_CORE,
+        normalize_error(
+            PublicErrorCategory.AGENT_ERROR.value,
+            code="agent_run_failed",
+        ),
+    )

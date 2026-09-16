@@ -220,10 +220,21 @@ def test_agent_runs_and_trace_events_persist_jsonb_order_and_unique(postgresql_e
             )
         with uow.transaction():
             failed = uow.agent_runs.fail(failed.id, "safe failure")
-            uow.trace_events.create(completed.id, 1, "tool_finished", payload={"ok": True, "count": 2})
+            uow.trace_events.create(
+                completed.id, 1, "tool_finished", tool_name="query_graph",
+                payload={
+                    "schema_version": 1,
+                    "occurred_at": "2026-09-16T08:00:01Z",
+                    "event_payload": {"outcome": "success", "duration_ms": 2},
+                },
+            )
             uow.trace_events.create(
                 completed.id, 0, "tool_started", tool_name="query_graph",
-                payload={"arguments": {"symbol": "main"}},
+                payload={
+                    "schema_version": 1,
+                    "occurred_at": "2026-09-16T08:00:00Z",
+                    "event_payload": {"arguments": {"symbol": "main"}},
+                },
             )
         with uow.transaction():
             events = uow.trace_events.list_for_run(completed.id)
@@ -232,7 +243,10 @@ def test_agent_runs_and_trace_events_persist_jsonb_order_and_unique(postgresql_e
         assert completed.prompt_tokens is None and completed.completion_tokens is None
         assert failed.status == AgentRunStatus.FAILED and failed.error_message == "safe failure"
         assert [event.sequence for event in events] == [0, 1]
-        assert events[0].payload == {"arguments": {"symbol": "main"}}
+        assert events[0].payload["schema_version"] == 1
+        assert events[0].payload["event_payload"] == {
+            "arguments": {"symbol": "main"},
+        }
         assert len(runs) == 2
 
         with pytest.raises(BackendError) as duplicate:

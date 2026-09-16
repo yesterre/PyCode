@@ -68,6 +68,19 @@ def test_runtime_executes_one_tool_per_turn_and_records_messages() -> None:
     assert "ObservationRecorded" in [
         event.event_type for event in result.trace.events
     ]
+    context_event = next(
+        event for event in result.trace.events
+        if event.event_type == "ContextAssembled"
+    )
+    observed_names = (
+        context_event.data["included_section_names"]
+        + context_event.data["skipped_section_names"]
+    )
+    assert len(observed_names) == 13
+    assert all(
+        not name.startswith("...")
+        for name in observed_names
+    )
 
 
 def test_runtime_plan_only_skips_tools_and_llm() -> None:
@@ -215,6 +228,19 @@ def test_runtime_injects_relevant_memories_and_extracts_after_answer(
     assert "Project memory index:" in llm.prompts[2]
     assert "<relevant_memories>" in llm.prompts[2]
     assert (project_path / ".pclens" / "memory" / "no-auto-tests.md").exists()
+    llm_observations = [
+        event for event in result.trace.events
+        if event.event_type in {"LLMCallStarted", "LLMCallFinished"}
+    ]
+    for purpose in {"memory_selection", "memory_extraction"}:
+        assert sum(
+            event.event_type == "LLMCallStarted" and event.data["purpose"] == purpose
+            for event in llm_observations
+        ) == 1
+        assert sum(
+            event.event_type == "LLMCallFinished" and event.data["purpose"] == purpose
+            for event in llm_observations
+        ) == 1
 
 
 def test_runtime_no_memory_extract_skips_automatic_write(tmp_path: Path) -> None:
@@ -276,6 +302,17 @@ def test_runtime_uses_llm_next_action_tool_then_final_answer() -> None:
     event_types = [event.event_type for event in result.trace.events]
     assert "LLMNextActionStarted" in event_types
     assert "LLMNextActionFinished" in event_types
+    assert len(llm.prompts) == 3
+    starts = [
+        event.data["purpose"] for event in result.trace.events
+        if event.event_type == "LLMCallStarted"
+    ]
+    finishes = [
+        event.data["purpose"] for event in result.trace.events
+        if event.event_type == "LLMCallFinished"
+    ]
+    assert starts == ["plan", "next_action", "next_action"]
+    assert finishes == starts
 
 
 def test_runtime_llm_final_answer_can_stop_before_tools() -> None:

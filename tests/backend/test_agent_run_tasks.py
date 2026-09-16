@@ -127,11 +127,10 @@ def test_agent_worker_calls_existing_entry_once_and_persists_result_and_trace(
         application.state.persistence.trace_events.values(),
         key=lambda event: event.sequence,
     )
-    assert [event.event_type for event in events] == ["TurnStarted", "PostToolUse"]
+    assert [event.event_type for event in events] == ["run_started", "run_completed"]
     assert all(event.run_id == completed.id for event in events)
-    assert events[1].tool_name == "retrieve_context"
-    assert events[1].payload["data"]["path"] == "main.py"
-    assert events[1].payload["data"]["debug"] == "<unavailable>"
+    assert events[0].payload["schema_version"] == 1
+    assert events[1].payload["event_payload"]["trace_complete"] is False
     root = observed[0][0]
     assert (root / ".pclens" / "index.json").is_file()
     assert (root / ".pclens" / "code_graph.json").is_file()
@@ -208,6 +207,29 @@ def test_agent_exception_is_safely_persisted(
     assert "private" not in run.error_message
     assert background.status == BackgroundTaskStatus.FAILED
     assert background.error_message == run.error_message
+
+
+def test_trace_normalizer_failure_does_not_change_successful_run(
+    client, ready_url, application, agent_worker, monkeypatch,
+):
+    accepted = _submit_ready_agent(client, ready_url).json()
+    task_id = UUID(accepted["task_id"])
+    run_id = UUID(accepted["run_id"])
+    service = agent_worker.service()
+
+    def broken_normalizer(*args, **kwargs):
+        raise ValueError("malformed debug observation")
+
+    monkeypatch.setattr(service.trace_normalizer, "normalize", broken_normalizer)
+    completed = service.execute(task_id)
+
+    assert completed.status == AgentRunStatus.COMPLETED
+    assert application.state.persistence.agent_runs[run_id].status == AgentRunStatus.COMPLETED
+    assert application.state.persistence.background_tasks[task_id].status == BackgroundTaskStatus.COMPLETED
+    assert [
+        event for event in application.state.persistence.trace_events.values()
+        if event.run_id == run_id
+    ] == []
 
 
 def test_agent_worker_uses_snapshot_fixed_at_submission(
@@ -290,6 +312,51 @@ def test_agent_run_query_validation_and_not_found(client, ready_url):
     assert response.json()["snapshot_id"] is not None
     assert client.get(f"/api/v1/agent-runs/{uuid4()}").status_code == 404
     assert client.get("/api/v1/agent-runs/not-a-uuid").status_code == 422
+
+
+def test_agent_trace_query_returns_only_v1_events_and_empty_for_running_states(
+    client, ready_url, application, agent_worker,
+):
+    accepted = _submit_ready_agent(client, ready_url).json()
+    run_id = UUID(accepted["run_id"])
+    task_id = UUID(accepted["task_id"])
+
+    queued = client.get(f"/api/v1/agent-runs/{run_id}/trace")
+    assert queued.status_code == 200
+    assert queued.json() == {"run_id": str(run_id), "events": []}
+
+    completed = agent_worker.execute(task_id)
+    assert completed.status == AgentRunStatus.COMPLETED
+    response = client.get(f"/api/v1/agent-runs/{run_id}/trace")
+    assert response.status_code == 200
+    events = response.json()["events"]
+    assert events[0]["event_type"] == "run_started"
+    assert events[-1]["event_type"] == "run_completed"
+    assert [event["sequence"] for event in events] == list(range(len(events)))
+    assert all(event["schema_version"] == 1 for event in events)
+    assert all(event["tool_name"] is None for event in events if not event["event_type"].startswith("tool_"))
+
+    missing = client.get(f"/api/v1/agent-runs/{uuid4()}/trace")
+    assert missing.status_code == 404
+    assert missing.json()["detail"]["code"] == "agent_run_not_found"
+
+
+def test_agent_trace_query_ignores_legacy_rows(client, ready_url, application):
+    accepted = _submit_ready_agent(client, ready_url).json()
+    run_id = UUID(accepted["run_id"])
+    state = application.state.persistence
+    run = state.agent_runs[run_id]
+    state.agent_runs[run_id] = run.__class__(
+        **{**run.__dict__, "status": AgentRunStatus.FAILED,
+           "finished_at": datetime.now(timezone.utc), "error_message": "legacy"}
+    )
+    uow = InMemoryUnitOfWork(state)
+    with uow.transaction():
+        uow.trace_events.create(run_id, 0, "TurnStarted", payload={"data": {}})
+
+    response = client.get(f"/api/v1/agent-runs/{run_id}/trace")
+    assert response.status_code == 200
+    assert response.json()["events"] == []
 
 
 def test_agent_dispatcher_and_worker_adapter_are_thin(monkeypatch):

@@ -491,7 +491,10 @@ def test_stale_owner_cannot_write_trace_or_terminal_after_scanner():
         assert uow.background_tasks.mark_completed(
             task.id, execution_token=old_token,
         ) is None
-    assert uow.trace_events.list_for_run(run.id) == []
+    events = uow.trace_events.list_for_run(run.id)
+    assert [event.event_type for event in events] == ["run_started", "run_failed"]
+    assert events[-1].payload["event_payload"]["trace_complete"] is False
+    assert events[-1].payload["event_payload"]["error"]["category"] == "worker_lost"
 
 
 def test_healthy_running_is_ignored_and_batch_size_is_honored():

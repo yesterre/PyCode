@@ -8,6 +8,8 @@ from backend.app.api.idempotency import IdempotencyKeyHeader
 from backend.app.schemas.agent_runs import (
     AgentRunAcceptedResponse,
     AgentRunResponse,
+    AgentRunTraceResponse,
+    ApplicationTraceEventResponse,
     CreateAgentRunRequest,
 )
 from backend.app.schemas.projects import ErrorResponse
@@ -38,3 +40,15 @@ def create_agent_run(
 @router.get("/{run_id}", response_model=AgentRunResponse)
 def get_agent_run(run_id: UUID, service: Service):
     return service.get(run_id)
+
+
+@router.get("/{run_id}/trace", response_model=AgentRunTraceResponse)
+def get_agent_run_trace(run_id: UUID, service: Service):
+    events = service.get_trace(run_id)
+    return AgentRunTraceResponse(
+        run_id=run_id,
+        events=[
+            ApplicationTraceEventResponse.model_validate(event.to_api_dict())
+            for event in events
+        ],
+    )

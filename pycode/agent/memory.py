@@ -389,6 +389,7 @@ def load_relevant_memories(
     messages: list[Any],
     llm_client: Any | None = None,
     max_memories: int = MAX_RELEVANT_MEMORIES,
+    trace_recorder: Any | None = None,
 ) -> tuple[list[MemoryItem], str | None]:
     store = MemoryStore(project_path)
     entries = store.list_memories()
@@ -398,14 +399,32 @@ def load_relevant_memories(
     selected_names: list[str] = []
     selection_error: str | None = None
     if llm_client is not None:
+        if trace_recorder is not None:
+            trace_recorder.start_llm("memory_selection")
         try:
             response = llm_client.generate(
                 build_memory_selection_prompt(task_description, messages, entries)
             )
             selected_names = _parse_selected_memory_names(response)
+            if trace_recorder is not None:
+                trace_recorder.finish_llm(
+                    "memory_selection", success=True,
+                    fallback_used=not bool(selected_names),
+                )
         except ValueError as exc:
+            if trace_recorder is not None:
+                trace_recorder.finish_llm(
+                    "memory_selection", success=False, fallback_used=True,
+                    error=exc, error_category="schema_validation",
+                    error_code="schema_parse_failed",
+                )
             selection_error = f"Memory selection parse failed: {type(exc).__name__}: {exc}"
         except Exception as exc:  # pragma: no cover - defensive boundary
+            if trace_recorder is not None:
+                trace_recorder.finish_llm(
+                    "memory_selection", success=False, fallback_used=True,
+                    error=exc,
+                )
             selection_error = f"Memory selection LLM failed: {type(exc).__name__}: {exc}"
 
     if not selected_names:
@@ -438,9 +457,12 @@ def extract_memories(
     answer: str | None,
     llm_client: Any,
     max_existing_entries: int = 50,
+    trace_recorder: Any | None = None,
 ) -> tuple[list[MemoryItem], str | None]:
     store = MemoryStore(project_path)
     entries = store.list_memories()
+    if trace_recorder is not None:
+        trace_recorder.start_llm("memory_extraction")
     try:
         response = llm_client.generate(
             build_memory_extraction_prompt(
@@ -453,7 +475,22 @@ def extract_memories(
         )
         proposals = _parse_extracted_memory_items(response)
     except Exception as exc:
+        if trace_recorder is not None:
+            trace_recorder.finish_llm(
+                "memory_extraction", success=False, fallback_used=False,
+                error=exc,
+                error_category=(
+                    "schema_validation" if isinstance(exc, ValueError) else None
+                ),
+                error_code=(
+                    "schema_parse_failed" if isinstance(exc, ValueError) else None
+                ),
+            )
         return [], f"{type(exc).__name__}: {exc}"
+    if trace_recorder is not None:
+        trace_recorder.finish_llm(
+            "memory_extraction", success=True, fallback_used=False,
+        )
 
     created: list[MemoryItem] = []
     existing_fingerprints = _memory_fingerprints(store)

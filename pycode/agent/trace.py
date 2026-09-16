@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from pycode.agent._time_utils import format_timestamp, utc_now
 from pycode.agent.types import AgentTask, ToolCall
+from pycode.llm_client import classify_llm_error
 from pycode.tools import ToolResult
 
 
@@ -165,6 +166,55 @@ class TraceRecorder:
         )
         self.trace.tools.append(tool_trace)
         return tool_trace
+
+    def start_llm(self, purpose: str, *, turn_index: int | None = None) -> TraceEvent:
+        data: dict[str, Any] = {"purpose": purpose}
+        if turn_index is not None:
+            data["turn_index"] = turn_index
+        return self.record_event(
+            "LLMCallStarted",
+            f"LLM {purpose} operation started.",
+            status="running",
+            data=data,
+        )
+
+    def finish_llm(
+        self,
+        purpose: str,
+        *,
+        success: bool,
+        fallback_used: bool,
+        turn_index: int | None = None,
+        error: BaseException | None = None,
+        error_category: str | None = None,
+        error_code: str | None = None,
+    ) -> TraceEvent:
+        data: dict[str, Any] = {
+            "purpose": purpose,
+            "success": success,
+            "fallback_used": fallback_used,
+        }
+        if turn_index is not None:
+            data["turn_index"] = turn_index
+        if not success:
+            try:
+                classified = classify_llm_error(error) if error is not None else "unknown"
+            except Exception:  # pragma: no cover - hostile exception objects
+                classified = "unknown"
+            data["error_category"] = error_category or classified
+            if error_code:
+                data["error_code"] = error_code
+            if error is not None:
+                try:
+                    data["error"] = f"{type(error).__name__}: {error}"
+                except Exception:  # pragma: no cover - hostile exception objects
+                    data["error"] = type(error).__name__
+        return self.record_event(
+            "LLMCallFinished",
+            f"LLM {purpose} operation finished.",
+            status="ok" if success else "failed",
+            data=data,
+        )
 
     def finish_tool(self, turn_index: int, result: ToolResult) -> ToolTrace | None:
         tool_trace = self._find_tool(turn_index, result.tool)
