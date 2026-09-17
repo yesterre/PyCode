@@ -46,8 +46,14 @@ class ProjectResponse(BaseModel):
     status: ProjectStatus
     created_at: datetime
     updated_at: datetime
+    current_snapshot_id: UUID | None
     index_summary: IndexSummaryResponse | None
     last_error: str | None
+
+
+class ProjectListResponse(BaseModel):
+    projects: list[ProjectResponse]
+    has_more: bool
 
 
 class AnalysisResponse(BaseModel):

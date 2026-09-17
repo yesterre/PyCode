@@ -129,6 +129,22 @@ class SnapshotArtifactStore:
             )
         return bundle
 
+    def read_ready(self, project_id: UUID, snapshot: ProjectSnapshot) -> SnapshotArtifactBundle:
+        """Validate a published ready bundle without recovery or mutation."""
+        expected_index, expected_graph = self.relative_paths(snapshot.id)
+        if (snapshot.status != "ready"
+                or snapshot.index_artifact_path != expected_index
+                or snapshot.graph_artifact_path != expected_graph
+                or snapshot.file_count is None or snapshot.node_count is None
+                or snapshot.edge_count is None):
+            raise BackendError("artifacts_unavailable", "Snapshot artifacts are unavailable.")
+        bundle = self._read_bundle(project_id, snapshot.id, snapshot.commit_sha)
+        if bundle.summary != IndexSummary(
+            snapshot.file_count, snapshot.node_count, snapshot.edge_count,
+        ):
+            raise BackendError("artifacts_unavailable", "Snapshot artifacts are unavailable.")
+        return bundle
+
     @staticmethod
     def relative_paths(snapshot_id: UUID) -> tuple[str, str]:
         prefix = Path("artifacts") / str(snapshot_id)

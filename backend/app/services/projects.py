@@ -5,6 +5,8 @@ from pathlib import Path, PureWindowsPath
 from typing import Protocol, TypeVar
 from uuid import UUID
 
+from backend.app.integrations.graph import load_graph, local_graph
+
 from backend.app.core.errors import BackendError
 from backend.app.core.models import (
     IndexSummary, Project, ProjectAnalysis, ProjectSnapshot, ProjectStatus,
@@ -43,6 +45,38 @@ class ProjectService:
     def get(self, project_id: UUID) -> Project:
         with self.uow.transaction():
             return self._with_summary(self.uow.projects.get(project_id))
+
+    def list_page(self, limit: int, offset: int) -> tuple[list[Project], bool]:
+        with self.uow.transaction():
+            page = self.uow.projects.list_page(limit + 1, offset)
+            return [self._with_summary(project) for project in page[:limit]], len(page) > limit
+
+    def list_snapshots(self, project_id: UUID, limit: int) -> list[ProjectSnapshot]:
+        with self.uow.transaction():
+            self.uow.projects.get(project_id)
+            return self.uow.snapshots.list_recent(project_id, limit)
+
+    def get_snapshot(self, project_id: UUID, snapshot_id: UUID) -> ProjectSnapshot:
+        with self.uow.transaction():
+            self.uow.projects.get(project_id)
+            snapshot = self.uow.snapshots.get(snapshot_id)
+            if snapshot.project_id != project_id:
+                raise BackendError("snapshot_not_found", "Project snapshot does not exist.")
+            return snapshot
+
+    def get_graph(self, project_id: UUID, snapshot_id: UUID, *,
+                  q: str | None, node_type: str | None,
+                  file_path: str | None, limit: int) -> dict:
+        snapshot = self.get_snapshot(project_id, snapshot_id)
+        if snapshot.status != "ready":
+            raise BackendError("project_not_ready", "Build the project index before analysis.")
+        bundle = self.artifacts.read_ready(project_id, snapshot)
+        try:
+            graph = load_graph(bundle.graph_path)
+            return local_graph(graph, snapshot_id, q=q, node_type=node_type,
+                               file_path=file_path, limit=limit)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise BackendError("artifacts_unavailable", "Snapshot artifacts are unavailable.") from exc
 
     def index(
         self, project_id: UUID, *, task_id: UUID | None = None,

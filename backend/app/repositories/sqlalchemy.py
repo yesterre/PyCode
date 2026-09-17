@@ -47,6 +47,12 @@ class SqlAlchemyProjectRepository:
             raise BackendError("project_not_found", "Project does not exist.")
         return _project(record)
 
+    def list_page(self, limit: int, offset: int) -> list[Project]:
+        statement = (select(ProjectORM)
+                     .order_by(ProjectORM.updated_at.desc(), ProjectORM.id.desc())
+                     .limit(limit).offset(offset))
+        return [_project(record) for record in self.session.scalars(statement)]
+
     def set_status(
         self, project_id: UUID, status: ProjectStatus, *,
         workspace_path: str | None = None, error: str | None = None,
@@ -199,6 +205,13 @@ class SqlAlchemyProjectSnapshotRepository:
             .where(ProjectSnapshotORM.project_id == project_id)
             .order_by(ProjectSnapshotORM.updated_at.desc(), ProjectSnapshotORM.id.desc())
         )
+        return [_snapshot(record) for record in self.session.scalars(statement)]
+
+    def list_recent(self, project_id: UUID, limit: int) -> list[ProjectSnapshot]:
+        statement = (select(ProjectSnapshotORM)
+                     .where(ProjectSnapshotORM.project_id == project_id)
+                     .order_by(ProjectSnapshotORM.created_at.desc(), ProjectSnapshotORM.id.desc())
+                     .limit(limit))
         return [_snapshot(record) for record in self.session.scalars(statement)]
 
 

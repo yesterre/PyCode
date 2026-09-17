@@ -23,7 +23,7 @@ from pycode.agent.llm_planner import (
 )
 from pycode.agent.planner import decide_next_action, plan_task
 from pycode.agent.prompts import build_agent_summary_context, render_agent_prompt
-from pycode.agent.todo import TodoItem, TodoManager
+from pycode.agent.todo import TodoItem, TodoManager, TodoStatus
 from pycode.agent.trace import TraceRecorder
 from pycode.agent.types import (
     AgentAction,
@@ -254,6 +254,10 @@ class _LoopState:
     planner_error: str | None = None
 
 
+class _CompletedPlannedAction(RuntimeError):
+    """A tool action would restart a completed planned Todo."""
+
+
 @dataclass
 class _LoopOutcome:
     tool_results: list[ToolResult]
@@ -321,19 +325,25 @@ def _run_observe_decide_act_loop(
         if _handle_terminal_action(action, state, trace_recorder, turn_index):
             break
 
-        result = _execute_tool_action(
-            task,
-            action,
-            steps,
-            state.turns,
-            todo_manager,
-            messages,
-            hooks,
-            tool_registry,
-            tool_context,
-            trace_recorder,
-            turn_index,
-        )
+        try:
+            result = _execute_tool_action(
+                task,
+                action,
+                steps,
+                state.turns,
+                todo_manager,
+                messages,
+                hooks,
+                tool_registry,
+                tool_context,
+                trace_recorder,
+                turn_index,
+            )
+        except _CompletedPlannedAction as exc:
+            _handle_terminal_action(
+                AgentAction.stop_error(str(exc)), state, trace_recorder, turn_index,
+            )
+            break
         _record_tool_observation(
             action,
             result,
@@ -529,7 +539,7 @@ def _execute_tool_action(
             "Tool action has no tool call.",
         )
 
-    step = _step_for_action(action, steps, turns)
+    step = _step_for_action(action, steps, turns, todo_manager)
     current_todo = _start_step_todo(todo_manager, step, trace_recorder)
     tool_call_id = f"turn-{turn_index}"
     messages.append(
@@ -764,15 +774,46 @@ def _step_for_action(
     action: AgentAction,
     steps: list[AgentStep],
     turns: list[AgentTurn],
+    todo_manager: TodoManager,
 ) -> AgentStep | None:
     tool_name = action.tool_call.name if action.tool_call is not None else None
     executed_tool_turns = [
         turn for turn in turns if turn.tool_call is not None and turn.tool_result is not None
     ]
     executed_count = len(executed_tool_turns)
-    for step in steps[executed_count:]:
-        if step.tool == tool_name:
+    # Preserve the old plan order preference, then consider earlier steps that
+    # are still executable after out-of-order or plan-external tool calls.
+    candidates = [*steps[executed_count:], *steps[:executed_count]]
+    completed_match: AgentStep | None = None
+    for step in candidates:
+        if step.tool != tool_name:
+            continue
+        if step.todo_id is None:
             return step
+        if todo_manager.todo_list.get(step.todo_id).status == TodoStatus.COMPLETED:
+            completed_match = step
+            continue
+        return step
+    if completed_match is not None and action.tool_call is not None:
+        repeated_plan_call = any(
+            step.tool == tool_name
+            and step.todo_id is not None
+            and todo_manager.todo_list.get(step.todo_id).status == TodoStatus.COMPLETED
+            and step.arguments == action.tool_call.arguments
+            for step in steps
+        )
+        repeated_observed_call = any(
+            turn.tool_call is not None
+            and turn.tool_call.name == tool_name
+            and turn.tool_call.arguments == action.tool_call.arguments
+            for turn in executed_tool_turns
+        )
+        if repeated_plan_call or repeated_observed_call:
+            raise _CompletedPlannedAction(
+                f"Completed planned todo cannot be selected: {completed_match.todo_id}"
+            )
+        # A new argument set is an unbound call under the existing response
+        # contract; keep the current plan-external tool behavior.
     return None
 
 
@@ -1075,6 +1116,10 @@ def _start_step_todo(
         return None
     if step.todo_id is None:
         return None
+    if todo_manager.todo_list.get(step.todo_id).status == TodoStatus.COMPLETED:
+        raise _CompletedPlannedAction(
+            f"Completed planned todo cannot be selected: {step.todo_id}"
+        )
     item = todo_manager.start(step.todo_id)
     _record_todo_event(
         trace_recorder,

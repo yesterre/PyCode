@@ -18,6 +18,8 @@ class ProjectRepository(Protocol):
 
     def get(self, project_id: UUID) -> Project: ...
 
+    def list_page(self, limit: int, offset: int) -> list[Project]: ...
+
     def set_status(
         self, project_id: UUID, status: ProjectStatus, *,
         workspace_path: str | None = None, error: str | None = None,
@@ -55,6 +57,8 @@ class ProjectSnapshotRepository(Protocol):
     def latest_ready(self, project_id: UUID) -> ProjectSnapshot | None: ...
 
     def list_for_project(self, project_id: UUID) -> list[ProjectSnapshot]: ...
+
+    def list_recent(self, project_id: UUID, limit: int) -> list[ProjectSnapshot]: ...
 
 
 class AgentRunRepository(Protocol):

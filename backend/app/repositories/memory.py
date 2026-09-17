@@ -50,6 +50,11 @@ class InMemoryProjectRepository:
         except KeyError:
             raise BackendError("project_not_found", "Project does not exist.") from None
 
+    def list_page(self, limit: int, offset: int) -> list[Project]:
+        ordered = sorted(self.state.projects.values(),
+                         key=lambda project: (project.updated_at, str(project.id)), reverse=True)
+        return ordered[offset:offset + limit]
+
     def set_status(
         self, project_id: UUID, status: ProjectStatus, *,
         workspace_path: str | None = None, error: str | None = None,
@@ -167,6 +172,12 @@ class InMemorySnapshotRepository:
             (s for s in self.state.snapshots.values() if s.project_id == project_id),
             key=lambda s: (s.updated_at, str(s.id)), reverse=True,
         )
+
+    def list_recent(self, project_id: UUID, limit: int) -> list[ProjectSnapshot]:
+        return sorted(
+            (s for s in self.state.snapshots.values() if s.project_id == project_id),
+            key=lambda s: (s.created_at, str(s.id)), reverse=True,
+        )[:limit]
 
     def _project(self, project_id: UUID) -> Project:
         return InMemoryProjectRepository(self.state).get(project_id)
