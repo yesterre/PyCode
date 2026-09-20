@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, StringConstraints
@@ -62,6 +62,21 @@ class AnalysisResponse(BaseModel):
     answer: str
     intent: str
     evidence: list[str]
+
+
+class AnalysisHistoryItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    created_at: datetime
+    mode: Literal["repository", "impact", "agent"]
+    question: str
+    answer: str
+
+
+class AnalysisHistoryResponse(BaseModel):
+    items: list[AnalysisHistoryItem]
+    has_more: bool
 
 
 class ErrorDetail(BaseModel):

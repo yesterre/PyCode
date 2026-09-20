@@ -89,6 +89,10 @@ class AgentRunRepository(Protocol):
 
     def list_for_project(self, project_id: UUID) -> list[AgentRun]: ...
 
+    def list_history_for_project(
+        self, project_id: UUID, limit: int, offset: int,
+    ) -> list[AgentRun]: ...
+
 
 class TraceEventRepository(Protocol):
     def create(

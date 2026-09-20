@@ -9,7 +9,8 @@ from backend.app.integrations.graph import load_graph, local_graph
 
 from backend.app.core.errors import BackendError
 from backend.app.core.models import (
-    IndexSummary, Project, ProjectAnalysis, ProjectSnapshot, ProjectStatus,
+    AnalysisHistoryItem, AnalysisHistoryMode, IndexSummary, Project,
+    ProjectAnalysis, ProjectSnapshot, ProjectStatus,
 )
 from backend.app.infrastructure.artifacts import SnapshotArtifactBundle, SnapshotArtifactStore
 from backend.app.infrastructure.projects import ProjectOperationLocks
@@ -19,6 +20,11 @@ from backend.app.repositories.interfaces import UnitOfWork
 
 
 T = TypeVar("T")
+_HISTORY_MODES: dict[str, AnalysisHistoryMode] = {
+    "ask": "repository",
+    "impact": "impact",
+    "agent": "agent",
+}
 
 
 class ExecutionBoundary(Protocol):
@@ -55,6 +61,27 @@ class ProjectService:
         with self.uow.transaction():
             self.uow.projects.get(project_id)
             return self.uow.snapshots.list_recent(project_id, limit)
+
+    def get_analysis_history(
+        self, project_id: UUID, limit: int, offset: int,
+    ) -> tuple[list[AnalysisHistoryItem], bool]:
+        with self.uow.transaction():
+            self.uow.projects.get(project_id)
+            page = self.uow.agent_runs.list_history_for_project(
+                project_id, limit + 1, offset,
+            )
+        items = [
+            AnalysisHistoryItem(
+                id=run.id,
+                created_at=run.created_at,
+                mode=_HISTORY_MODES[run.run_type],
+                question=run.task,
+                answer=run.result,
+            )
+            for run in page[:limit]
+            if run.result is not None and run.run_type in _HISTORY_MODES
+        ]
+        return items, len(page) > limit
 
     def get_snapshot(self, project_id: UUID, snapshot_id: UUID) -> ProjectSnapshot:
         with self.uow.transaction():

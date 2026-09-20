@@ -348,6 +348,23 @@ class SqlAlchemyAgentRunRepository:
         )
         return [_agent_run(record) for record in self.session.scalars(statement)]
 
+    def list_history_for_project(
+        self, project_id: UUID, limit: int, offset: int,
+    ) -> list[AgentRun]:
+        statement = (
+            select(AgentRunORM)
+            .where(
+                AgentRunORM.project_id == project_id,
+                AgentRunORM.status == AgentRunStatus.COMPLETED.value,
+                AgentRunORM.result.is_not(None),
+                AgentRunORM.run_type.in_(("ask", "impact", "agent")),
+            )
+            .order_by(AgentRunORM.created_at.desc(), AgentRunORM.id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        return [_agent_run(record) for record in self.session.scalars(statement)]
+
     def _get_record(self, run_id: UUID) -> AgentRunORM:
         record = self.session.get(AgentRunORM, run_id)
         if record is None:

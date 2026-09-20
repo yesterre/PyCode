@@ -17,7 +17,7 @@ export class ApiError extends Error {
 }
 
 export async function parseError(response: Response): Promise<ApiError> {
-  const fallback = `Request failed (${response.status})`
+  const fallback = `请求失败（${response.status}）`
   let data: unknown
   try { data = await response.json() } catch { return new ApiError(response.status, 'http_error', fallback) }
   if (data && typeof data === 'object' && 'detail' in data) {
@@ -30,10 +30,10 @@ export async function parseError(response: Response): Promise<ApiError> {
     }
     if (Array.isArray(detail)) {
       const fields = detail.map(item => {
-        const location = Array.isArray(item?.loc) ? item.loc.join('.') : 'input'
-        return `${location}: ${typeof item?.msg === 'string' ? item.msg : 'Invalid value'}`
+        const location = Array.isArray(item?.loc) ? item.loc.join('.') : '输入'
+        return `${location}: ${typeof item?.msg === 'string' ? item.msg : '输入无效'}`
       })
-      return new ApiError(response.status, 'validation_error', 'Please check the highlighted input.', fields)
+      return new ApiError(response.status, 'validation_error', '请检查输入内容。', fields)
     }
   }
   return new ApiError(response.status, 'http_error', fallback)
@@ -47,7 +47,7 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
       headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers },
     })
   } catch {
-    throw new ApiError(null, 'network_error', 'Could not reach the server.')
+    throw new ApiError(null, 'network_error', '无法连接服务器。')
   }
   if (!response.ok) throw await parseError(response)
   return response.json() as Promise<T>
@@ -55,5 +55,5 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
 
 export function messageOf(error: unknown): string {
   if (error instanceof ApiError) return [error.message, ...error.fields].join(' ')
-  return 'Something went wrong.'
+  return '发生错误，请稍后重试。'
 }

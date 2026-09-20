@@ -290,6 +290,21 @@ class InMemoryAgentRunRepository:
             key=lambda run: (run.created_at, str(run.id)), reverse=True,
         )
 
+    def list_history_for_project(
+        self, project_id: UUID, limit: int, offset: int,
+    ) -> list[AgentRun]:
+        eligible = sorted(
+            (
+                run for run in self.state.agent_runs.values()
+                if run.project_id == project_id
+                and run.status == AgentRunStatus.COMPLETED
+                and run.result is not None
+                and run.run_type in {"ask", "impact", "agent"}
+            ),
+            key=lambda run: (run.created_at, str(run.id)), reverse=True,
+        )
+        return eligible[offset:offset + limit]
+
     def _expect(self, run_id: UUID, expected: AgentRunStatus) -> AgentRun:
         run = self.get(run_id)
         if run.status != expected:

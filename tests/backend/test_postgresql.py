@@ -259,6 +259,53 @@ def test_agent_runs_and_trace_events_persist_jsonb_order_and_unique(postgresql_e
         session.close()
 
 
+def test_agent_run_history_query_filters_orders_and_pages_in_postgresql(postgresql_engine):
+    session, uow = _uow(postgresql_engine)
+    try:
+        project = _create_project(uow)
+        other = _create_project(uow, "Other")
+        with uow.transaction():
+            ask = uow.agent_runs.create(
+                project.id, None, task="question", run_type="ask", model=None,
+            )
+            ask = uow.agent_runs.complete(ask.id, "answer")
+            agent = uow.agent_runs.create(
+                project.id, None, task="task", run_type="agent", model=None,
+            )
+            agent = uow.agent_runs.complete(agent.id, "result")
+            unknown = uow.agent_runs.create(
+                project.id, None, task="unknown", run_type="unknown", model=None,
+            )
+            uow.agent_runs.complete(unknown.id, "hidden")
+            empty = uow.agent_runs.create(
+                project.id, None, task="empty", run_type="impact", model=None,
+            )
+            uow.agent_runs.complete(empty.id, None)
+            uow.agent_runs.create_queued(
+                project.id, None, task="queued", run_type="agent", model=None,
+            )
+            foreign = uow.agent_runs.create(
+                other.id, None, task="foreign", run_type="ask", model=None,
+            )
+            uow.agent_runs.complete(foreign.id, "hidden")
+
+        tied = datetime(2026, 9, 20, 8, 0, tzinfo=timezone.utc)
+        with session.begin():
+            session.execute(
+                update(AgentRunORM)
+                .where(AgentRunORM.id.in_((ask.id, agent.id)))
+                .values(created_at=tied)
+            )
+        expected = sorted((ask.id, agent.id), reverse=True)
+        with uow.transaction():
+            first = uow.agent_runs.list_history_for_project(project.id, 1, 0)
+            second = uow.agent_runs.list_history_for_project(project.id, 2, 1)
+        assert [run.id for run in first] == expected[:1]
+        assert [run.id for run in second] == expected[1:]
+    finally:
+        session.close()
+
+
 def test_agent_core_marker_persists_and_survives_terminal_transition(postgresql_engine):
     session, uow = _uow(postgresql_engine)
     try:

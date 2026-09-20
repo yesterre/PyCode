@@ -42,9 +42,12 @@ it('restores durable Plan, Context, Tool and result for a completed run', async 
   renderPanel()
   expect(await screen.findByText('Final answer')).toBeVisible()
   expect(await screen.findByText('Inspect entry')).toBeVisible()
-  expect(screen.getByText('Evidence context included')).toBeVisible()
+  expect(screen.getByText('已包含证据上下文')).toBeVisible()
   expect(screen.getByText('Read main.py')).toBeVisible()
-  expect(screen.getByText('historical', {exact: true})).toBeVisible()
+  expect(screen.getByText('历史记录', {exact: true})).toBeVisible()
+  expect(screen.getByText('执行计划')).toBeVisible()
+  expect(screen.getByText('工具调用')).toBeVisible()
+  expect(screen.getByText('上下文')).toBeVisible()
 })
 
 it.each([
@@ -61,8 +64,8 @@ it.each([
   renderPanel()
   expect(await screen.findByText(summary)).toBeVisible()
   expect(screen.getAllByText('retrieve_context', {exact: true})).toHaveLength(1)
-  expect(screen.getByText('Duration: 53 ms')).toBeVisible()
-  expect(screen.queryByText('Running / incomplete')).not.toBeInTheDocument()
+  expect(screen.getByText('耗时：53 ms')).toBeVisible()
+  expect(screen.queryByText('运行中 / 尚未完成')).not.toBeInTheDocument()
 })
 
 it('closes realtime stream and waits for durable trace after a gap', async () => {
@@ -73,6 +76,6 @@ it('closes realtime stream and waits for durable trace after a gap', async () =>
   await waitFor(() => expect(Source.instances).toHaveLength(1))
   act(() => Source.instances[0].emit('realtime_trace_gap'))
   expect(Source.instances[0].closed).toBe(true)
-  expect(await screen.findByText(/Waiting for durable trace/)).toBeVisible()
+  expect(await screen.findByText(/正在等待持久化轨迹/)).toBeVisible()
   expect(getTrace).toHaveBeenCalledWith('r')
 })

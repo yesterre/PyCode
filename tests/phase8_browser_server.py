@@ -76,6 +76,11 @@ class FakeRedis:
         pass
 
 
+class ControlledLLM:
+    def generate(self, prompt: str) -> str:
+        return "Controlled repository answer."
+
+
 class Dispatcher:
     def __init__(self):
         self.app = None
@@ -94,12 +99,23 @@ class Dispatcher:
         app = self.app
         uow = InMemoryUnitOfWork(app.state.persistence)
         tasks = BackgroundTaskService(uow)
+        with uow.transaction():
+            project_id = uow.background_tasks.get(task_id).project_id
         projects = build_project_service(
             uow, adapter=app.state.adapter, workspace=app.state.workspace,
             operations=app.state.project_operations, artifacts=app.state.artifacts,
         )
         tasks.execute_repository_index(task_id, lambda project_id: (
             time.sleep(1.5), projects.index(project_id))[1])
+        with uow.transaction():
+            repository = uow.agent_runs.create(
+                project_id, None, task="Where is the entry point?", run_type="ask", model=None,
+            )
+            uow.agent_runs.complete(repository.id, "The entry point is main.py.")
+            impact = uow.agent_runs.create(
+                project_id, None, task="service.py", run_type="impact", model=None,
+            )
+            uow.agent_runs.complete(impact.id, "Changes affect main.py.")
 
     def _agent(self, task_id):
         time.sleep(0.7)
@@ -125,7 +141,7 @@ class Dispatcher:
                 occurred_at=datetime.now(timezone.utc), tool_name=tool_name, payload=payload)
             events.append(event)
             app.state.realtime_redis.append(run.id, event)
-            time.sleep(0.75)
+            time.sleep(2.5 if kind == ApplicationEventType.PLAN_CREATED else 0.75)
         with uow.transaction():
             for event in events:
                 uow.trace_events.create(run.id, event.sequence, event.event_type.value,
@@ -139,7 +155,7 @@ _source.mkdir()
 (_source / "main.py").write_text("from service import answer\ndef main():\n    return answer()\n", encoding="utf-8")
 (_source / "service.py").write_text("def answer():\n    return 42\n", encoding="utf-8")
 _dispatcher = Dispatcher()
-app = create_app(adapter=PyCodeAdapter(),
+app = create_app(adapter=PyCodeAdapter(llm_client=ControlledLLM()),
     workspace=RepositoryWorkspace(_root / "workspaces", CopySource(_source)),
     persistence=InMemoryPersistence(), task_dispatcher=_dispatcher)
 app.state.realtime_redis = FakeRedis()

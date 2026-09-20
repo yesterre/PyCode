@@ -1,5 +1,6 @@
 import type { ButtonHTMLAttributes, HTMLAttributes, ReactNode } from 'react'
 import { messageOf } from '../api/client'
+import { statusLabel } from '../presentation'
 
 export function Card({children, className = ''}: {children: ReactNode; className?: string}) {
   return <section className={`rounded-xl border border-slate-700/70 bg-slate-900/70 p-5 shadow-lg shadow-black/10 ${className}`}>{children}</section>
@@ -20,9 +21,9 @@ export function StatusBadge({status}: {status: string}) {
   const tone = status === 'ready' || status === 'completed' || status === 'live' ? 'good' :
     status === 'failed' || status === 'gap' || status === 'unavailable' ? 'bad' :
       status === 'running' || status === 'queued' || status === 'indexing' || status === 'preparing' || status === 'reconnecting' ? 'working' : 'neutral'
-  return <Badge tone={tone}>{status.replaceAll('_', ' ')}</Badge>
+  return <Badge tone={tone}>{statusLabel(status)}</Badge>
 }
-export function Spinner({label = 'Loading…'}: {label?: string}) {
+export function Spinner({label = '加载中…'}: {label?: string}) {
   return <div role="status" className="flex items-center gap-3 text-sm text-slate-400"><span className="size-4 animate-spin rounded-full border-2 border-slate-600 border-t-cyan-300" />{label}</div>
 }
 export function EmptyState({title, detail}: {title: string; detail?: string}) {

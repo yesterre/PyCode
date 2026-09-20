@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 
@@ -102,6 +102,18 @@ class AgentRun:
     finished_at: datetime | None
     created_at: datetime
     core_started_at: datetime | None = None
+
+
+AnalysisHistoryMode = Literal["repository", "impact", "agent"]
+
+
+@dataclass(frozen=True)
+class AnalysisHistoryItem:
+    id: UUID
+    created_at: datetime
+    mode: AnalysisHistoryMode
+    question: str
+    answer: str
 
 
 @dataclass(frozen=True)

@@ -81,7 +81,8 @@ review/
 review_*.md
 docs/project_pitch.md
 
-# Celery Beat runtime files
-celerybeat-schedule*
+# Celery Beat runtime schedule
+celerybeat-schedule
+celerybeat-schedule.*
 
 .tmp/

@@ -17,6 +17,11 @@ export type BackgroundTask = {
   error_message: string | null; created_at: string; started_at: string | null; finished_at: string | null
 }
 export type Analysis = { project_id: string; answer: string; intent: string; evidence: string[] }
+export type AnalysisHistoryMode = 'repository' | 'impact' | 'agent'
+export type AnalysisHistoryItem = {
+  id: string; created_at: string; mode: AnalysisHistoryMode; question: string; answer: string
+}
+export type AnalysisHistoryResponse = {items: AnalysisHistoryItem[]; has_more: boolean}
 export type AgentRun = {
   id: string; project_id: string; snapshot_id: string | null; task: string; run_type: string;
   status: TaskStatus; result: string | null; error_message: string | null;

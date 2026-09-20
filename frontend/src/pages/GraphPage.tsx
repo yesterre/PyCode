@@ -37,7 +37,7 @@ function GraphCanvas({result}: {result: GraphResult}) {
     })
     return () => {graph.destroy()}
   }, [result])
-  return <div className="grid gap-4 lg:grid-cols-[1fr_240px]"><div ref={container} aria-label="Code graph" className="h-[520px] rounded-lg border border-slate-700 bg-slate-950" /><aside className="rounded-lg border border-slate-700 bg-slate-950/70 p-4 text-sm"><h3 className="mb-4 font-semibold">Selected node</h3>{selected ? <div className="space-y-3 break-words"><Badge>{selected.type}</Badge><p className="font-medium">{selected.name}</p><p className="text-slate-400">{selected.path ?? 'External / No repository path'}</p><p className="font-mono text-xs text-slate-500">{selected.id}</p></div> : <p className="text-slate-400">Select a node to inspect it.</p>}</aside></div>
+  return <div className="grid gap-4 lg:grid-cols-[1fr_240px]"><div ref={container} aria-label="代码图谱" className="h-[520px] rounded-lg border border-slate-700 bg-slate-950" /><aside className="rounded-lg border border-slate-700 bg-slate-950/70 p-4 text-sm"><h3 className="mb-4 font-semibold">已选节点</h3>{selected ? <div className="space-y-3 break-words"><Badge>{selected.type}</Badge><p className="font-medium">{selected.name}</p><p className="text-slate-400">{selected.path ?? '外部节点 / 无仓库路径'}</p><p className="font-mono text-xs text-slate-500">{selected.id}</p></div> : <p className="text-slate-400">选择节点后可查看详情。</p>}</aside></div>
 }
 
 export function GraphPage() {
@@ -56,19 +56,19 @@ export function GraphPage() {
     if (!value) return
     setSearch({[mode]: value, ...(nodeType ? {node_type: nodeType} : {}), limit: 100})
   }
-  return <main className="space-y-6"><Link to={`/projects/${projectId}`} className="text-sm text-cyan-300">← Workspace</Link>
-    <SectionHeading title="Code Graph" subtitle="Search a symbol or file, then inspect a bounded local graph." />
-    {project.isLoading && <Spinner label="Loading project…" />}{project.error && <ErrorState error={project.error} />}
-    {project.data && !snapshotId && <EmptyState title="No Graph" detail="Build the repository index to create a current snapshot." />}
+  return <main className="space-y-6"><Link to={`/projects/${projectId}`} className="text-sm text-cyan-300">← 返回项目</Link>
+    <SectionHeading title="代码图谱" subtitle="搜索符号或文件，查看有限范围内的局部关系图。" />
+    {project.isLoading && <Spinner label="正在加载项目…" />}{project.error && <ErrorState error={project.error} />}
+    {project.data && !snapshotId && <EmptyState title="暂无代码图谱" detail="请先构建仓库索引并生成当前快照。" />}
     {snapshotId && <><Card><form onSubmit={submit} className="grid gap-4 sm:grid-cols-[160px_1fr_170px_auto] sm:items-end">
-      <Field label="Search by"><select className={inputClass} value={mode} onChange={e => {setMode(e.target.value as 'q'|'file_path'); setSearch(null)}}><option value="q">Symbol or file</option><option value="file_path">Exact file path</option></select></Field>
-      <Field label={mode === 'q' ? 'Search symbol or file' : 'File Path'}><input className={inputClass} value={input} required onChange={e => setInput(e.target.value)} placeholder={mode === 'q' ? 'main' : 'src/main.py'} /></Field>
-      <Field label="Node type"><select className={inputClass} value={nodeType} onChange={e => setNodeType(e.target.value)}><option value="">All types</option><option value="file">File</option><option value="class">Class</option><option value="function">Function</option><option value="method">Method</option></select></Field>
-      <Button type="submit">Search Graph</Button>
+      <Field label="搜索方式"><select className={inputClass} value={mode} onChange={e => {setMode(e.target.value as 'q'|'file_path'); setSearch(null)}}><option value="q">符号或文件</option><option value="file_path">精确文件路径</option></select></Field>
+      <Field label={mode === 'q' ? '搜索符号或文件' : '文件路径'}><input className={inputClass} value={input} required onChange={e => setInput(e.target.value)} placeholder={mode === 'q' ? 'main' : 'src/main.py'} /></Field>
+      <Field label="节点类型"><select className={inputClass} value={nodeType} onChange={e => setNodeType(e.target.value)}><option value="">全部类型</option><option value="file">文件</option><option value="class">类</option><option value="function">函数</option><option value="method">方法</option></select></Field>
+      <Button type="submit">搜索图谱</Button>
     </form></Card>
-    {!search && <EmptyState title="Search to explore" detail="The full graph is not downloaded automatically." />}
-    {graph.isLoading && <Spinner label="Loading local graph…" />}{graph.error && <ErrorState error={graph.error} />}
-    {graph.data && <Card><SectionHeading title="Local graph" subtitle={`${graph.data.nodes.length} nodes · ${graph.data.edges.length} edges`} />{graph.data.truncated && <p className="mb-4 rounded-lg bg-amber-400/10 p-3 text-sm text-amber-200">Showing a limited local graph. Narrow the search for more specific results.</p>}{graph.data.nodes.length ? <GraphCanvas result={graph.data} /> : <EmptyState title="No graph results" />}</Card>}
+    {!search && <EmptyState title="搜索后查看图谱" detail="页面不会自动下载完整图谱。" />}
+    {graph.isLoading && <Spinner label="正在加载局部图谱…" />}{graph.error && <ErrorState error={graph.error} />}
+    {graph.data && <Card><SectionHeading title="局部图谱" subtitle={`${graph.data.nodes.length} 个节点 · ${graph.data.edges.length} 条边`} />{graph.data.truncated && <p className="mb-4 rounded-lg bg-amber-400/10 p-3 text-sm text-amber-200">当前仅展示有限范围，请缩小搜索条件以获得更精确的结果。</p>}{graph.data.nodes.length ? <GraphCanvas result={graph.data} /> : <EmptyState title="没有图谱结果" />}</Card>}
     </>}
   </main>
 }

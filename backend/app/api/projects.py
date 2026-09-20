@@ -7,8 +7,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from backend.app.api.dependencies import get_background_task_service, get_project_service
 from backend.app.api.idempotency import IdempotencyKeyHeader
 from backend.app.schemas.projects import (
-    AnalysisResponse, AskRequest, CreateProjectRequest, ErrorResponse,
-    ImpactRequest, ProjectResponse, ProjectListResponse,
+    AnalysisHistoryItem, AnalysisHistoryResponse, AnalysisResponse, AskRequest,
+    CreateProjectRequest, ErrorResponse, ImpactRequest, ProjectResponse,
+    ProjectListResponse,
 )
 from backend.app.schemas.snapshots import SnapshotListResponse, SnapshotResponse
 from backend.app.schemas.graph import GraphResponse
@@ -41,6 +42,19 @@ def create_project(body: CreateProjectRequest, service: Service):
 @router.get("/{project_id}", response_model=ProjectResponse)
 def get_project(project_id: UUID, service: Service):
     return service.get(project_id)
+
+
+@router.get("/{project_id}/analysis-history", response_model=AnalysisHistoryResponse)
+def get_analysis_history(
+    project_id: UUID, service: Service,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+):
+    items, has_more = service.get_analysis_history(project_id, limit, offset)
+    return AnalysisHistoryResponse(
+        items=[AnalysisHistoryItem.model_validate(item) for item in items],
+        has_more=has_more,
+    )
 
 
 @router.get("/{project_id}/snapshots", response_model=SnapshotListResponse)
