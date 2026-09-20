@@ -14,6 +14,75 @@ PyCode 是一个面向 Python 项目的代码库理解与改动影响分析 Agen
 - 可观测 Agent 内核：记录 Trace、Todo、Memory、Task DAG 和 Context Section，方便解释 Agent 做了什么、依据来自哪里。
 - 展示层：支持 Rich 终端输出和 Streamlit Web Demo，便于演示项目结构、图谱和 Agent 运行过程。
 
+## Development
+
+Local Development Mode 保留原有 Windows／PowerShell 多终端工作流，并使用本机 PostgreSQL、Redis 与 `.pycode-workspaces`。先复制 `.env.example` 为 `.env`，把 `DATABASE_URL`、`REDIS_URL` 保持为 `localhost`，再填写本地数据库密码；需要真实问答或 Agent 时再填写 `OPENAI_API_KEY` 与 `OPENAI_MODEL`。
+
+在项目根目录安装依赖并执行 Migration：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m alembic upgrade head
+```
+
+分别在独立终端启动 Backend、Worker 与 Beat。Windows Worker 继续使用 `solo` pool：
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python.exe -m celery -A backend.app.worker:app worker --loglevel=INFO --pool=solo
+.\.venv\Scripts\python.exe -m celery -A backend.app.worker:app beat --loglevel=INFO
+```
+
+Frontend 使用独立终端：
+
+```powershell
+Set-Location frontend
+npm install
+npm run dev
+```
+
+开发入口为 `http://127.0.0.1:5173`，Backend health 与 Swagger 分别为 `http://127.0.0.1:8000/health` 和 `http://127.0.0.1:8000/docs`。
+
+## Docker
+
+Docker Compose Mode 使用独立的 PostgreSQL、Redis 和 Workspace named volumes，不连接或迁移当前 Windows 本地数据。首次启动：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+在 `.env` 中设置仅含字母、数字、连字符或下划线的 `POSTGRES_PASSWORD`，并按需填写 LLM key/model。Compose 会保留 `.env` 中供本地开发使用的 localhost URL，但在容器内把 `DATABASE_URL`、`REDIS_URL` 和 `PYCODE_WORKSPACE_ROOT` 覆盖为 Docker service DNS 与 `/var/lib/pycode/workspaces`。当前 Compose 配置会用同一个值初始化 PostgreSQL 并拼接 SQLAlchemy URL，因此不要在该密码中使用 URL 保留字符。
+
+启动完整系统：
+
+```powershell
+docker compose up --build
+```
+
+访问：
+
+- Web UI：`http://127.0.0.1:8080`
+- Backend health：`http://127.0.0.1:8000/health`
+- Swagger：`http://127.0.0.1:8000/docs`
+
+Frontend Nginx 将同源 `/api/` 请求和实时 SSE 转发到 Backend。`migrate` service 会在 PostgreSQL healthy 后运行一次 `alembic upgrade head`；只有 Migration 成功后 Backend、Worker 和 Beat 才会启动。
+
+停止容器但保留数据：
+
+```powershell
+docker compose down
+```
+
+删除 Docker 环境中的 PostgreSQL、Redis 和 Workspace 数据：
+
+```powershell
+docker compose down -v
+```
+
+> Docker Compose 与 Windows Local Development 默认是两个独立数据环境。现有数据库中的 Windows 绝对 `workspace_path` 与容器路径不兼容，Phase 9 不提供本地数据库或 Workspace 到 Docker 的自动迁移。
+
+Python 依赖继续使用现有版本范围，因此从源码重建 Backend image 不是 byte-for-byte dependency reproducible；Frontend 使用已有 `package-lock.json` 和 `npm ci`。
+
 ## 快速开始
 
 建议在项目根目录使用虚拟环境中的 Python。
