@@ -23,6 +23,7 @@ frontend/dist
 frontend/test-results
 frontend/playwright-report
 frontend/e2e
+*.tsbuildinfo
 
 .pycode-workspaces
 .tmp
@@ -43,8 +44,9 @@ Thumbs.db
 .codex
 review
 CCLearning*.zip
-docs_demo
-docs_v1.0
-docs_v2.0
+docs_demo/
+docs_v1.0/
+docs_v2.0/
+ui/
 examples
 tests

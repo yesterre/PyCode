@@ -13,7 +13,7 @@ from pycode.tools import ToolContext, ToolSpec
 from pycode.tools.base import failure, success
 
 
-DEMO_PROJECT = Path("examples/demo_project")
+DEMO_PROJECT = Path("tests/fixtures/demo_project")
 
 
 def test_v1_acceptance_entry_and_onboard_show_trace_todo_evidence_context(

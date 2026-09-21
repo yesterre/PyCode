@@ -10,7 +10,6 @@ requires-python = ">=3.11"
 dependencies = [
     "openai>=1.0,<2.0",
     "rich>=13.0",
-    "streamlit>=1.57",
 ]
 
 [project.optional-dependencies]
@@ -34,4 +33,4 @@ backend = [
 pycode = "pycode.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["pycode*", "ui*", "backend*"]
+include = ["pycode*", "backend*"]

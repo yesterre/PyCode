@@ -11,7 +11,6 @@ RUN apt-get update \
 
 COPY pyproject.toml requirements.txt README.md ./
 COPY pycode ./pycode
-COPY ui ./ui
 COPY backend ./backend
 COPY alembic.ini ./alembic.ini
 

@@ -4,7 +4,7 @@
 
 PyCode 用于理解一个现有代码库，而不是把整个仓库直接塞进一次 LLM 请求。系统从公共 HTTPS Git URL 获取 Repository，将分析固定到明确的 commit，构建 Python 代码索引和 Code Graph，并通过 React Web UI 提供项目管理、分析、Trace、历史记录与图谱查询。
 
-当前版本包含完整的 Web/API/Worker 链路，也保留可独立使用的 Python Core、CLI 和旧 Streamlit Demo。推荐使用 Docker Compose 启动完整系统。
+当前版本包含完整的 Web/API/Worker 链路，也保留可独立使用的 Python Core 和 CLI。推荐使用 Docker Compose 启动完整系统。
 
 ## 项目简介
 
@@ -276,9 +276,9 @@ PyCode/
 ├── backend/           # FastAPI、DB、Repository lifecycle、Worker integration
 ├── frontend/          # React + TypeScript Web UI
 ├── pycode/            # Index、Code Graph、retrieval、Agent Core 与 tools
-├── ui/                # 旧 Streamlit 展示层（不是主要 Web UI）
-├── tests/             # Core 与 Backend pytest、受控浏览器测试服务
-├── docs_v2.0/         # V2.0 设计与开发记录
+├── tests/             # Core、Backend、浏览器测试与 fixtures
+│   └── fixtures/
+│       └── demo_project/
 ├── compose.yaml       # 完整部署编排
 ├── .env.example       # 配置模板
 └── README.md

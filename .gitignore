@@ -86,3 +86,13 @@ celerybeat-schedule
 celerybeat-schedule.*
 
 .tmp/
+
+# Local historical material and legacy UI (kept locally, not published)
+docs_demo/
+docs_v1.0/
+docs_v2.0/
+ui/
+tests/test_ui_data_loader.py
+
+# TypeScript incremental build artifacts
+*.tsbuildinfo
