@@ -14,7 +14,8 @@ from backend.app.core.models import (
     AgentCoreStart, AgentCoreStartStatus, AgentRun, AgentRunStatus,
     BackgroundTask, BackgroundTaskClaim, BackgroundTaskCreation,
     BackgroundTaskClaimStatus, BackgroundTaskStatus, IndexSummary,
-    Project, ProjectSnapshot, ProjectStatus, TraceEvent,
+    Project, ProjectSnapshot, ProjectStatus, TraceEvent, User, UserStatus,
+    normalize_account_name, validate_user_fields,
 )
 
 
@@ -27,6 +28,7 @@ class InMemoryPersistence:
 
     def __init__(self) -> None:
         self.guard = RLock()
+        self.users: dict[UUID, User] = {}
         self.projects: dict[UUID, Project] = {}
         self.snapshots: dict[UUID, ProjectSnapshot] = {}
         self.agent_runs: dict[UUID, AgentRun] = {}
@@ -34,15 +36,61 @@ class InMemoryPersistence:
         self.background_tasks: dict[UUID, BackgroundTask] = {}
 
 
+class InMemoryUserRepository:
+    def __init__(self, state: InMemoryPersistence) -> None:
+        self.state = state
+
+    def create(
+        self, account_name: str, password_hash: str, *,
+        status: UserStatus = UserStatus.ACTIVE,
+    ) -> User:
+        account_name = normalize_account_name(account_name)
+        status = validate_user_fields(password_hash, status)
+        if any(user.account_name == account_name for user in self.state.users.values()):
+            raise BackendError("database_conflict", "A persistent record conflicts with existing data.")
+        user = User(uuid4(), account_name, password_hash, _now(), status)
+        self.state.users[user.id] = user
+        return user
+
+    def get(self, user_id: UUID) -> User:
+        try:
+            return self.state.users[user_id]
+        except KeyError:
+            raise BackendError("user_not_found", "User does not exist.") from None
+
+    def get_by_account_name(self, account_name: str) -> User | None:
+        normalized = normalize_account_name(account_name)
+        return next((user for user in self.state.users.values()
+                     if user.account_name == normalized), None)
+
+
 class InMemoryProjectRepository:
     def __init__(self, state: InMemoryPersistence) -> None:
         self.state = state
 
-    def create(self, name: str, repo_url: str, branch: str | None = None) -> Project:
+    def create(
+        self, name: str, repo_url: str, branch: str | None = None, *,
+        owner_id: UUID | None = None,
+    ) -> Project:
+        if owner_id is not None and owner_id not in self.state.users:
+            raise BackendError("database_conflict", "A related persistent record is invalid.")
         now = _now()
-        project = Project(uuid4(), name, repo_url, branch, ProjectStatus.CREATED, now, now)
+        project = Project(
+            uuid4(), name, repo_url, branch, ProjectStatus.CREATED, now, now,
+            owner_id=owner_id,
+        )
         self.state.projects[project.id] = project
         return project
+
+    def assign_legacy_owner(self, project_id: UUID, owner_id: UUID) -> Project:
+        """Trusted maintenance operation; never reassign an owned project."""
+        project = self.get(project_id)
+        user = InMemoryUserRepository(self.state).get(owner_id)
+        if project.owner_id is not None or user.status != UserStatus.ACTIVE:
+            raise BackendError("database_conflict", "Legacy ownership assignment is not allowed.")
+        updated = replace(project, owner_id=owner_id, updated_at=_now())
+        self.state.projects[project_id] = updated
+        return updated
 
     def get(self, project_id: UUID) -> Project:
         try:
@@ -738,6 +786,7 @@ class InMemoryBackgroundTaskRepository:
 class InMemoryUnitOfWork:
     def __init__(self, state: InMemoryPersistence) -> None:
         self.state = state
+        self.users = InMemoryUserRepository(state)
         self.projects = InMemoryProjectRepository(state)
         self.snapshots = InMemorySnapshotRepository(state)
         self.agent_runs = InMemoryAgentRunRepository(state)
@@ -748,6 +797,7 @@ class InMemoryUnitOfWork:
     def transaction(self) -> Iterator[None]:
         with self.state.guard:
             before = (
+                deepcopy(self.state.users),
                 deepcopy(self.state.projects), deepcopy(self.state.snapshots),
                 deepcopy(self.state.agent_runs), deepcopy(self.state.trace_events),
                 deepcopy(self.state.background_tasks),
@@ -755,7 +805,7 @@ class InMemoryUnitOfWork:
             try:
                 yield
             except Exception:
-                (self.state.projects, self.state.snapshots,
+                (self.state.users, self.state.projects, self.state.snapshots,
                  self.state.agent_runs, self.state.trace_events,
                  self.state.background_tasks) = before
                 raise

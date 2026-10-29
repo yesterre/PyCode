@@ -231,7 +231,9 @@ def test_phase3_history_backfills_and_survives_phase4_migration(phase3_database)
 
 def test_repository_rejects_current_snapshot_from_another_project(phase3_database):
     database_url, config = phase3_database
-    command.upgrade(config, PHASE4_REVISION)
+    # Current ORM includes later columns (including B01 owner_id). The raw SQL
+    # migration tests above still verify the historical Phase 4 boundary.
+    command.upgrade(config, "head")
     engine = _engine(database_url)
     session = Session(engine, autoflush=False, expire_on_commit=False)
     uow = SqlAlchemyUnitOfWork(session)

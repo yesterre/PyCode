@@ -16,10 +16,11 @@ from backend.app.core.models import (
     AgentCoreStart, AgentCoreStartStatus, AgentRun, AgentRunStatus,
     BackgroundTask, BackgroundTaskClaim, BackgroundTaskCreation,
     BackgroundTaskClaimStatus, BackgroundTaskStatus, IndexSummary,
-    Project, ProjectSnapshot, ProjectStatus, TraceEvent,
+    Project, ProjectSnapshot, ProjectStatus, TraceEvent, User, UserStatus,
+    normalize_account_name, validate_user_fields,
 )
 from backend.app.db.models import (
-    AgentRunORM, BackgroundTaskORM, ProjectORM, ProjectSnapshotORM, TraceEventORM,
+    AgentRunORM, BackgroundTaskORM, ProjectORM, ProjectSnapshotORM, TraceEventORM, UserORM,
 )
 
 
@@ -27,18 +28,74 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class SqlAlchemyUserRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def create(
+        self, account_name: str, password_hash: str, *,
+        status: UserStatus = UserStatus.ACTIVE,
+    ) -> User:
+        normalized = normalize_account_name(account_name)
+        status = validate_user_fields(password_hash, status)
+        record = UserORM(
+            id=uuid4(), account_name=normalized, password_hash=password_hash,
+            status=status.value, created_at=_now(),
+        )
+        self.session.add(record)
+        self.session.flush()
+        return _user(record)
+
+    def get(self, user_id: UUID) -> User:
+        record = self.session.get(UserORM, user_id)
+        if record is None:
+            raise BackendError("user_not_found", "User does not exist.")
+        return _user(record)
+
+    def get_by_account_name(self, account_name: str) -> User | None:
+        normalized = normalize_account_name(account_name)
+        record = self.session.scalars(
+            select(UserORM).where(UserORM.account_name == normalized),
+        ).one_or_none()
+        return _user(record) if record is not None else None
+
+
 class SqlAlchemyProjectRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def create(self, name: str, repo_url: str, branch: str | None = None) -> Project:
+    def create(
+        self, name: str, repo_url: str, branch: str | None = None, *,
+        owner_id: UUID | None = None,
+    ) -> Project:
         now = _now()
         record = ProjectORM(
             id=uuid4(), name=name, repo_url=repo_url, branch=branch,
             status=ProjectStatus.CREATED.value, created_at=now, updated_at=now,
+            owner_id=owner_id,
         )
         self.session.add(record)
         self.session.flush()
+        return _project(record)
+
+    def assign_legacy_owner(self, project_id: UUID, owner_id: UUID) -> Project:
+        """Lock the target user and compare-and-set only a legacy NULL owner."""
+        self.get(project_id)
+        user = self.session.scalars(
+            select(UserORM).where(UserORM.id == owner_id).with_for_update(),
+        ).one_or_none()
+        if user is None:
+            raise BackendError("user_not_found", "User does not exist.")
+        if user.status != UserStatus.ACTIVE.value:
+            raise BackendError("database_conflict", "Legacy ownership assignment is not allowed.")
+        record = self.session.scalars(
+            update(ProjectORM)
+            .where(ProjectORM.id == project_id, ProjectORM.owner_id.is_(None))
+            .values(owner_id=owner_id, updated_at=_now())
+            .returning(ProjectORM).execution_options(populate_existing=True),
+        ).one_or_none()
+        if record is None:
+            raise BackendError("database_conflict", "Legacy ownership assignment is not allowed.")
         return _project(record)
 
     def get(self, project_id: UUID) -> Project:
@@ -929,6 +986,7 @@ class SqlAlchemyBackgroundTaskRepository:
 class SqlAlchemyUnitOfWork:
     def __init__(self, session: Session) -> None:
         self.session = session
+        self.users = SqlAlchemyUserRepository(session)
         self.projects = SqlAlchemyProjectRepository(session)
         self.snapshots = SqlAlchemyProjectSnapshotRepository(session)
         self.agent_runs = SqlAlchemyAgentRunRepository(session)
@@ -956,12 +1014,20 @@ def _database_error(exc: SQLAlchemyError) -> BackendError:
     return BackendError("database_failed", "A database transaction failed.")
 
 
+def _user(record: UserORM) -> User:
+    return User(
+        record.id, record.account_name, record.password_hash,
+        record.created_at, UserStatus(record.status),
+    )
+
+
 def _project(record: ProjectORM) -> Project:
     return Project(
         record.id, record.name, record.repo_url, record.branch,
         ProjectStatus(record.status), record.created_at, record.updated_at,
         workspace_path=record.workspace_path, last_error=record.last_error,
         current_snapshot_id=record.current_snapshot_id,
+        owner_id=record.owner_id,
     )
 
 

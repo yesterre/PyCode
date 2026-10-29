@@ -42,7 +42,7 @@ from backend.app.services.projects import ProjectService
 
 
 MANAGED_TABLES = {
-    "projects", "project_snapshots", "agent_runs", "trace_events", "background_tasks",
+    "projects", "project_snapshots", "agent_runs", "trace_events", "background_tasks", "users",
 }
 
 
@@ -95,7 +95,7 @@ def _truncate(engine: Engine) -> None:
     with engine.begin() as connection:
         connection.execute(text(
             "TRUNCATE TABLE background_tasks, trace_events, agent_runs, "
-            "project_snapshots, projects CASCADE"
+            "project_snapshots, projects, users CASCADE"
         ))
 
 

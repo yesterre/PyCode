@@ -28,6 +28,8 @@ ERROR_CATALOG: dict[str, ErrorSpec] = {
     for code, status in {
         "invalid_path": 422,
         "project_not_found": 404,
+        "user_not_found": 404,
+        "invalid_user": 422,
         "invalid_repository": 422,
         "repository_forbidden": 403,
         "unsafe_repository": 403,

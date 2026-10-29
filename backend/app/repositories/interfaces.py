@@ -9,12 +9,28 @@ from uuid import UUID
 from backend.app.core.models import (
     AgentCoreStart, AgentRun, BackgroundTask, BackgroundTaskClaim,
     BackgroundTaskCreation, IndexSummary, Project, ProjectSnapshot,
-    ProjectStatus, TraceEvent,
+    ProjectStatus, TraceEvent, User, UserStatus,
 )
 
 
+class UserRepository(Protocol):
+    def create(
+        self, account_name: str, password_hash: str, *,
+        status: UserStatus = UserStatus.ACTIVE,
+    ) -> User: ...
+
+    def get(self, user_id: UUID) -> User: ...
+
+    def get_by_account_name(self, account_name: str) -> User | None: ...
+
+
 class ProjectRepository(Protocol):
-    def create(self, name: str, repo_url: str, branch: str | None = None) -> Project: ...
+    def create(
+        self, name: str, repo_url: str, branch: str | None = None, *,
+        owner_id: UUID | None = None,
+    ) -> Project: ...
+
+    def assign_legacy_owner(self, project_id: UUID, owner_id: UUID) -> Project: ...
 
     def get(self, project_id: UUID) -> Project: ...
 
@@ -184,6 +200,7 @@ class BackgroundTaskRepository(Protocol):
 
 
 class UnitOfWork(Protocol):
+    users: UserRepository
     projects: ProjectRepository
     snapshots: ProjectSnapshotRepository
     agent_runs: AgentRunRepository

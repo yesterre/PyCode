@@ -16,12 +16,16 @@ class ProjectORM(Base):
             name="project_status",
         ),
         Index("ix_projects_current_snapshot_id", "current_snapshot_id"),
+        Index("ix_projects_owner_id", "owner_id"),
     )
 
     id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     repo_url: Mapped[str] = mapped_column(Text, nullable=False)
     branch: Mapped[str | None] = mapped_column(Text, nullable=True)
+    owner_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=True,
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     workspace_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     current_snapshot_id: Mapped[UUID | None] = mapped_column(

@@ -1,8 +1,45 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+import re
 from typing import Any, Literal
 from uuid import UUID
+
+from backend.app.core.errors import BackendError
+
+
+class UserStatus(StrEnum):
+    ACTIVE = "active"
+    DISABLED = "disabled"
+
+
+def normalize_account_name(value: str) -> str:
+    if not isinstance(value, str) or not value.isascii():
+        raise BackendError("invalid_user", "Account name is invalid.")
+    normalized = value.strip().lower()
+    if re.fullmatch(r"[a-z0-9][a-z0-9_.-]{2,63}", normalized) is None:
+        raise BackendError("invalid_user", "Account name is invalid.")
+    return normalized
+
+
+def validate_user_fields(password_hash: str, status: UserStatus) -> UserStatus:
+    # Persistence accepts an encoded hash, never computes or logs credentials.
+    if (not isinstance(password_hash, str)
+            or re.fullmatch(r"[!-~]{1,1024}", password_hash) is None):
+        raise BackendError("invalid_user", "Encoded password hash is invalid.")
+    try:
+        return UserStatus(status)
+    except (ValueError, TypeError):
+        raise BackendError("invalid_user", "User status is invalid.") from None
+
+
+@dataclass(frozen=True)
+class User:
+    id: UUID
+    account_name: str
+    password_hash: str = field(repr=False)
+    created_at: datetime
+    status: UserStatus
 
 
 class ProjectStatus(StrEnum):
@@ -67,6 +104,7 @@ class Project:
     current_snapshot_id: UUID | None = None
     index_summary: IndexSummary | None = None
     last_error: str | None = None
+    owner_id: UUID | None = None
 
 
 @dataclass(frozen=True)
