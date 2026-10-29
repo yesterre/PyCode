@@ -19,6 +19,7 @@ def test_health_and_openapi_without_model_or_project():
         paths = client.get("/openapi.json").json()["paths"]
         assert set(paths) == {
             "/health", "/api/v1/projects", "/api/v1/projects/{project_id}",
+            "/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/me",
             "/api/v1/projects/{project_id}/analysis-history",
             "/api/v1/projects/{project_id}/index", "/api/v1/projects/{project_id}/ask",
             "/api/v1/projects/{project_id}/impact",

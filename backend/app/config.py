@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 
 from dotenv import load_dotenv
@@ -21,6 +21,38 @@ def _non_negative_int(name: str, default: str) -> int:
     if value < 0:
         raise RuntimeError(f"{name} must not be negative.")
     return value
+
+
+@dataclass(frozen=True)
+class AuthSettings:
+    jwt_secret: str = field(repr=False)
+    jwt_algorithm: str = "HS256"
+    access_token_ttl_seconds: int = 900
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.jwt_secret, str)
+                or len(self.jwt_secret.encode("utf-8")) < 32
+                or self.jwt_secret != self.jwt_secret.strip()
+                or self.jwt_secret.lower().startswith(("replace-", "change-me", "changeme"))):
+            raise ValueError("PYCODE_JWT_SECRET must be a non-placeholder secret of at least 32 bytes.")
+        if self.jwt_algorithm != "HS256":
+            raise ValueError("PYCODE_JWT_ALGORITHM must be HS256.")
+        if (type(self.access_token_ttl_seconds) is not int
+                or not 1 <= self.access_token_ttl_seconds <= 3600):
+            raise ValueError("PYCODE_ACCESS_TOKEN_TTL_SECONDS must be between 1 and 3600.")
+
+    @classmethod
+    def from_environment(cls) -> "AuthSettings":
+        load_environment()
+        try:
+            ttl = int(os.environ.get("PYCODE_ACCESS_TOKEN_TTL_SECONDS", "900"))
+        except ValueError:
+            raise ValueError("PYCODE_ACCESS_TOKEN_TTL_SECONDS must be an integer.") from None
+        return cls(
+            jwt_secret=os.environ.get("PYCODE_JWT_SECRET", ""),
+            jwt_algorithm=os.environ.get("PYCODE_JWT_ALGORITHM", "HS256"),
+            access_token_ttl_seconds=ttl,
+        )
 
 
 @dataclass(frozen=True)

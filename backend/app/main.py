@@ -5,10 +5,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from backend.app.config import QueuedReconciliationSettings, load_environment
+from backend.app.config import AuthSettings, QueuedReconciliationSettings, load_environment
 from backend.app.db.session import DatabaseSessionManager
 from backend.app.api.errors import register_error_handlers
 from backend.app.api.agent_runs import router as agent_runs_router
+from backend.app.api.auth import router as auth_router
 from backend.app.api.projects import router as projects_router
 from backend.app.api.tasks import router as tasks_router
 from backend.app.infrastructure.celery import CeleryTaskDispatcher
@@ -33,7 +34,8 @@ def create_app(*, adapter: PyCodeAdapter | None = None,
                database_url: str | None = None,
                task_dispatcher: BackgroundTaskDispatcher | None = None,
                project_operations: ProjectOperationLocks | None = None,
-               reconciliation_settings: QueuedReconciliationSettings | None = None) -> FastAPI:
+               reconciliation_settings: QueuedReconciliationSettings | None = None,
+               auth_settings: AuthSettings | None = None) -> FastAPI:
     """Use PostgreSQL by default; tests may explicitly inject memory persistence."""
     load_environment()
     database = DatabaseSessionManager(database_url) if persistence is None else None
@@ -61,6 +63,7 @@ def create_app(*, adapter: PyCodeAdapter | None = None,
     )
     app.state.persistence = persistence
     app.state.database = database
+    app.state.auth_settings = auth_settings
     app.state.realtime_redis = None
     app.state.realtime_redis_lock = asyncio.Lock()
     app.state.project_operations = (
@@ -81,6 +84,7 @@ def create_app(*, adapter: PyCodeAdapter | None = None,
     app.include_router(projects_router)
     app.include_router(tasks_router)
     app.include_router(agent_runs_router)
+    app.include_router(auth_router)
 
     @app.get("/health", tags=["health"])
     def health() -> dict[str, str]:

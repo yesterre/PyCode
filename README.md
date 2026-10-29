@@ -258,6 +258,13 @@ Nginx 配置在启动时解析 `backend` 地址。如果重建 Backend 后 Web U
 docker compose restart frontend
 ```
 
+## 后端用户认证（B02）
+
+后端提供 `/api/v1/auth/register`、`/login` 和 `/me`；配置 `.env.example` 中的
+`PYCODE_JWT_SECRET` 后，可通过 Swagger 完成注册、登录和 Bearer 身份验证。
+接口、密码策略、Token 配置和测试说明见 [后端认证说明](backend/AUTH.md)。
+当前 B02 只建立身份入口；现有资源的用户授权按 B03～B06 逐批接入。
+
 ## 🧰 技术栈
 
 | 层 | 技术 |

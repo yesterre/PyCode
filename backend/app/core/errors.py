@@ -30,6 +30,8 @@ ERROR_CATALOG: dict[str, ErrorSpec] = {
         "project_not_found": 404,
         "user_not_found": 404,
         "invalid_user": 422,
+        "unauthenticated": 401,
+        "account_conflict": 409,
         "invalid_repository": 422,
         "repository_forbidden": 403,
         "unsafe_repository": 403,
@@ -57,6 +59,7 @@ ERROR_CATALOG.update({
         "artifacts_unavailable": 409,
         "model_unavailable": 503,
         "database_unavailable": 503,
+        "auth_unavailable": 503,
         "task_queue_unavailable": 503,
         "realtime_trace_unavailable": 503,
     }.items()
