@@ -273,7 +273,9 @@ docker compose restart frontend
 Project 列表、创建、详情、索引提交、问答、影响分析、分析历史、Snapshot 和 Graph
 接口均需要此 Header，仅访问当前用户拥有的项目及其资源。
 旧的无归属项目需通过受控迁移明确归属。AgentRun 提交、Task/AgentRun 查询及 Trace
-历史接口也需要此 Header，并按关联项目校验归属；SSE 直播接口的用户授权尚未接入。
+历史接口及 SSE `/api/v1/agent-runs/{run_id}/events` 也需要此 Header，并按关联项目校验归属。
+SSE 使用支持自定义 Header 的客户端或 `fetch` 流，重连时发送 `Last-Event-ID`；
+原生 `EventSource` 无法附加 Bearer Header，现有前端需适配后才能订阅。不要将 Token 放入 URL。
 `POST /api/v1/tasks/health` 不再公开，health 探针任务仅由内部 Service/Worker 调用。
 
 ## 🧰 技术栈

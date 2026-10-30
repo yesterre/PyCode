@@ -274,11 +274,12 @@ def test_authenticated_submission_executes_with_trusted_worker_and_preserves_tra
     assert [event["sequence"] for event in events] == list(range(len(events)))
 
 
-def test_openapi_exposes_bearer_for_async_http_but_leaves_sse_to_b06(auth_context):
+def test_openapi_exposes_bearer_for_async_http_and_sse(auth_context):
     schema = auth_context.client.get("/openapi.json").json()
     for path, method in [("/api/v1/tasks/{task_id}", "get"), (ROOT, "post"),
                          (ROOT + "/{run_id}", "get"), (ROOT + "/{run_id}/trace", "get")]:
         operation = schema["paths"][path][method]
         assert operation["security"] == [{"BearerAuth": []}] and "401" in operation["responses"]
     assert "/api/v1/tasks/health" not in schema["paths"]
-    assert not schema["paths"][ROOT + "/{run_id}/events"]["get"].get("security")
+    assert schema["paths"][ROOT + "/{run_id}/events"]["get"]["security"] == [{"BearerAuth": []}]
+    assert "401" in schema["paths"][ROOT + "/{run_id}/events"]["get"]["responses"]

@@ -42,10 +42,10 @@ def _unit_of_work(request: Request) -> Iterator[Any]:
         session.close()
 
 
-def _snapshot(request: Request, run_id: UUID) -> tuple[Any, list[ApplicationTraceEvent]]:
+def _snapshot(request: Request, run_id: UUID, owner_id: UUID) -> tuple[Any, list[ApplicationTraceEvent]]:
     with _unit_of_work(request) as uow:
         with uow.transaction():
-            run = uow.agent_runs.get(run_id)
+            run = uow.agent_runs.get_owned(run_id, owner_id)
             events = []
             if run.status in TERMINAL:
                 events = [
@@ -105,14 +105,15 @@ def _live_event(value: dict[str, Any], expected: int) -> str | None:
     return f'id: {expected}\nevent: trace\ndata: {json.dumps(value, ensure_ascii=False, separators=(",", ":"))}\n\n'
 
 
-async def stream_agent_run_events(request: Request, run_id: UUID) -> StreamingResponse:
+async def stream_agent_run_events(request: Request, run_id: UUID, *, owner_id: UUID) -> StreamingResponse:
+    # Authorize before inspecting replay state or opening the Redis stream.
+    run, stored = _snapshot(request, run_id, owner_id)
     raw_id = request.headers.get("last-event-id")
     if raw_id is not None and (
         not raw_id.isascii() or not raw_id.isdecimal() or len(raw_id) > 19
     ):
         raise BackendError("invalid_last_event_id", "Last-Event-ID must be a non-negative integer.")
     last_sequence = int(raw_id) if raw_id is not None else None
-    run, stored = _snapshot(request, run_id)
     if run.status in TERMINAL and last_sequence is None:
         async def terminal_replay():
             for event in stored:
@@ -208,7 +209,7 @@ async def stream_agent_run_events(request: Request, run_id: UUID) -> StreamingRe
                         expected += 1
                         if value.get("event_type") in {"run_completed", "run_failed"}:
                             return
-                terminal_run, terminal_events = _snapshot(request, run_id)
+                terminal_run, terminal_events = _snapshot(request, run_id, owner_id)
                 if terminal_run.status in TERMINAL:
                     if expected > len(terminal_events) or len(delivered) != expected or any(
                         item["sequence"] != index or

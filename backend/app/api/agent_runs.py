@@ -57,6 +57,6 @@ def get_agent_run_trace(run_id: UUID, user: CurrentUser, service: Service):
     )
 
 
-@router.get("/{run_id}/events")
-async def get_agent_run_events(run_id: UUID, request: Request):
-    return await stream_agent_run_events(request, run_id)
+@router.get("/{run_id}/events", responses={401: {"model": ErrorResponse}})
+async def get_agent_run_events(run_id: UUID, request: Request, user: CurrentUser):
+    return await stream_agent_run_events(request, run_id, owner_id=user.id)
