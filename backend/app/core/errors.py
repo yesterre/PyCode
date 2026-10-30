@@ -56,6 +56,7 @@ ERROR_CATALOG.update({
         "project_busy": 409,
         "project_lock_unavailable": 503,
         "project_not_ready": 409,
+        "project_archived": 409,
         "artifacts_unavailable": 409,
         "model_unavailable": 503,
         "database_unavailable": 503,

@@ -71,10 +71,17 @@ class ProjectService:
         with self.uow.transaction():
             return self._with_summary(self.uow.projects.get_owned(project_id, owner_id))
 
-    def list_owned_page(self, owner_id: UUID, limit: int, offset: int) -> tuple[list[Project], bool]:
+    def list_owned_page(
+        self, owner_id: UUID, limit: int, offset: int, *, archived: bool | None = False,
+    ) -> tuple[list[Project], bool]:
         with self.uow.transaction():
-            page = self.uow.projects.list_owned_page(owner_id, limit + 1, offset)
+            page = self.uow.projects.list_owned_page(owner_id, limit + 1, offset, archived=archived)
             return [self._with_summary(project) for project in page[:limit]], len(page) > limit
+
+    def set_archived(self, project_id: UUID, owner_id: UUID, *, archived: bool) -> Project:
+        with self.uow.transaction():
+            project = self.uow.projects.set_archived(project_id, owner_id, archived=archived)
+            return self._with_summary(project)
 
     def list_snapshots(self, project_id: UUID, limit: int, *, owner_id: UUID) -> list[ProjectSnapshot]:
         with self.uow.transaction():
@@ -387,10 +394,11 @@ class ProjectService:
         self, project_id: UUID, text: str, model: str | None, *, impact: bool, owner_id: UUID,
     ) -> ProjectAnalysis:
         with self.uow.transaction():
-            self.uow.projects.get_owned(project_id, owner_id)
+            self.uow.projects.get_owned(project_id, owner_id).ensure_not_archived()
         with self.operations.operation(project_id) as project_lock:
             with self.uow.transaction():
-                project = self.uow.projects.get_owned(project_id, owner_id)
+                project = self.uow.projects.get_owned(project_id, owner_id, for_update=True)
+                project.ensure_not_archived()
                 if project.current_snapshot_id is None:
                     raise BackendError("project_not_ready", "Build the project index before analysis.")
                 snapshot = self.uow.snapshots.get_for_project(project_id, project.current_snapshot_id)

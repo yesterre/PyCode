@@ -105,6 +105,11 @@ class Project:
     index_summary: IndexSummary | None = None
     last_error: str | None = None
     owner_id: UUID | None = None
+    archived_at: datetime | None = None
+
+    def ensure_not_archived(self) -> None:
+        if self.archived_at is not None:
+            raise BackendError("project_archived", "Restore the project before starting new work.")
 
 
 @dataclass(frozen=True)

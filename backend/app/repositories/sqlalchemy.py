@@ -98,8 +98,10 @@ class SqlAlchemyProjectRepository:
             raise BackendError("database_conflict", "Legacy ownership assignment is not allowed.")
         return _project(record)
 
-    def get(self, project_id: UUID) -> Project:
-        record = self.session.get(ProjectORM, project_id)
+    def get(self, project_id: UUID, *, for_update: bool = False) -> Project:
+        record = self.session.get(
+            ProjectORM, project_id, with_for_update=for_update, populate_existing=for_update,
+        )
         if record is None:
             raise BackendError("project_not_found", "Project does not exist.")
         return _project(record)
@@ -110,25 +112,46 @@ class SqlAlchemyProjectRepository:
                      .limit(limit).offset(offset))
         return [_project(record) for record in self.session.scalars(statement)]
 
-    def get_owned(self, project_id: UUID, owner_id: UUID) -> Project:
+    def get_owned(self, project_id: UUID, owner_id: UUID, *, for_update: bool = False) -> Project:
         if owner_id is None:
             raise BackendError("project_not_found", "Project does not exist.")
-        record = self.session.scalars(select(ProjectORM).where(
+        statement = select(ProjectORM).where(
             ProjectORM.id == project_id, ProjectORM.owner_id == owner_id,
-        )).one_or_none()
+        )
+        if for_update:
+            statement = statement.with_for_update().execution_options(populate_existing=True)
+        record = self.session.scalars(statement).one_or_none()
         if record is None:
             raise BackendError("project_not_found", "Project does not exist.")
         return _project(record)
 
-    def list_owned_page(self, owner_id: UUID, limit: int, offset: int) -> list[Project]:
+    def list_owned_page(
+        self, owner_id: UUID, limit: int, offset: int, *, archived: bool | None = False,
+    ) -> list[Project]:
         if owner_id is None:
             return []
+        statement = select(ProjectORM).where(ProjectORM.owner_id == owner_id)
+        if archived is not None:
+            statement = statement.where(
+                ProjectORM.archived_at.is_not(None) if archived else ProjectORM.archived_at.is_(None),
+            )
         statement = (
-            select(ProjectORM).where(ProjectORM.owner_id == owner_id)
+            statement
             .order_by(ProjectORM.updated_at.desc(), ProjectORM.id.desc())
             .limit(limit).offset(offset)
         )
         return [_project(record) for record in self.session.scalars(statement)]
+
+    def set_archived(self, project_id: UUID, owner_id: UUID, *, archived: bool) -> Project:
+        project = self.get_owned(project_id, owner_id, for_update=True)
+        if (project.archived_at is not None) == archived:
+            return project
+        record = self.session.get(ProjectORM, project_id)
+        now = _now()
+        record.archived_at = now if archived else None
+        record.updated_at = now
+        self.session.flush()
+        return _project(record)
 
     def set_status(
         self, project_id: UUID, status: ProjectStatus, *,
@@ -1076,6 +1099,7 @@ def _project(record: ProjectORM) -> Project:
         workspace_path=record.workspace_path, last_error=record.last_error,
         current_snapshot_id=record.current_snapshot_id,
         owner_id=record.owner_id,
+        archived_at=record.archived_at,
     )
 
 

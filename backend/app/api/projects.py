@@ -30,8 +30,10 @@ router = APIRouter(
 
 @router.get("", response_model=ProjectListResponse, responses={401: {"model": ErrorResponse}})
 def list_projects(user: CurrentUser, service: Service, limit: Annotated[int, Query(ge=1, le=100)] = 50,
-                  offset: Annotated[int, Query(ge=0)] = 0):
-    projects, has_more = service.list_owned_page(user.id, limit, offset)
+                  offset: Annotated[int, Query(ge=0)] = 0,
+                  archive_status: Literal["active", "archived", "all"] = "active"):
+    archived = {"active": False, "archived": True, "all": None}[archive_status]
+    projects, has_more = service.list_owned_page(user.id, limit, offset, archived=archived)
     return ProjectListResponse(projects=[ProjectResponse.model_validate(p) for p in projects],
                                has_more=has_more)
 
@@ -44,6 +46,16 @@ def create_project(body: CreateProjectRequest, user: CurrentUser, service: Servi
 @router.get("/{project_id}", response_model=ProjectResponse, responses={401: {"model": ErrorResponse}})
 def get_project(project_id: UUID, user: CurrentUser, service: Service):
     return service.get_owned(project_id, user.id)
+
+
+@router.post("/{project_id}/archive", response_model=ProjectResponse)
+def archive_project(project_id: UUID, user: CurrentUser, service: Service):
+    return service.set_archived(project_id, user.id, archived=True)
+
+
+@router.post("/{project_id}/restore", response_model=ProjectResponse)
+def restore_project(project_id: UUID, user: CurrentUser, service: Service):
+    return service.set_archived(project_id, user.id, archived=False)
 
 
 @router.get("/{project_id}/analysis-history", response_model=AnalysisHistoryResponse)

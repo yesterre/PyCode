@@ -112,7 +112,9 @@ def test_legacy_upgrade_preserves_all_records_and_never_assigns_first_user(migra
         uow = SqlAlchemyUnitOfWork(session)
         with uow.transaction():
             user = uow.users.create("first-user", PASSWORD_HASH)
-            assert uow.projects.get(ids["project"]).owner_id is None
+            # Test the B01 schema itself; current Project ORM also requires B08.
+            assert session.execute(text("SELECT owner_id FROM projects WHERE id=:id"),
+                                   {"id": ids["project"]}).scalar_one() is None
         with session.begin():
             # NULL ownership cannot match a user's owner predicate.
             assert session.execute(text(
@@ -168,7 +170,9 @@ def test_downgrade_refuses_to_erase_user_or_ownership_data(migration_database, a
         with uow.transaction():
             user = uow.users.create("alice", PASSWORD_HASH)
             if assign_owner:
-                uow.projects.assign_legacy_owner(ids["project"], user.id)
+                # Keep this historical downgrade test independent of later columns.
+                session.execute(text("UPDATE projects SET owner_id=:owner WHERE id=:id"),
+                                {"owner": user.id, "id": ids["project"]})
     before = _records(engine)
     with pytest.raises(RuntimeError, match="Refusing to remove"):
         command.downgrade(config, PREVIOUS)

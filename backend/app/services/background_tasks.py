@@ -89,9 +89,9 @@ class BackgroundTaskService:
         )
         with self.unit_of_work.transaction():
             if owner_id is None:
-                self.unit_of_work.projects.get(project_id)
+                project = self.unit_of_work.projects.get(project_id, for_update=True)
             else:
-                self.unit_of_work.projects.get_owned(project_id, owner_id)
+                project = self.unit_of_work.projects.get_owned(project_id, owner_id, for_update=True)
             creation = self.unit_of_work.background_tasks.create_submission(
                 REPOSITORY_INDEX_TASK_TYPE,
                 project_id=project_id,
@@ -99,6 +99,9 @@ class BackgroundTaskService:
                 request_fingerprint=fingerprint,
                 next_enqueue_attempt_at=self.initial_enqueue_due_at(),
             )
+            if creation.created:
+                # Replays remain readable; a new archived submission rolls back.
+                project.ensure_not_archived()
         if creation.created:
             return self._enqueue(
                 creation.task, self.dispatcher.enqueue_repository_index,

@@ -49,6 +49,7 @@ class ProjectResponse(BaseModel):
     current_snapshot_id: UUID | None
     index_summary: IndexSummaryResponse | None
     last_error: str | None
+    archived_at: datetime | None
 
 
 class ProjectListResponse(BaseModel):

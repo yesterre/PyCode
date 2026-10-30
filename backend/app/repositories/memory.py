@@ -92,7 +92,8 @@ class InMemoryProjectRepository:
         self.state.projects[project_id] = updated
         return updated
 
-    def get(self, project_id: UUID) -> Project:
+    def get(self, project_id: UUID, *, for_update: bool = False) -> Project:
+        # The UnitOfWork transaction holds the shared persistence RLock.
         try:
             return self.state.projects[project_id]
         except KeyError:
@@ -103,20 +104,32 @@ class InMemoryProjectRepository:
                          key=lambda project: (project.updated_at, str(project.id)), reverse=True)
         return ordered[offset:offset + limit]
 
-    def get_owned(self, project_id: UUID, owner_id: UUID) -> Project:
+    def get_owned(self, project_id: UUID, owner_id: UUID, *, for_update: bool = False) -> Project:
         project = self.state.projects.get(project_id)
         if owner_id is None or project is None or project.owner_id != owner_id:
             raise BackendError("project_not_found", "Project does not exist.")
         return project
 
-    def list_owned_page(self, owner_id: UUID, limit: int, offset: int) -> list[Project]:
+    def list_owned_page(
+        self, owner_id: UUID, limit: int, offset: int, *, archived: bool | None = False,
+    ) -> list[Project]:
         if owner_id is None:
             return []
         ordered = sorted(
-            (project for project in self.state.projects.values() if project.owner_id == owner_id),
+            (project for project in self.state.projects.values() if project.owner_id == owner_id
+             and (archived is None or (project.archived_at is not None) == archived)),
             key=lambda project: (project.updated_at, str(project.id)), reverse=True,
         )
         return ordered[offset:offset + limit]
+
+    def set_archived(self, project_id: UUID, owner_id: UUID, *, archived: bool) -> Project:
+        project = self.get_owned(project_id, owner_id, for_update=True)
+        if (project.archived_at is not None) == archived:
+            return project
+        now = _now()
+        updated = replace(project, archived_at=now if archived else None, updated_at=now)
+        self.state.projects[project_id] = updated
+        return updated
 
     def set_status(
         self, project_id: UUID, status: ProjectStatus, *,

@@ -72,7 +72,7 @@ class AgentRunService:
             if idempotency_key is not None else None
         )
         with self.unit_of_work.transaction():
-            project = self.unit_of_work.projects.get_owned(project_id, owner_id)
+            project = self.unit_of_work.projects.get_owned(project_id, owner_id, for_update=True)
             creation = self.unit_of_work.background_tasks.create_submission(
                 AGENT_RUN_TASK_TYPE,
                 project_id=project_id,
@@ -101,6 +101,7 @@ class AgentRunService:
                 ):
                     raise self._consistency_error()
                 return AgentRunSubmission(run, background_task)
+            project.ensure_not_archived()
             if project.current_snapshot_id is None:
                 raise BackendError(
                     "project_not_ready", "Build the project index before analysis.",
