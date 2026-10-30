@@ -258,12 +258,20 @@ Nginx 配置在启动时解析 `backend` 地址。如果重建 Backend 后 Web U
 docker compose restart frontend
 ```
 
-## 后端用户认证（B02）
+## 后端用户认证
 
-后端提供 `/api/v1/auth/register`、`/login` 和 `/me`；配置 `.env.example` 中的
-`PYCODE_JWT_SECRET` 后，可通过 Swagger 完成注册、登录和 Bearer 身份验证。
-接口、密码策略、Token 配置和测试说明见 [后端认证说明](backend/AUTH.md)。
-当前 B02 只建立身份入口；现有资源的用户授权按 B03～B06 逐批接入。
+后端提供 `POST /api/v1/auth/register`、`POST /api/v1/auth/login` 和
+`GET /api/v1/auth/me`。注册和登录使用 JSON 字段 `account_name`、`password`；
+注册密码长度为 15～128 个字符，不自动去除首尾空格。
+
+按 [`.env.example`](.env.example) 配置 `PYCODE_JWT_SECRET`，使用至少 32 字节的随机密钥。
+`PYCODE_JWT_ALGORITHM` 仅支持 `HS256`；`PYCODE_ACCESS_TOKEN_TTL_SECONDS` 默认 900 秒，
+允许范围为 1～3600 秒。缺少有效密钥时，认证入口返回 503。
+
+可通过 Swagger 完成注册和登录，将返回的 `access_token` 填入 Authorize，
+再调用 `/api/v1/auth/me`；API 客户端使用 `Authorization: Bearer <access_token>` Header。
+Project 列表、创建和详情接口也需要此 Header，仅访问当前用户拥有的项目。
+旧的无归属项目需通过受控迁移明确归属；派生资源、任务和 Trace 接口的用户授权尚未接入。
 
 ## 🧰 技术栈
 

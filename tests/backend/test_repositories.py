@@ -9,7 +9,6 @@ from threading import Event
 from uuid import UUID
 
 import pytest
-from fastapi.testclient import TestClient
 
 from backend.app.core.errors import BackendError
 from backend.app.infrastructure.repositories import (
@@ -85,9 +84,10 @@ def register(client, branch=None):
 
 
 def test_real_git_http_chain_fetches_new_commit_and_preserves_snapshots(
+    authenticated_client_factory,
     git_app, offline_git, remote, git_index_worker,
 ):
-    with TestClient(git_app) as client:
+    with authenticated_client_factory(git_app) as client:
         url = register(client)
         assert offline_git == [] and not git_app.state.workspace.root.exists()
         response = git_index_worker.run(client, url)
@@ -126,8 +126,8 @@ def test_real_git_http_chain_fetches_new_commit_and_preserves_snapshots(
         assert not (other_root / "local.py").exists()
 
 
-def test_explicit_branch_and_missing_branch_retry(git_app, remote, git_index_worker):
-    with TestClient(git_app) as client:
+def test_explicit_branch_and_missing_branch_retry(authenticated_client_factory, git_app, remote, git_index_worker):
+    with authenticated_client_factory(git_app) as client:
         url = register(client, "feature/demo")
         response = git_index_worker.submit(client, url)
         with pytest.raises(BackendError) as failure:
@@ -150,6 +150,7 @@ def test_explicit_branch_and_missing_branch_retry(git_app, remote, git_index_wor
     ("120000", "outside.py"), ("160000", "nested"), ("100644", ".pclens/index.json"),
 ])
 def test_git_tree_rejects_symlink_submodule_and_remote_artifacts(
+    authenticated_client_factory,
     git_app, remote, mode, name, offline_git, git_index_worker,
 ):
     # Construct tree metadata directly: works even without OS symlink privileges.
@@ -157,7 +158,7 @@ def test_git_tree_rejects_symlink_submodule_and_remote_artifacts(
            git(remote, "hash-object", "-w", "--stdin", input=b"../../outside.py")).decode().strip()
     git(remote, "update-index", "--add", "--cacheinfo", f"{mode},{oid},{name}")
     git(remote, "commit", "-m", "unsafe tree")
-    with TestClient(git_app) as client:
+    with authenticated_client_factory(git_app) as client:
         url = register(client)
         response = git_index_worker.submit(client, url)
         with pytest.raises(BackendError) as failure:
@@ -170,6 +171,7 @@ def test_git_tree_rejects_symlink_submodule_and_remote_artifacts(
 
 
 def test_repository_programs_and_inherited_git_commands_never_execute(
+    authenticated_client_factory,
     git_app, remote, tmp_path, monkeypatch, offline_git, git_index_worker,
 ):
     marker = tmp_path / "EXECUTED"
@@ -186,7 +188,7 @@ def test_repository_programs_and_inherited_git_commands_never_execute(
     monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", "definitely-not-a-real-command")
-    with TestClient(git_app) as client:
+    with authenticated_client_factory(git_app) as client:
         url = register(client)
         response = git_index_worker.run(client, url)
         assert response.status_code == 200, response.text
@@ -236,6 +238,7 @@ def test_invalid_branch_is_rejected_before_clone(client, branch):
     (subprocess.CalledProcessError(128, ["git"], stderr=b"private"), 502, "repository_failed"),
 ])
 def test_git_errors_are_safe_and_staging_is_removed(
+    authenticated_client_factory,
     tmp_path, adapter, monkeypatch, failure, status, code,
     index_worker_factory, task_dispatcher_factory,
 ):
@@ -248,7 +251,7 @@ def test_git_errors_are_safe_and_staging_is_removed(
         persistence=InMemoryPersistence(), task_dispatcher=task_dispatcher_factory(),
     )
     worker = index_worker_factory(app)
-    with TestClient(app) as client:
+    with authenticated_client_factory(app) as client:
         url = register(client)
         response = worker.submit(client, url)
         with pytest.raises(BackendError) as raised:
@@ -399,14 +402,14 @@ def test_missing_ready_workspace_requires_reindex(client, ready_url, repository)
     assert client.get(ready_url).json()["status"] == "failed"
 
 
-def test_configurable_workspace_and_host_policy(tmp_path, monkeypatch):
+def test_configurable_workspace_and_host_policy(authenticated_client_factory, tmp_path, monkeypatch):
     monkeypatch.setenv("PYCODE_WORKSPACE_ROOT", str(tmp_path / "configured"))
     monkeypatch.setenv("PYCODE_GIT_ALLOWED_HOSTS", "gitlab.com")
     monkeypatch.setenv("PYCODE_GIT_TIMEOUT_SECONDS", "30")
     app = create_app(persistence=InMemoryPersistence())
     assert app.state.workspace.root == tmp_path / "configured"
     assert app.state.workspace.source.timeout == 30
-    with TestClient(app) as client:
+    with authenticated_client_factory(app) as client:
         assert client.post("/api/v1/projects", json={"name": "x", "repo_url": URL}).status_code == 403
         assert client.post("/api/v1/projects", json={"name": "x", "repo_url": "https://gitlab.com/a/b"}).status_code == 201
     assert not app.state.workspace.root.exists()

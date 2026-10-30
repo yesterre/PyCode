@@ -1,4 +1,5 @@
 from pathlib import Path
+from contextlib import contextmanager
 import shutil
 from uuid import UUID
 
@@ -15,6 +16,7 @@ from backend.app.repositories import InMemoryUnitOfWork
 from backend.app.runtime import build_agent_run_service, build_project_service
 from backend.app.services.agent_runs import AgentRunService
 from backend.app.services.background_tasks import BackgroundTaskService
+from backend.app.config import AuthSettings
 
 
 REPO_URL = "https://github.com/example/demo.git"
@@ -173,8 +175,33 @@ def application(adapter, tmp_path, source_repository, persistence):
 
 
 @pytest.fixture
-def client(application):
-    with TestClient(application) as client:
+def authenticate_client():
+    """Authenticate legacy regression clients through the real B02 HTTP flow."""
+    def authenticate(client):
+        if client.app.state.auth_settings is None:
+            client.app.state.auth_settings = AuthSettings("backend-regression-test-signing-key-" * 2)
+        credentials = {"account_name": "backend-test-user", "password": "backend regression test password"}
+        registered = client.post("/api/v1/auth/register", json=credentials)
+        assert registered.status_code in {201, 409}, registered.text
+        logged_in = client.post("/api/v1/auth/login", json=credentials)
+        assert logged_in.status_code == 200, logged_in.text
+        client.headers["Authorization"] = "Bearer " + logged_in.json()["access_token"]
+    return authenticate
+
+
+@pytest.fixture
+def authenticated_client_factory(authenticate_client):
+    @contextmanager
+    def factory(app, **kwargs):
+        with TestClient(app, **kwargs) as client:
+            authenticate_client(client)
+            yield client
+    return factory
+
+
+@pytest.fixture
+def client(application, authenticated_client_factory):
+    with authenticated_client_factory(application) as client:
         yield client
 
 

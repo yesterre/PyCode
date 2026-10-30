@@ -4,7 +4,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from backend.app.api.dependencies import get_background_task_service, get_project_service
+from backend.app.api.dependencies import get_background_task_service, get_current_user, get_project_service
 from backend.app.api.idempotency import IdempotencyKeyHeader
 from backend.app.schemas.projects import (
     AnalysisHistoryItem, AnalysisHistoryResponse, AnalysisResponse, AskRequest,
@@ -16,9 +16,11 @@ from backend.app.schemas.graph import GraphResponse
 from backend.app.schemas.tasks import RepositoryIndexTaskResponse
 from backend.app.services.background_tasks import BackgroundTaskService
 from backend.app.services.projects import ProjectService
+from backend.app.core.models import User
 
 
 Service = Annotated[ProjectService, Depends(get_project_service)]
+CurrentUser = Annotated[User, Depends(get_current_user)]
 TaskService = Annotated[BackgroundTaskService, Depends(get_background_task_service)]
 router = APIRouter(
     prefix="/api/v1/projects", tags=["projects"],
@@ -26,22 +28,22 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=ProjectListResponse)
-def list_projects(service: Service, limit: Annotated[int, Query(ge=1, le=100)] = 50,
+@router.get("", response_model=ProjectListResponse, responses={401: {"model": ErrorResponse}})
+def list_projects(user: CurrentUser, service: Service, limit: Annotated[int, Query(ge=1, le=100)] = 50,
                   offset: Annotated[int, Query(ge=0)] = 0):
-    projects, has_more = service.list_page(limit, offset)
+    projects, has_more = service.list_owned_page(user.id, limit, offset)
     return ProjectListResponse(projects=[ProjectResponse.model_validate(p) for p in projects],
                                has_more=has_more)
 
 
-@router.post("", status_code=201, response_model=ProjectResponse)
-def create_project(body: CreateProjectRequest, service: Service):
-    return service.create(body.name, body.repo_url, body.branch)
+@router.post("", status_code=201, response_model=ProjectResponse, responses={401: {"model": ErrorResponse}})
+def create_project(body: CreateProjectRequest, user: CurrentUser, service: Service):
+    return service.create_owned(user.id, body.name, body.repo_url, body.branch)
 
 
-@router.get("/{project_id}", response_model=ProjectResponse)
-def get_project(project_id: UUID, service: Service):
-    return service.get(project_id)
+@router.get("/{project_id}", response_model=ProjectResponse, responses={401: {"model": ErrorResponse}})
+def get_project(project_id: UUID, user: CurrentUser, service: Service):
+    return service.get_owned(project_id, user.id)
 
 
 @router.get("/{project_id}/analysis-history", response_model=AnalysisHistoryResponse)

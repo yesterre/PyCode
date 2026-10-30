@@ -57,6 +57,25 @@ class ProjectService:
             page = self.uow.projects.list_page(limit + 1, offset)
             return [self._with_summary(project) for project in page[:limit]], len(page) > limit
 
+    def create_owned(
+        self, owner_id: UUID, name: str, repo_url: str, branch: str | None = None,
+    ) -> Project:
+        if owner_id is None:
+            raise BackendError("unauthenticated", "Authentication failed.")
+        self.workspace.validate_source(repo_url, branch)
+        with self.uow.transaction():
+            return self.uow.projects.create(name, repo_url, branch, owner_id=owner_id)
+
+    def get_owned(self, project_id: UUID, owner_id: UUID) -> Project:
+        """User-facing ownership boundary; authorize before reading derived metadata."""
+        with self.uow.transaction():
+            return self._with_summary(self.uow.projects.get_owned(project_id, owner_id))
+
+    def list_owned_page(self, owner_id: UUID, limit: int, offset: int) -> tuple[list[Project], bool]:
+        with self.uow.transaction():
+            page = self.uow.projects.list_owned_page(owner_id, limit + 1, offset)
+            return [self._with_summary(project) for project in page[:limit]], len(page) > limit
+
     def list_snapshots(self, project_id: UUID, limit: int) -> list[ProjectSnapshot]:
         with self.uow.transaction():
             self.uow.projects.get(project_id)

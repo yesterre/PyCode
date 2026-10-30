@@ -1213,6 +1213,7 @@ class RestartCopySource(GitRepositorySource):
 
 
 def test_app_restart_recovers_project_snapshot_workspace_and_runs(
+    authenticated_client_factory,
     postgresql_engine, tmp_path, source_repository, adapter,
     task_dispatcher_factory,
 ):
@@ -1223,7 +1224,7 @@ def test_app_restart_recovers_project_snapshot_workspace_and_runs(
         adapter=adapter, workspace=first_workspace, database_url=database_url,
         task_dispatcher=task_dispatcher_factory(),
     )
-    with TestClient(first_app) as client:
+    with authenticated_client_factory(first_app) as client:
         created = client.post(
             "/api/v1/projects",
             json={"name": "Persistent", "repo_url": "https://github.com/example/demo.git"},
@@ -1244,7 +1245,7 @@ def test_app_restart_recovers_project_snapshot_workspace_and_runs(
         adapter=adapter, workspace=second_workspace, database_url=database_url,
         task_dispatcher=task_dispatcher_factory(),
     )
-    with TestClient(second_app) as client:
+    with authenticated_client_factory(second_app) as client:
         restored = client.get(f"/api/v1/projects/{project_id}")
         assert restored.status_code == 200
         assert restored.json()["index_summary"] == indexed_project.json()["index_summary"]

@@ -103,6 +103,21 @@ class InMemoryProjectRepository:
                          key=lambda project: (project.updated_at, str(project.id)), reverse=True)
         return ordered[offset:offset + limit]
 
+    def get_owned(self, project_id: UUID, owner_id: UUID) -> Project:
+        project = self.state.projects.get(project_id)
+        if owner_id is None or project is None or project.owner_id != owner_id:
+            raise BackendError("project_not_found", "Project does not exist.")
+        return project
+
+    def list_owned_page(self, owner_id: UUID, limit: int, offset: int) -> list[Project]:
+        if owner_id is None:
+            return []
+        ordered = sorted(
+            (project for project in self.state.projects.values() if project.owner_id == owner_id),
+            key=lambda project: (project.updated_at, str(project.id)), reverse=True,
+        )
+        return ordered[offset:offset + limit]
+
     def set_status(
         self, project_id: UUID, status: ProjectStatus, *,
         workspace_path: str | None = None, error: str | None = None,

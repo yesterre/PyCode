@@ -3,7 +3,6 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
-from fastapi.testclient import TestClient
 
 from backend.app.main import create_app
 from pycode.llm_client import LLMError
@@ -72,13 +71,14 @@ def test_graph_failure_marks_failed_and_releases_lock(
 
 
 def test_unexpected_index_error_is_logged_and_sanitized(
+    authenticated_client_factory,
     application, project_url, adapter, monkeypatch, caplog, index_worker,
 ):
     def crash(root, *args, **kwargs):
         raise RuntimeError("internal implementation detail")
 
     monkeypatch.setattr(adapter.engine, "index", crash)
-    with TestClient(application, raise_server_exceptions=False) as client:
+    with authenticated_client_factory(application, raise_server_exceptions=False) as client:
         with caplog.at_level(logging.ERROR, logger="pycode.backend"):
             response = index_worker.submit(client, project_url)
             with pytest.raises(RuntimeError):

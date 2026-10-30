@@ -234,7 +234,7 @@ def test_concurrent_registration_has_one_winner(auth_context):
     assert login(auth_context).status_code == 200
 
 
-def test_swagger_declares_bearer_only_for_current_user(auth_context):
+def test_swagger_declares_bearer_for_current_user_and_project_roots(auth_context):
     schema = auth_context.client.get("/openapi.json").json()
     assert schema["components"]["securitySchemes"]["BearerAuth"] == {
         "type": "http", "scheme": "bearer", "bearerFormat": "JWT",
@@ -242,4 +242,9 @@ def test_swagger_declares_bearer_only_for_current_user(auth_context):
     assert schema["paths"]["/api/v1/auth/me"]["get"]["security"] == [{"BearerAuth": []}]
     assert not schema["paths"]["/api/v1/auth/register"]["post"].get("security")
     assert not schema["paths"]["/api/v1/auth/login"]["post"].get("security")
-    assert not schema["paths"]["/api/v1/projects"]["get"].get("security")
+    for path, method in [
+        ("/api/v1/projects", "get"), ("/api/v1/projects", "post"),
+        ("/api/v1/projects/{project_id}", "get"),
+    ]:
+        assert schema["paths"][path][method]["security"] == [{"BearerAuth": []}]
+        assert "401" in schema["paths"][path][method]["responses"]

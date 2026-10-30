@@ -110,6 +110,26 @@ class SqlAlchemyProjectRepository:
                      .limit(limit).offset(offset))
         return [_project(record) for record in self.session.scalars(statement)]
 
+    def get_owned(self, project_id: UUID, owner_id: UUID) -> Project:
+        if owner_id is None:
+            raise BackendError("project_not_found", "Project does not exist.")
+        record = self.session.scalars(select(ProjectORM).where(
+            ProjectORM.id == project_id, ProjectORM.owner_id == owner_id,
+        )).one_or_none()
+        if record is None:
+            raise BackendError("project_not_found", "Project does not exist.")
+        return _project(record)
+
+    def list_owned_page(self, owner_id: UUID, limit: int, offset: int) -> list[Project]:
+        if owner_id is None:
+            return []
+        statement = (
+            select(ProjectORM).where(ProjectORM.owner_id == owner_id)
+            .order_by(ProjectORM.updated_at.desc(), ProjectORM.id.desc())
+            .limit(limit).offset(offset)
+        )
+        return [_project(record) for record in self.session.scalars(statement)]
+
     def set_status(
         self, project_id: UUID, status: ProjectStatus, *,
         workspace_path: str | None = None, error: str | None = None,

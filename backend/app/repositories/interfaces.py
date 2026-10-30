@@ -36,6 +36,10 @@ class ProjectRepository(Protocol):
 
     def list_page(self, limit: int, offset: int) -> list[Project]: ...
 
+    def get_owned(self, project_id: UUID, owner_id: UUID) -> Project: ...
+
+    def list_owned_page(self, owner_id: UUID, limit: int, offset: int) -> list[Project]: ...
+
     def set_status(
         self, project_id: UUID, status: ProjectStatus, *,
         workspace_path: str | None = None, error: str | None = None,

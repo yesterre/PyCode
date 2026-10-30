@@ -100,6 +100,7 @@ def register(client: TestClient) -> tuple[str, UUID]:
 
 
 def test_bare_remote_history_failure_fallback_idempotency_and_restart(
+    authenticated_client_factory,
     tmp_path, bare_remote, bare_transport, adapter, monkeypatch,
     index_worker_factory, task_dispatcher_factory,
 ):
@@ -112,7 +113,7 @@ def test_bare_remote_history_failure_fallback_idempotency_and_restart(
         task_dispatcher=task_dispatcher_factory(),
     )
     worker = index_worker_factory(app)
-    with TestClient(app) as client:
+    with authenticated_client_factory(app) as client:
         url, project_id = register(client)
         first = worker.run(client, url)
         assert first.status_code == 200, first.text
@@ -201,7 +202,7 @@ def test_bare_remote_history_failure_fallback_idempotency_and_restart(
         workspace=RepositoryWorkspace(workspace_root),
         persistence=state,
     )
-    with TestClient(restarted) as client:
+    with authenticated_client_factory(restarted) as client:
         restored = client.get(url)
         assert restored.status_code == 200
         assert restored.json()["index_summary"]["file_count"] == 2
@@ -234,6 +235,7 @@ def test_existing_shallow_workspace_is_unshallowed_before_refresh(
 
 
 def test_head_change_after_build_prevents_artifact_publish_and_ready(
+    authenticated_client_factory,
     tmp_path, bare_remote, bare_transport, adapter, monkeypatch,
     index_worker_factory, task_dispatcher_factory,
 ):
@@ -256,7 +258,7 @@ def test_head_change_after_build_prevents_artifact_publish_and_ready(
         return summary
 
     monkeypatch.setattr(adapter, "index", move_head_after_build)
-    with TestClient(app) as client:
+    with authenticated_client_factory(app) as client:
         url, project_id = register(client)
         response = worker.submit(client, url)
         with pytest.raises(BackendError) as failure:
@@ -271,6 +273,7 @@ def test_head_change_after_build_prevents_artifact_publish_and_ready(
 
 
 def test_first_attempt_a_b_c_refreshes_keep_git_snapshot_and_artifacts_aligned(
+    authenticated_client_factory,
     tmp_path, bare_remote, bare_transport, adapter,
     index_worker_factory, task_dispatcher_factory,
 ):
@@ -282,7 +285,7 @@ def test_first_attempt_a_b_c_refreshes_keep_git_snapshot_and_artifacts_aligned(
         task_dispatcher=task_dispatcher_factory(),
     )
     worker = index_worker_factory(app)
-    with TestClient(app) as client:
+    with authenticated_client_factory(app) as client:
         url, project_id = register(client)
         expected_commits = [bare_remote.first_commit]
         repository = app.state.workspace.path_for(project_id)

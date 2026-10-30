@@ -6,6 +6,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.main import create_app
+from backend.app.auth import TokenCodec
+from backend.app.config import AuthSettings
 from backend.app.core.errors import BackendError
 from backend.app.core.models import IndexSummary, ProjectStatus
 from backend.app.repositories import InMemoryPersistence, InMemoryUnitOfWork
@@ -35,10 +37,13 @@ def test_health_and_openapi_without_model_or_project():
 
 def test_production_project_api_requires_database_configuration(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "")
-    with TestClient(create_app()) as client:
+    settings = AuthSettings("project-database-unavailable-test-key-" * 2)
+    token = TokenCodec(settings).issue(uuid4()).access_token
+    with TestClient(create_app(auth_settings=settings)) as client:
         response = client.post(
             "/api/v1/projects",
             json={"name": "Example", "repo_url": "https://github.com/example/demo.git"},
+            headers={"Authorization": "Bearer " + token},
         )
     assert response.status_code == 503
     assert response.json()["detail"]["code"] == "database_unavailable"
@@ -264,8 +269,8 @@ def test_impact_normalizes_separators(client, ready_url, repository):
     assert "service.py" in response.json()["evidence"]
 
 
-def test_new_app_has_no_registration_and_keeps_artifacts(client, ready_url, repository, adapter, tmp_path):
-    with TestClient(create_app(adapter=adapter, persistence=InMemoryPersistence())) as other:
+def test_new_app_has_no_registration_and_keeps_artifacts(authenticated_client_factory, client, ready_url, repository, adapter, tmp_path):
+    with authenticated_client_factory(create_app(adapter=adapter, persistence=InMemoryPersistence())) as other:
         assert other.get(ready_url).status_code == 404
         response = other.post("/api/v1/projects", json={"name": "New", "repo_url": "https://github.com/example/demo.git"})
         assert response.status_code == 201 and response.json()["status"] == "created"
