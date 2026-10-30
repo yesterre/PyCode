@@ -296,12 +296,10 @@ def test_owned_unready_snapshot_and_analysis_failure_keep_existing_behavior(reso
         assert sorted(str(run.status) for run in uow.agent_runs.list_for_project(r.own)) == ["completed", "failed"]
 
 
-def test_openapi_protects_every_project_route_without_expanding_to_later_batches(auth_context):
+def test_openapi_protects_every_project_route(auth_context):
     schema = auth_context.client.get("/openapi.json").json()
     for path, methods in schema["paths"].items():
         if path.startswith("/api/v1/projects"):
             for operation in methods.values():
                 assert operation["security"] == [{"BearerAuth": []}]
                 assert "401" in operation["responses"]
-        elif path.startswith(("/api/v1/tasks", "/api/v1/agent-runs")):
-            assert all(not operation.get("security") for operation in methods.values())

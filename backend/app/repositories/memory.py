@@ -296,6 +296,13 @@ class InMemoryAgentRunRepository:
         except KeyError:
             raise BackendError("agent_run_not_found", "Agent run does not exist.") from None
 
+    def get_owned(self, run_id: UUID, owner_id: UUID) -> AgentRun:
+        run = self.state.agent_runs.get(run_id)
+        project = self.state.projects.get(run.project_id) if run is not None else None
+        if owner_id is None or run is None or project is None or project.owner_id != owner_id:
+            raise BackendError("agent_run_not_found", "Agent run does not exist.")
+        return run
+
     def mark_running(self, run_id: UUID) -> AgentRun:
         run = replace(
             self._expect(run_id, AgentRunStatus.QUEUED),
@@ -514,6 +521,13 @@ class InMemoryBackgroundTaskRepository:
             raise BackendError(
                 "background_task_not_found", "Background task does not exist.",
             ) from None
+
+    def get_owned(self, task_id: UUID, owner_id: UUID) -> BackgroundTask:
+        task = self.state.background_tasks.get(task_id)
+        project = self.state.projects.get(task.project_id) if task is not None else None
+        if owner_id is None or task is None or project is None or project.owner_id != owner_id:
+            raise BackendError("background_task_not_found", "Background task does not exist.")
+        return task
 
     def link_agent_run(
         self, task_id: UUID, agent_run_id: UUID, snapshot_id: UUID,

@@ -11,8 +11,8 @@ from backend.app.core.models import BackgroundTaskStatus, ProjectStatus
 from backend.app.core.errors import BackendError
 from backend.app.infrastructure.celery import CeleryTaskDispatcher, create_celery_app
 from backend.app.main import create_app
-from backend.app.repositories import InMemoryPersistence
-from backend.app.services.background_tasks import REPOSITORY_INDEX_CELERY_TASK_NAME
+from backend.app.repositories import InMemoryPersistence, InMemoryUnitOfWork
+from backend.app.services.background_tasks import BackgroundTaskService, REPOSITORY_INDEX_CELERY_TASK_NAME
 from pycode.storage import load_graph, load_index
 
 
@@ -211,7 +211,7 @@ def test_worker_registers_health_and_repository_index_tasks():
     assert REPOSITORY_INDEX_CELERY_TASK_NAME in app.tasks
 
 
-def test_phase5a_health_endpoint_remains_queued_without_real_redis():
+def test_health_task_remains_internal_and_queued_without_real_redis():
     class RecordingDispatcher:
         def __init__(self) -> None:
             self.health_task_ids: list[UUID] = []
@@ -223,12 +223,13 @@ def test_phase5a_health_endpoint_remains_queued_without_real_redis():
             raise AssertionError("not used")
 
     dispatcher = RecordingDispatcher()
-    app = create_app(
-        persistence=InMemoryPersistence(), task_dispatcher=dispatcher,
-    )
+    persistence = InMemoryPersistence()
+    app = create_app(persistence=persistence, task_dispatcher=dispatcher)
+    task = BackgroundTaskService(InMemoryUnitOfWork(persistence), dispatcher).create_health_task()
     with TestClient(app) as client:
         response = client.post("/api/v1/tasks/health")
 
-    assert response.status_code == 202
-    assert response.json()["status"] == "queued"
-    assert dispatcher.health_task_ids == [UUID(response.json()["id"])]
+    assert response.status_code == 405
+    assert task.status == "queued"
+    assert dispatcher.health_task_ids == [task.id]
+    assert len(persistence.background_tasks) == 1

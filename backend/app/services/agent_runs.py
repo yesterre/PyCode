@@ -65,14 +65,14 @@ class AgentRunService:
 
     def submit(
         self, project_id: UUID, task_text: str,
-        idempotency_key: str | None = None,
+        idempotency_key: str | None = None, *, owner_id: UUID,
     ) -> AgentRunSubmission:
         fingerprint = (
             agent_run_fingerprint(project_id, task_text)
             if idempotency_key is not None else None
         )
         with self.unit_of_work.transaction():
-            project = self.unit_of_work.projects.get(project_id)
+            project = self.unit_of_work.projects.get_owned(project_id, owner_id)
             creation = self.unit_of_work.background_tasks.create_submission(
                 AGENT_RUN_TASK_TYPE,
                 project_id=project_id,
@@ -105,8 +105,8 @@ class AgentRunService:
                 raise BackendError(
                     "project_not_ready", "Build the project index before analysis.",
                 )
-            snapshot = self.unit_of_work.snapshots.get(project.current_snapshot_id)
-            if snapshot.project_id != project_id or snapshot.status != "ready":
+            snapshot = self.unit_of_work.snapshots.get_for_project(project_id, project.current_snapshot_id)
+            if snapshot.status != "ready":
                 raise BackendError(
                     "project_not_ready", "Build the project index before analysis.",
                 )
@@ -127,9 +127,13 @@ class AgentRunService:
         with self.unit_of_work.transaction():
             return self.unit_of_work.agent_runs.get(run_id)
 
-    def get_trace(self, run_id: UUID) -> list[ApplicationTraceEvent]:
+    def get_owned(self, run_id: UUID, owner_id: UUID) -> AgentRun:
         with self.unit_of_work.transaction():
-            run = self.unit_of_work.agent_runs.get(run_id)
+            return self.unit_of_work.agent_runs.get_owned(run_id, owner_id)
+
+    def get_trace(self, run_id: UUID, *, owner_id: UUID) -> list[ApplicationTraceEvent]:
+        with self.unit_of_work.transaction():
+            run = self.unit_of_work.agent_runs.get_owned(run_id, owner_id)
             if run.status in {AgentRunStatus.QUEUED, AgentRunStatus.RUNNING}:
                 return []
             events = []

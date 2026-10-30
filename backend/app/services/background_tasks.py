@@ -109,6 +109,10 @@ class BackgroundTaskService:
         with self.unit_of_work.transaction():
             return self.unit_of_work.background_tasks.get(task_id)
 
+    def get_owned(self, task_id: UUID, owner_id: UUID) -> BackgroundTask:
+        with self.unit_of_work.transaction():
+            return self.unit_of_work.background_tasks.get_owned(task_id, owner_id)
+
     def enqueue_agent_run(self, task: BackgroundTask) -> BackgroundTask:
         if self.dispatcher is None:
             raise RuntimeError("A task dispatcher is required to enqueue a background task.")

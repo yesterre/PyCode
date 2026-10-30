@@ -344,6 +344,16 @@ class SqlAlchemyAgentRunRepository:
             raise BackendError("agent_run_not_found", "Agent run does not exist.")
         return _agent_run(record)
 
+    def get_owned(self, run_id: UUID, owner_id: UUID) -> AgentRun:
+        if owner_id is None:
+            raise BackendError("agent_run_not_found", "Agent run does not exist.")
+        record = self.session.scalars(select(AgentRunORM).join(
+            ProjectORM, AgentRunORM.project_id == ProjectORM.id,
+        ).where(AgentRunORM.id == run_id, ProjectORM.owner_id == owner_id)).one_or_none()
+        if record is None:
+            raise BackendError("agent_run_not_found", "Agent run does not exist.")
+        return _agent_run(record)
+
     def mark_running(self, run_id: UUID) -> AgentRun:
         record = self._expect(run_id, AgentRunStatus.QUEUED)
         record.status = AgentRunStatus.RUNNING.value
@@ -587,6 +597,16 @@ class SqlAlchemyBackgroundTaskRepository:
 
     def get(self, task_id: UUID) -> BackgroundTask:
         return _background_task(self._get_record(task_id))
+
+    def get_owned(self, task_id: UUID, owner_id: UUID) -> BackgroundTask:
+        if owner_id is None:
+            raise BackendError("background_task_not_found", "Background task does not exist.")
+        record = self.session.scalars(select(BackgroundTaskORM).join(
+            ProjectORM, BackgroundTaskORM.project_id == ProjectORM.id,
+        ).where(BackgroundTaskORM.id == task_id, ProjectORM.owner_id == owner_id)).one_or_none()
+        if record is None:
+            raise BackendError("background_task_not_found", "Background task does not exist.")
+        return _background_task(record)
 
     def link_agent_run(
         self, task_id: UUID, agent_run_id: UUID, snapshot_id: UUID,

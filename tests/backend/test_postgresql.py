@@ -1070,17 +1070,24 @@ def test_postgresql_concurrent_index_different_keys_has_one_active_task(
 
 
 def test_postgresql_concurrent_agent_same_key_has_one_run_and_task(
-    postgresql_engine, application, task_dispatcher_factory,
+    postgresql_engine, application, task_dispatcher_factory, authenticated_client_factory,
 ):
     project, snapshot = _ready_postgresql_project(postgresql_engine)
     apps, dispatcher = _postgresql_submission_apps(
         postgresql_engine, application, task_dispatcher_factory,
     )
+    with authenticated_client_factory(apps[0]) as client:
+        owner_id = UUID(client.get("/api/v1/auth/me").json()["id"])
+    with Session(postgresql_engine) as session:
+        uow = SqlAlchemyUnitOfWork(session)
+        with uow.transaction():
+            uow.projects.assign_legacy_owner(project.id, owner_id)
     payload = {"project_id": str(project.id), "task": "分析并发提交"}
 
     results = _concurrent_post(
         apps,
         "/api/v1/agent-runs",
+        client_factory=authenticated_client_factory,
         headers=lambda _: {"Idempotency-Key": "postgres-agent-same"},
         json=payload,
     )
@@ -1116,14 +1123,20 @@ def test_postgresql_concurrent_agent_same_key_has_one_run_and_task(
 
 
 def test_postgresql_agent_same_key_different_task_conflicts(
-    postgresql_engine, application, task_dispatcher_factory,
+    postgresql_engine, application, task_dispatcher_factory, authenticated_client_factory,
 ):
     project, _ = _ready_postgresql_project(postgresql_engine)
     apps, dispatcher = _postgresql_submission_apps(
         postgresql_engine, application, task_dispatcher_factory,
     )
+    with authenticated_client_factory(apps[0]) as client:
+        owner_id = UUID(client.get("/api/v1/auth/me").json()["id"])
+    with Session(postgresql_engine) as session:
+        uow = SqlAlchemyUnitOfWork(session)
+        with uow.transaction():
+            uow.projects.assign_legacy_owner(project.id, owner_id)
     headers = {"Idempotency-Key": "postgres-agent-conflict"}
-    with TestClient(apps[0]) as client:
+    with authenticated_client_factory(apps[0]) as client:
         first = client.post(
             "/api/v1/agent-runs",
             headers=headers,
@@ -1157,17 +1170,24 @@ def test_postgresql_agent_same_key_different_task_conflicts(
 
 
 def test_postgresql_concurrent_agent_same_key_different_tasks_conflict(
-    postgresql_engine, application, task_dispatcher_factory,
+    postgresql_engine, application, task_dispatcher_factory, authenticated_client_factory,
 ):
     project, _ = _ready_postgresql_project(postgresql_engine)
     apps, dispatcher = _postgresql_submission_apps(
         postgresql_engine, application, task_dispatcher_factory,
     )
+    with authenticated_client_factory(apps[0]) as client:
+        owner_id = UUID(client.get("/api/v1/auth/me").json()["id"])
+    with Session(postgresql_engine) as session:
+        uow = SqlAlchemyUnitOfWork(session)
+        with uow.transaction():
+            uow.projects.assign_legacy_owner(project.id, owner_id)
     submitted_tasks = iter(("分析主要调用链", "分析数据库模块"))
 
     results = _concurrent_post(
         apps,
         "/api/v1/agent-runs",
+        client_factory=authenticated_client_factory,
         headers=lambda _: {"Idempotency-Key": "postgres-agent-race-conflict"},
         json=lambda _: {
             "project_id": str(project.id),

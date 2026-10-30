@@ -130,29 +130,34 @@ def test_background_task_duplicate_terminal_delivery_is_safe_noop():
     assert duplicate.attempt_count == 1
 
 
-def test_task_http_create_and_query_without_real_redis():
+def test_internal_health_task_lifecycle_is_not_exposed_over_http(authenticated_client_factory):
     dispatcher = RecordingDispatcher()
     persistence = InMemoryPersistence()
     app = create_app(
         persistence=persistence, task_dispatcher=dispatcher,
     )
-    with TestClient(app) as client:
-        created = client.post("/api/v1/tasks/health")
-        assert created.status_code == 202
-        body = created.json()
-        assert body["status"] == "queued" and body["task_type"] == "health"
-        assert body["attempt_count"] == 0
-        assert body["started_at"] is None and body["finished_at"] is None
-        assert body["error_code"] is None and body["error_message"] is None
-        assert client.get(f"/api/v1/tasks/{body['id']}").json() == body
-        BackgroundTaskService(InMemoryUnitOfWork(persistence)).execute_health(UUID(body["id"]))
-        completed = client.get(f"/api/v1/tasks/{body['id']}").json()
-        assert completed["status"] == "completed"
-        assert completed["attempt_count"] == 1
-        assert completed["started_at"] is not None and completed["finished_at"] is not None
+    service = BackgroundTaskService(InMemoryUnitOfWork(persistence), dispatcher)
+    created = service.create_health_task()
+    assert created.status == "queued" and created.task_type == "health"
+    assert created.attempt_count == 0
+    assert created.started_at is None and created.finished_at is None
+    assert created.error_code is None and created.error_message is None
+    with TestClient(app) as anonymous:
+        assert anonymous.post("/api/v1/tasks/health").status_code == 405
+        assert anonymous.get(f"/api/v1/tasks/{created.id}").status_code == 401
+    with authenticated_client_factory(app) as client:
+        assert client.post("/api/v1/tasks/health").status_code == 405
+        assert client.get(f"/api/v1/tasks/{created.id}").status_code == 404
+        service.execute_health(created.id)
+        completed = service.get(created.id)
+        assert completed.status == "completed"
+        assert completed.attempt_count == 1
+        assert completed.started_at is not None and completed.finished_at is not None
+        assert client.get(f"/api/v1/tasks/{created.id}").status_code == 404
         assert client.get(f"/api/v1/tasks/{uuid4()}").status_code == 404
         assert client.get("/api/v1/tasks/not-a-uuid").status_code == 422
-    assert dispatcher.task_ids == [UUID(body["id"])]
+    assert dispatcher.task_ids == [created.id]
+    assert len(persistence.background_tasks) == 1
 
 
 def test_redis_settings_and_celery_configuration_are_environment_driven(monkeypatch):
