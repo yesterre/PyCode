@@ -24,7 +24,7 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 TaskService = Annotated[BackgroundTaskService, Depends(get_background_task_service)]
 router = APIRouter(
     prefix="/api/v1/projects", tags=["projects"],
-    responses={code: {"model": ErrorResponse} for code in (403, 404, 409, 500, 502, 503, 504)},
+    responses={code: {"model": ErrorResponse} for code in (401, 403, 404, 409, 500, 502, 503, 504)},
 )
 
 
@@ -48,11 +48,11 @@ def get_project(project_id: UUID, user: CurrentUser, service: Service):
 
 @router.get("/{project_id}/analysis-history", response_model=AnalysisHistoryResponse)
 def get_analysis_history(
-    project_id: UUID, service: Service,
+    project_id: UUID, user: CurrentUser, service: Service,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
 ):
-    items, has_more = service.get_analysis_history(project_id, limit, offset)
+    items, has_more = service.get_analysis_history(project_id, limit, offset, owner_id=user.id)
     return AnalysisHistoryResponse(
         items=[AnalysisHistoryItem.model_validate(item) for item in items],
         has_more=has_more,
@@ -60,19 +60,19 @@ def get_analysis_history(
 
 
 @router.get("/{project_id}/snapshots", response_model=SnapshotListResponse)
-def list_snapshots(project_id: UUID, service: Service,
+def list_snapshots(project_id: UUID, user: CurrentUser, service: Service,
                    limit: Annotated[int, Query(ge=1, le=100)] = 20):
     return SnapshotListResponse(snapshots=[SnapshotResponse.model_validate(snapshot)
-        for snapshot in service.list_snapshots(project_id, limit)])
+        for snapshot in service.list_snapshots(project_id, limit, owner_id=user.id)])
 
 
 @router.get("/{project_id}/snapshots/{snapshot_id}", response_model=SnapshotResponse)
-def get_snapshot(project_id: UUID, snapshot_id: UUID, service: Service):
-    return service.get_snapshot(project_id, snapshot_id)
+def get_snapshot(project_id: UUID, snapshot_id: UUID, user: CurrentUser, service: Service):
+    return service.get_snapshot(project_id, snapshot_id, owner_id=user.id)
 
 
 @router.get("/{project_id}/snapshots/{snapshot_id}/graph", response_model=GraphResponse)
-def get_graph(project_id: UUID, snapshot_id: UUID, service: Service,
+def get_graph(project_id: UUID, snapshot_id: UUID, user: CurrentUser, service: Service,
               q: Annotated[str | None, Query(max_length=200)] = None,
               file_path: Annotated[str | None, Query(max_length=512)] = None,
               node_type: Literal["file", "class", "function", "method"] | None = None,
@@ -94,7 +94,7 @@ def get_graph(project_id: UUID, snapshot_id: UUID, service: Service,
                 "msg": "file_path must be a repository-relative file path.",
             }])
         file_path = candidate
-    return service.get_graph(project_id, snapshot_id, q=q, node_type=node_type,
+    return service.get_graph(project_id, snapshot_id, owner_id=user.id, q=q, node_type=node_type,
                              file_path=file_path, limit=limit)
 
 
@@ -103,20 +103,20 @@ def get_graph(project_id: UUID, snapshot_id: UUID, service: Service,
     response_model=RepositoryIndexTaskResponse,
 )
 def index_project(
-    project_id: UUID, service: TaskService,
+    project_id: UUID, user: CurrentUser, service: TaskService,
     idempotency_key: IdempotencyKeyHeader = None,
 ):
-    task = service.create_repository_index_task(project_id, idempotency_key)
+    task = service.create_owned_repository_index_task(project_id, user.id, idempotency_key)
     return RepositoryIndexTaskResponse(
         task_id=task.id, project_id=project_id, status=task.status,
     )
 
 
 @router.post("/{project_id}/ask", response_model=AnalysisResponse)
-def ask_project(project_id: UUID, body: AskRequest, service: Service):
-    return service.ask(project_id, body.question, body.model)
+def ask_project(project_id: UUID, body: AskRequest, user: CurrentUser, service: Service):
+    return service.ask(project_id, body.question, body.model, owner_id=user.id)
 
 
 @router.post("/{project_id}/impact", response_model=AnalysisResponse)
-def impact_project(project_id: UUID, body: ImpactRequest, service: Service):
-    return service.impact(project_id, body.file_path, body.model)
+def impact_project(project_id: UUID, body: ImpactRequest, user: CurrentUser, service: Service):
+    return service.impact(project_id, body.file_path, body.model, owner_id=user.id)

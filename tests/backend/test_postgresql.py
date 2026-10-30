@@ -959,11 +959,11 @@ def _ready_postgresql_project(postgresql_engine):
         session.close()
 
 
-def _concurrent_post(apps, path: str, *, headers, json=None):
+def _concurrent_post(apps, path: str, *, headers, json=None, client_factory=TestClient):
     barrier = Barrier(len(apps))
 
     def submit(app):
-        with TestClient(app) as client:
+        with client_factory(app) as client:
             barrier.wait(timeout=10)
             payload = json(app) if callable(json) else json
             response = client.post(path, headers=headers(app), json=payload)
@@ -991,7 +991,7 @@ def _postgresql_submission_apps(
 
 
 def test_postgresql_concurrent_index_same_key_returns_one_task(
-    postgresql_engine, application, task_dispatcher_factory,
+    postgresql_engine, application, task_dispatcher_factory, authenticated_client_factory,
 ):
     session, uow = _uow(postgresql_engine)
     try:
@@ -1001,11 +1001,18 @@ def test_postgresql_concurrent_index_same_key_returns_one_task(
     apps, dispatcher = _postgresql_submission_apps(
         postgresql_engine, application, task_dispatcher_factory,
     )
+    with authenticated_client_factory(apps[0]) as client:
+        owner_id = UUID(client.get("/api/v1/auth/me").json()["id"])
+    with Session(postgresql_engine) as session:
+        uow = SqlAlchemyUnitOfWork(session)
+        with uow.transaction():
+            uow.projects.assign_legacy_owner(project.id, owner_id)
 
     results = _concurrent_post(
         apps,
         f"/api/v1/projects/{project.id}/index",
         headers=lambda _: {"Idempotency-Key": "postgres-index-same"},
+        client_factory=authenticated_client_factory,
     )
 
     assert [status for status, _ in results] == [202, 202]
@@ -1022,7 +1029,7 @@ def test_postgresql_concurrent_index_same_key_returns_one_task(
 
 
 def test_postgresql_concurrent_index_different_keys_has_one_active_task(
-    postgresql_engine, application, task_dispatcher_factory,
+    postgresql_engine, application, task_dispatcher_factory, authenticated_client_factory,
 ):
     session, uow = _uow(postgresql_engine)
     try:
@@ -1032,12 +1039,19 @@ def test_postgresql_concurrent_index_different_keys_has_one_active_task(
     apps, dispatcher = _postgresql_submission_apps(
         postgresql_engine, application, task_dispatcher_factory,
     )
+    with authenticated_client_factory(apps[0]) as client:
+        owner_id = UUID(client.get("/api/v1/auth/me").json()["id"])
+    with Session(postgresql_engine) as session:
+        uow = SqlAlchemyUnitOfWork(session)
+        with uow.transaction():
+            uow.projects.assign_legacy_owner(project.id, owner_id)
     keys = iter(("postgres-index-a", "postgres-index-b"))
 
     results = _concurrent_post(
         apps,
         f"/api/v1/projects/{project.id}/index",
         headers=lambda _: {"Idempotency-Key": next(keys)},
+        client_factory=authenticated_client_factory,
     )
 
     assert sorted(status for status, _ in results) == [202, 409]

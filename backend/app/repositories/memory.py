@@ -162,6 +162,12 @@ class InMemorySnapshotRepository:
         except KeyError:
             raise BackendError("snapshot_not_found", "Project snapshot does not exist.") from None
 
+    def get_for_project(self, project_id: UUID, snapshot_id: UUID) -> ProjectSnapshot:
+        snapshot = self.state.snapshots.get(snapshot_id)
+        if snapshot is None or snapshot.project_id != project_id:
+            raise BackendError("snapshot_not_found", "Project snapshot does not exist.")
+        return snapshot
+
     def get_by_commit(
         self, project_id: UUID, commit_sha: str,
     ) -> ProjectSnapshot | None:

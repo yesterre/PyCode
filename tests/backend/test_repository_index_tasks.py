@@ -87,7 +87,7 @@ def test_index_submission_rejects_unknown_project_without_queuing(client, applic
 
 
 def test_index_enqueue_failure_returns_503_and_retains_queued_task(
-    application, project_url,
+    application, project_url, authenticated_client_factory,
 ):
     class FailingDispatcher:
         def enqueue_health(self, task_id: UUID) -> None:
@@ -97,7 +97,7 @@ def test_index_enqueue_failure_returns_503_and_retains_queued_task(
             raise RuntimeError("Redis unavailable")
 
     application.state.task_dispatcher = FailingDispatcher()
-    with TestClient(application) as client:
+    with authenticated_client_factory(application) as client:
         response = client.post(project_url + "/index")
 
     assert response.status_code == 503

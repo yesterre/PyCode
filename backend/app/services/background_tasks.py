@@ -68,6 +68,19 @@ class BackgroundTaskService:
     def create_repository_index_task(
         self, project_id: UUID, idempotency_key: str | None = None,
     ) -> BackgroundTask:
+        """Trusted internal submission; HTTP uses the owned entry point."""
+        return self._create_repository_index_task(project_id, idempotency_key)
+
+    def create_owned_repository_index_task(
+        self, project_id: UUID, owner_id: UUID, idempotency_key: str | None = None,
+    ) -> BackgroundTask:
+        if owner_id is None:
+            raise BackendError("project_not_found", "Project does not exist.")
+        return self._create_repository_index_task(project_id, idempotency_key, owner_id=owner_id)
+
+    def _create_repository_index_task(
+        self, project_id: UUID, idempotency_key: str | None, *, owner_id: UUID | None = None,
+    ) -> BackgroundTask:
         if self.dispatcher is None:
             raise RuntimeError("A task dispatcher is required to enqueue a background task.")
         fingerprint = (
@@ -75,7 +88,10 @@ class BackgroundTaskService:
             if idempotency_key is not None else None
         )
         with self.unit_of_work.transaction():
-            self.unit_of_work.projects.get(project_id)
+            if owner_id is None:
+                self.unit_of_work.projects.get(project_id)
+            else:
+                self.unit_of_work.projects.get_owned(project_id, owner_id)
             creation = self.unit_of_work.background_tasks.create_submission(
                 REPOSITORY_INDEX_TASK_TYPE,
                 project_id=project_id,

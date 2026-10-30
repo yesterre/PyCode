@@ -270,8 +270,9 @@ docker compose restart frontend
 
 可通过 Swagger 完成注册和登录，将返回的 `access_token` 填入 Authorize，
 再调用 `/api/v1/auth/me`；API 客户端使用 `Authorization: Bearer <access_token>` Header。
-Project 列表、创建和详情接口也需要此 Header，仅访问当前用户拥有的项目。
-旧的无归属项目需通过受控迁移明确归属；派生资源、任务和 Trace 接口的用户授权尚未接入。
+Project 列表、创建、详情、索引提交、问答、影响分析、分析历史、Snapshot 和 Graph
+接口均需要此 Header，仅访问当前用户拥有的项目及其资源。
+旧的无归属项目需通过受控迁移明确归属；Task、AgentRun 和 Trace 接口的用户授权尚未接入。
 
 ## 🧰 技术栈
 

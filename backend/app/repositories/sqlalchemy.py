@@ -174,6 +174,14 @@ class SqlAlchemyProjectSnapshotRepository:
             raise BackendError("snapshot_not_found", "Project snapshot does not exist.")
         return _snapshot(record)
 
+    def get_for_project(self, project_id: UUID, snapshot_id: UUID) -> ProjectSnapshot:
+        record = self.session.scalars(select(ProjectSnapshotORM).where(
+            ProjectSnapshotORM.id == snapshot_id, ProjectSnapshotORM.project_id == project_id,
+        )).one_or_none()
+        if record is None:
+            raise BackendError("snapshot_not_found", "Project snapshot does not exist.")
+        return _snapshot(record)
+
     def get_by_commit(
         self, project_id: UUID, commit_sha: str,
     ) -> ProjectSnapshot | None:

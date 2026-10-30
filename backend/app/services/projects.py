@@ -76,16 +76,16 @@ class ProjectService:
             page = self.uow.projects.list_owned_page(owner_id, limit + 1, offset)
             return [self._with_summary(project) for project in page[:limit]], len(page) > limit
 
-    def list_snapshots(self, project_id: UUID, limit: int) -> list[ProjectSnapshot]:
+    def list_snapshots(self, project_id: UUID, limit: int, *, owner_id: UUID) -> list[ProjectSnapshot]:
         with self.uow.transaction():
-            self.uow.projects.get(project_id)
+            self.uow.projects.get_owned(project_id, owner_id)
             return self.uow.snapshots.list_recent(project_id, limit)
 
     def get_analysis_history(
-        self, project_id: UUID, limit: int, offset: int,
+        self, project_id: UUID, limit: int, offset: int, *, owner_id: UUID,
     ) -> tuple[list[AnalysisHistoryItem], bool]:
         with self.uow.transaction():
-            self.uow.projects.get(project_id)
+            self.uow.projects.get_owned(project_id, owner_id)
             page = self.uow.agent_runs.list_history_for_project(
                 project_id, limit + 1, offset,
             )
@@ -102,18 +102,15 @@ class ProjectService:
         ]
         return items, len(page) > limit
 
-    def get_snapshot(self, project_id: UUID, snapshot_id: UUID) -> ProjectSnapshot:
+    def get_snapshot(self, project_id: UUID, snapshot_id: UUID, *, owner_id: UUID) -> ProjectSnapshot:
         with self.uow.transaction():
-            self.uow.projects.get(project_id)
-            snapshot = self.uow.snapshots.get(snapshot_id)
-            if snapshot.project_id != project_id:
-                raise BackendError("snapshot_not_found", "Project snapshot does not exist.")
-            return snapshot
+            self.uow.projects.get_owned(project_id, owner_id)
+            return self.uow.snapshots.get_for_project(project_id, snapshot_id)
 
-    def get_graph(self, project_id: UUID, snapshot_id: UUID, *,
+    def get_graph(self, project_id: UUID, snapshot_id: UUID, *, owner_id: UUID,
                   q: str | None, node_type: str | None,
                   file_path: str | None, limit: int) -> dict:
-        snapshot = self.get_snapshot(project_id, snapshot_id)
+        snapshot = self.get_snapshot(project_id, snapshot_id, owner_id=owner_id)
         if snapshot.status != "ready":
             raise BackendError("project_not_ready", "Build the project index before analysis.")
         bundle = self.artifacts.read_ready(project_id, snapshot)
@@ -359,11 +356,11 @@ class ProjectService:
                     )
                 raise
 
-    def ask(self, project_id: UUID, question: str, model: str | None) -> ProjectAnalysis:
-        return self._analyze(project_id, question, model, impact=False)
+    def ask(self, project_id: UUID, question: str, model: str | None, *, owner_id: UUID) -> ProjectAnalysis:
+        return self._analyze(project_id, question, model, impact=False, owner_id=owner_id)
 
-    def impact(self, project_id: UUID, file_path: str, model: str | None) -> ProjectAnalysis:
-        return self._analyze(project_id, file_path, model, impact=True)
+    def impact(self, project_id: UUID, file_path: str, model: str | None, *, owner_id: UUID) -> ProjectAnalysis:
+        return self._analyze(project_id, file_path, model, impact=True, owner_id=owner_id)
 
     def execute_on_snapshot(
         self,
@@ -387,17 +384,17 @@ class ProjectService:
             return result
 
     def _analyze(
-        self, project_id: UUID, text: str, model: str | None, *, impact: bool,
+        self, project_id: UUID, text: str, model: str | None, *, impact: bool, owner_id: UUID,
     ) -> ProjectAnalysis:
         with self.uow.transaction():
-            self.uow.projects.get(project_id)
+            self.uow.projects.get_owned(project_id, owner_id)
         with self.operations.operation(project_id) as project_lock:
             with self.uow.transaction():
-                project = self.uow.projects.get(project_id)
+                project = self.uow.projects.get_owned(project_id, owner_id)
                 if project.current_snapshot_id is None:
                     raise BackendError("project_not_ready", "Build the project index before analysis.")
-                snapshot = self.uow.snapshots.get(project.current_snapshot_id)
-                if snapshot.status != "ready" or snapshot.project_id != project_id:
+                snapshot = self.uow.snapshots.get_for_project(project_id, project.current_snapshot_id)
+                if snapshot.status != "ready":
                     raise BackendError(
                         "project_not_ready", "Build the project index before analysis.",
                     )
