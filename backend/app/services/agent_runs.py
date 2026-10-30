@@ -338,10 +338,13 @@ class AgentRunService:
                     if exc.code != "agent_run_not_found":
                         raise
                 else:
-                    if run.status == AgentRunStatus.QUEUED:
-                        run = self.unit_of_work.agent_runs.mark_running(run.id)
-                    if run.status == AgentRunStatus.RUNNING:
-                        self.unit_of_work.agent_runs.fail(run.id, error.message)
+                    # A corrupt Task link must not fail an unrelated Run.
+                    if (run.project_id == background_task.project_id
+                            and run.snapshot_id == background_task.snapshot_id):
+                        if run.status == AgentRunStatus.QUEUED:
+                            run = self.unit_of_work.agent_runs.mark_running(run.id)
+                        if run.status == AgentRunStatus.RUNNING:
+                            self.unit_of_work.agent_runs.fail(run.id, error.message)
             self.unit_of_work.background_tasks.mark_failed(
                 background_task.id,
                 error_code=error.code,

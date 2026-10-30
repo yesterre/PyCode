@@ -17,6 +17,18 @@ class AgentSnapshotWorkspace:
 
     def prepare(self, repository: Path, bundle: SnapshotArtifactBundle) -> None:
         root = repository.resolve()
+        # Published paths are relative to this Project, never another workspace.
+        artifact_root = root.parent / "artifacts"
+        for source, relative in (
+            (bundle.index_path, bundle.index_artifact_path),
+            (bundle.graph_path, bundle.graph_artifact_path),
+        ):
+            expected = (root.parent / relative).resolve()
+            if (not expected.is_relative_to(artifact_root)
+                    or source.resolve() != expected):
+                raise BackendError(
+                    "artifacts_unavailable", "Snapshot artifacts are unavailable.",
+                )
         artifact_dir = root / DEFAULT_ARTIFACT_DIR
         self._ensure_directory(artifact_dir, root)
 

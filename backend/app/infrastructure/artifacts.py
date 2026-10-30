@@ -80,9 +80,13 @@ class SnapshotArtifactStore:
     def archive_legacy(
         self, project_id: UUID, snapshot: ProjectSnapshot, repository: Path,
     ) -> SnapshotArtifactBundle:
+        if snapshot.project_id != project_id:
+            raise BackendError("artifacts_unavailable", "Snapshot artifacts are unavailable.")
         if not self.is_legacy(snapshot):
             return self.validate(project_id, snapshot)
         root = repository.resolve()
+        if root != self._project_root(project_id) / "repo":
+            raise BackendError("artifacts_unavailable", "Snapshot artifacts are unavailable.")
         index_path = root / ".pclens" / INDEX_FILE
         graph_path = root / ".pclens" / GRAPH_FILE
         for path in (index_path, graph_path):
@@ -110,7 +114,7 @@ class SnapshotArtifactStore:
         self, project_id: UUID, snapshot: ProjectSnapshot,
     ) -> SnapshotArtifactBundle:
         expected_index, expected_graph = self.relative_paths(snapshot.id)
-        if (snapshot.status != "ready"
+        if (snapshot.project_id != project_id or snapshot.status != "ready"
                 or snapshot.index_artifact_path != expected_index
                 or snapshot.graph_artifact_path != expected_graph
                 or snapshot.file_count is None or snapshot.node_count is None
@@ -132,7 +136,7 @@ class SnapshotArtifactStore:
     def read_ready(self, project_id: UUID, snapshot: ProjectSnapshot) -> SnapshotArtifactBundle:
         """Validate a published ready bundle without recovery or mutation."""
         expected_index, expected_graph = self.relative_paths(snapshot.id)
-        if (snapshot.status != "ready"
+        if (snapshot.project_id != project_id or snapshot.status != "ready"
                 or snapshot.index_artifact_path != expected_index
                 or snapshot.graph_artifact_path != expected_graph
                 or snapshot.file_count is None or snapshot.node_count is None
@@ -233,6 +237,8 @@ class SnapshotArtifactStore:
         self, project_id: UUID, snapshot_id: UUID, commit_sha: str,
     ) -> None:
         artifact_root = self._artifact_root(project_id)
+        # Recovery can rename backups; reject directory aliases before any write.
+        self._check_entry(artifact_root, self._project_root(project_id))
         final = self._bundle_dir(project_id, snapshot_id)
         backups = sorted(
             artifact_root.glob(f".{snapshot_id}.backup-*"),
@@ -265,8 +271,9 @@ class SnapshotArtifactStore:
         return self._artifact_root(project_id) / str(snapshot_id)
 
     def _project_root(self, project_id: UUID) -> Path:
-        project_root = (self.root / str(project_id)).resolve()
-        if not project_root.is_relative_to(self.root):
+        # Preserve the directory entry so lstat can reject an in-root alias too.
+        project_root = self.root / str(project_id)
+        if not project_root.resolve().is_relative_to(self.root):
             raise BackendError("path_forbidden", "Artifact path is outside the project.")
         if not project_root.is_dir():
             raise BackendError("workspace_unavailable", "Project workspace is unavailable.")
