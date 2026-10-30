@@ -481,6 +481,14 @@ class SqlAlchemyAgentRunRepository:
             .offset(offset)
             .limit(limit)
         )
+        if offset > 0:
+            # Skip narrow keys before fetching full rows; retain the first-page plan.
+            page = statement.with_only_columns(AgentRunORM.id).subquery()
+            statement = (
+                select(AgentRunORM)
+                .join(page, AgentRunORM.id == page.c.id)
+                .order_by(AgentRunORM.created_at.desc(), AgentRunORM.id.desc())
+            )
         return [_agent_run(record) for record in self.session.scalars(statement)]
 
     def _get_record(self, run_id: UUID) -> AgentRunORM:
