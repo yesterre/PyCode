@@ -79,7 +79,11 @@ class ProjectService:
     ) -> tuple[list[Project], bool]:
         with self.uow.transaction():
             page = self.uow.projects.list_owned_page(owner_id, limit + 1, offset, archived=archived)
-            return [self._with_summary(project) for project in page[:limit]], len(page) > limit
+            visible = page[:limit]
+            snapshots = self.uow.snapshots.get_many([
+                project.current_snapshot_id for project in visible if project.current_snapshot_id is not None
+            ])
+            return [self._with_summary(project, snapshots=snapshots) for project in visible], len(page) > limit
 
     def set_archived(self, project_id: UUID, owner_id: UUID, *, archived: bool) -> Project:
         with self.uow.transaction():
@@ -457,10 +461,11 @@ class ProjectService:
                 self.uow.agent_runs.complete(run.id, result.answer)
             return ProjectAnalysis(project_id, result.answer, result.intent, result.evidence)
 
-    def _with_summary(self, project: Project) -> Project:
+    def _with_summary(self, project: Project, *, snapshots: dict[UUID, ProjectSnapshot] | None = None) -> Project:
         if project.current_snapshot_id is None:
             return replace(project, index_summary=None)
-        snapshot = self.uow.snapshots.get(project.current_snapshot_id)
+        snapshot = (self.uow.snapshots.get(project.current_snapshot_id)
+                    if snapshots is None else snapshots[project.current_snapshot_id])
         if (snapshot.status != "ready" or snapshot.project_id != project.id
                 or snapshot.file_count is None or snapshot.node_count is None
                 or snapshot.edge_count is None):

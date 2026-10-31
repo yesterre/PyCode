@@ -198,6 +198,16 @@ class SqlAlchemyProjectSnapshotRepository:
             raise BackendError("snapshot_not_found", "Project snapshot does not exist.")
         return _snapshot(record)
 
+    def get_many(self, snapshot_ids: list[UUID]) -> dict[UUID, ProjectSnapshot]:
+        identifiers = set(snapshot_ids)
+        if not identifiers:
+            return {}
+        records = self.session.scalars(select(ProjectSnapshotORM).where(ProjectSnapshotORM.id.in_(identifiers)))
+        snapshots = {record.id: _snapshot(record) for record in records}
+        if snapshots.keys() != identifiers:
+            raise BackendError("snapshot_not_found", "Project snapshot does not exist.")
+        return snapshots
+
     def get_for_project(self, project_id: UUID, snapshot_id: UUID) -> ProjectSnapshot:
         record = self.session.scalars(select(ProjectSnapshotORM).where(
             ProjectSnapshotORM.id == snapshot_id, ProjectSnapshotORM.project_id == project_id,

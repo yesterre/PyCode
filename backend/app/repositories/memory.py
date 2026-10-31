@@ -176,6 +176,9 @@ class InMemorySnapshotRepository:
         except KeyError:
             raise BackendError("snapshot_not_found", "Project snapshot does not exist.") from None
 
+    def get_many(self, snapshot_ids: list[UUID]) -> dict[UUID, ProjectSnapshot]:
+        return {identifier: self.get(identifier) for identifier in set(snapshot_ids)}
+
     def get_for_project(self, project_id: UUID, snapshot_id: UUID) -> ProjectSnapshot:
         snapshot = self.state.snapshots.get(snapshot_id)
         if snapshot is None or snapshot.project_id != project_id:
