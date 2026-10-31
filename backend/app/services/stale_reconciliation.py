@@ -213,9 +213,14 @@ class StaleRunningReconciler:
                 and project.status == ProjectStatus.READY
                 and project.current_snapshot_id == snapshot.id
             )
-            traces = (
-                self.uow.trace_events.list_for_run(run.id) if run is not None else []
+            run_matches_task = (
+                run is not None
+                and run.project_id == current.project_id
+                and run.snapshot_id == current.snapshot_id
             )
+            # An inconsistent foreign key must not grant authority over another
+            # Run's trace, Core marker or terminal state.
+            traces = self.uow.trace_events.list_for_run(run.id) if run_matches_task else []
             can_requeue = (
                 relation_valid
                 and current.execution_token is not None
@@ -235,7 +240,7 @@ class StaleRunningReconciler:
                 self.uow.agent_runs.requeue_running(run.id)
                 return "requeued"
 
-            post_core = run is not None and run.core_started_at is not None
+            post_core = run_matches_task and run.core_started_at is not None
             error_code = (
                 "worker_lost_after_agent_core"
                 if post_core else "worker_execution_lost"
@@ -256,7 +261,7 @@ class StaleRunningReconciler:
             )
             if failed is None:
                 return "noop"
-            if run is not None:
+            if run_matches_task:
                 if run.status == AgentRunStatus.QUEUED:
                     run = self.uow.agent_runs.mark_running(run.id)
                 if run.status == AgentRunStatus.RUNNING:
