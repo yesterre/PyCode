@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from backend.app.config import AdmissionSettings, AuthSettings, QueuedReconciliationSettings, load_environment
+from backend.app.config import AdmissionSettings, AuthSettings, ObservabilitySettings, QueuedReconciliationSettings, load_environment
 from backend.app.db.session import DatabaseSessionManager
 from backend.app.api.errors import register_error_handlers
 from backend.app.api.agent_runs import router as agent_runs_router
@@ -27,6 +27,8 @@ from backend.app.runtime import (
 )
 from backend.app.services.background_tasks import BackgroundTaskDispatcher
 from backend.app.services.admission import AdmissionControl
+from backend.app.metrics import RequestMetrics, router as metrics_router
+from backend.app.observability import RequestObservabilityMiddleware, configure_logging
 
 
 def create_app(*, adapter: PyCodeAdapter | None = None,
@@ -38,9 +40,11 @@ def create_app(*, adapter: PyCodeAdapter | None = None,
                project_operations: ProjectOperationLocks | None = None,
                reconciliation_settings: QueuedReconciliationSettings | None = None,
                auth_settings: AuthSettings | None = None,
-               admission: AdmissionControl | None = None) -> FastAPI:
+               admission: AdmissionControl | None = None,
+               observability_settings: ObservabilitySettings | None = None) -> FastAPI:
     """Use PostgreSQL by default; tests may explicitly inject memory persistence."""
     load_environment()
+    configure_logging()
     database = DatabaseSessionManager(database_url) if persistence is None else None
 
     @asynccontextmanager
@@ -69,6 +73,9 @@ def create_app(*, adapter: PyCodeAdapter | None = None,
     app.state.persistence = persistence
     app.state.database = database
     app.state.auth_settings = auth_settings
+    app.state.observability_settings = observability_settings or ObservabilitySettings.from_environment()
+    app.state.request_metrics = RequestMetrics()
+    app.add_middleware(RequestObservabilityMiddleware, metrics=app.state.request_metrics)
     # Explicit memory persistence is a test facility; tests can inject the same
     # real Redis admission control. PostgreSQL applications enable it by default.
     app.state.admission = admission or (
@@ -96,6 +103,7 @@ def create_app(*, adapter: PyCodeAdapter | None = None,
     app.include_router(tasks_router)
     app.include_router(agent_runs_router)
     app.include_router(auth_router)
+    app.include_router(metrics_router)
 
     @app.get("/health", tags=["health"])
     def health() -> dict[str, str]:

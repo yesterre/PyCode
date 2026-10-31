@@ -10,6 +10,7 @@ from typing import Any, Iterator
 from uuid import UUID, uuid4
 
 from backend.app.core.errors import BackendError
+from backend.app.repositories.interfaces import METRIC_TASK_STATUSES, METRIC_TASK_TYPES, TaskMetricRow
 from backend.app.core.models import (
     AgentCoreStart, AgentCoreStartStatus, AgentRun, AgentRunStatus,
     BackgroundTask, BackgroundTaskClaim, BackgroundTaskCreation,
@@ -429,6 +430,22 @@ class InMemoryTraceEventRepository:
 
 
 class InMemoryBackgroundTaskRepository:
+    def metrics_snapshot(self) -> list[TaskMetricRow]:
+        now, groups = _now(), {}
+        for task in self.state.background_tasks.values():
+            kind = task.task_type if task.task_type in METRIC_TASK_TYPES else "other"
+            status = task.status if task.status in METRIC_TASK_STATUSES else "other"
+            row = groups.setdefault((kind, status), dict(
+                task_type=kind, status=status, count=0, started_count=0, wait_sum=0.0, oldest_age=0.0,
+            ))
+            row["count"] += 1
+            if task.started_at is not None:
+                row["started_count"] += 1
+                row["wait_sum"] += max(0.0, (task.started_at - task.created_at).total_seconds())
+            if status == "queued":
+                row["oldest_age"] = max(row["oldest_age"], (now - task.created_at).total_seconds())
+        return list(groups.values())
+
     def lock_owner_and_count_active(self, owner_id: UUID) -> int:
         # InMemoryUnitOfWork already holds the shared persistence RLock.
         InMemoryUserRepository(self.state).get(owner_id)

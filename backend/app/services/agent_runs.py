@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+from backend.app.observability import log_event, safe_error_code
+
 from backend.app.core.errors import BackendError
 from backend.app.core.realtime_trace import RealtimeTraceSession
 from backend.app.core.application_trace import (
@@ -100,6 +102,7 @@ class AgentRunService:
                     or run.snapshot_id != background_task.snapshot_id
                 ):
                     raise self._consistency_error()
+                log_event("task_submitted", task_id=background_task.id, run_id=run.id, task_type=AGENT_RUN_TASK_TYPE)
                 return AgentRunSubmission(run, background_task)
             project.ensure_not_archived()
             if project.current_snapshot_id is None:
@@ -123,6 +126,7 @@ class AgentRunService:
             background_task = self.unit_of_work.background_tasks.link_agent_run(
                 creation.task.id, run.id, snapshot.id,
             )
+        log_event("task_submitted", task_id=background_task.id, run_id=run.id, task_type=AGENT_RUN_TASK_TYPE)
         background_task = self.background_tasks.enqueue_agent_run(background_task)
         return AgentRunSubmission(run, background_task)
 
@@ -216,13 +220,9 @@ class AgentRunService:
                 raise self._consistency_error()
             run = self.unit_of_work.agent_runs.mark_running(run.id)
 
-        logger.info(
-            "Agent execution claimed task_id=%s run_id=%s worker_id=%s "
-            "execution_token=%s lease_expires_at=%s attempt_count=%s",
-            background_task.id, run.id, background_task.worker_id,
-            str(background_task.execution_token)[:8],
-            background_task.lease_expires_at, background_task.attempt_count,
-        )
+        log_event("task_claimed", task_id=background_task.id, run_id=run.id, task_type=AGENT_RUN_TASK_TYPE,
+                  worker_id=background_task.worker_id, attempt_count=background_task.attempt_count,
+                  execution_token_prefix=str(background_task.execution_token)[:8], lease_expires_at=background_task.lease_expires_at)
 
         execution_token = background_task.execution_token
         if execution_token is None:  # pragma: no cover - owner claim invariant
@@ -250,6 +250,7 @@ class AgentRunService:
                     run.id,
                     error_code,
                     exc_info=(type(exc), exc, exc.__traceback__),
+                    extra={"task_id": task_id, "run_id": run.id, "error_code": safe_error_code(error_code)},
                 )
                 if error_code == "database_unavailable":
                     # Do not invent a terminal outcome while DB ownership is
@@ -314,6 +315,7 @@ class AgentRunService:
                 return self.get(run.id)
             if terminal_event is not None:
                 trace_session.publish(terminal_event)
+            log_event("task_completed", task_id=task_id, run_id=run.id, task_type=AGENT_RUN_TASK_TYPE)
             return completed
 
     def _terminalize_invalid_claim(
@@ -454,6 +456,8 @@ class AgentRunService:
                 raise self._consistency_error()
         if terminal_event is not None:
             trace_session.publish(terminal_event)
+        log_event("task_failed", level=logging.ERROR, task_id=task_id, run_id=run_id,
+                  task_type=AGENT_RUN_TASK_TYPE, error_code=safe_error_code(error_code))
         return True
 
     @staticmethod

@@ -7,6 +7,8 @@ from contextlib import AbstractContextManager
 from typing import Protocol
 from uuid import UUID
 
+from backend.app.observability import log_event, safe_error_code
+
 from backend.app.core.errors import BackendError
 from backend.app.config import ExecutionLeaseSettings, QueuedReconciliationSettings
 from backend.app.core.models import (
@@ -107,6 +109,7 @@ class BackgroundTaskService:
                 project.ensure_not_archived()
                 if owner_id is not None and self.admission is not None:
                     self.admission.admit_task(self.unit_of_work, owner_id, "index")
+        log_event("task_submitted", task_id=creation.task.id, task_type=creation.task.task_type)
         if creation.created:
             return self._enqueue(
                 creation.task, self.dispatcher.enqueue_repository_index,
@@ -217,13 +220,9 @@ class BackgroundTaskService:
             )
             return task
 
-        logger.info(
-            "Background task execution claimed task_id=%s task_type=%s "
-            "worker_id=%s execution_token=%s lease_expires_at=%s attempt_count=%s",
-            task.id, task.task_type, task.worker_id,
-            str(task.execution_token)[:8], task.lease_expires_at,
-            task.attempt_count,
-        )
+        log_event("task_claimed", task_id=task.id, task_type=task.task_type,
+                  worker_id=task.worker_id, attempt_count=task.attempt_count,
+                  execution_token_prefix=str(task.execution_token)[:8], lease_expires_at=task.lease_expires_at)
 
         execution_token = task.execution_token
         if execution_token is None:  # pragma: no cover - owner claim invariant
@@ -240,6 +239,7 @@ class BackgroundTaskService:
                     "Background task execution failed task_id=%s task_type=%s error_code=%s",
                     task_id, expected_type, error_code,
                     exc_info=(type(exc), exc, exc.__traceback__),
+                    extra={"task_id": task_id, "task_type": expected_type, "error_code": safe_error_code(error_code)},
                 )
                 if error_code == "database_unavailable":
                     # Ownership is unknown during an infrastructure outage.
@@ -272,6 +272,7 @@ class BackgroundTaskService:
                     task_id, expected_type, str(execution_token)[:8],
                 )
                 return self.get(task_id)
+            log_event("task_completed", task_id=task.id, task_type=task.task_type)
             return completed
 
     def _heartbeat(self, task: BackgroundTask) -> AbstractContextManager:

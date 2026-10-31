@@ -6,12 +6,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.app.core.errors import BackendError
+from backend.app.repositories.interfaces import METRIC_TASK_STATUSES, METRIC_TASK_TYPES, TaskMetricRow
 from backend.app.core.models import (
     AgentCoreStart, AgentCoreStartStatus, AgentRun, AgentRunStatus,
     BackgroundTask, BackgroundTaskClaim, BackgroundTaskCreation,
@@ -533,6 +534,23 @@ class SqlAlchemyTraceEventRepository:
 
 
 class SqlAlchemyBackgroundTaskRepository:
+    def metrics_snapshot(self) -> list[TaskMetricRow]:
+        task = BackgroundTaskORM
+        kind = case((task.task_type.in_(METRIC_TASK_TYPES), task.task_type), else_="other")
+        status = case((task.status.in_(METRIC_TASK_STATUSES), task.status), else_="other")
+        wait = func.greatest(func.extract("epoch", task.started_at - task.created_at), 0)
+        oldest = func.max(case(
+            (task.status == "queued", func.greatest(func.extract("epoch", _now() - task.created_at), 0)),
+            else_=0,
+        ))
+        rows = self.session.execute(select(
+            kind, status, func.count(), func.count(task.started_at), func.sum(wait), oldest,
+        ).group_by(kind, status))
+        return [TaskMetricRow(
+            task_type=kind, status=status, count=count, started_count=started_count,
+            wait_sum=float(total or 0), oldest_age=float(age or 0),
+        ) for kind, status, count, started_count, total, age in rows]
+
     def lock_owner_and_count_active(self, owner_id: UUID) -> int:
         # Serialize admissions across all of this user's projects/processes.
         # A subsequent READ COMMITTED statement sees the previous admission's commit.

@@ -31,7 +31,9 @@ def test_model_errors_are_sanitized_and_do_not_change_ready(
         assert response.status_code == status
         assert response.json()["detail"]["code"] == code
         assert "upstream-private-detail" not in response.text
-        assert "upstream-private-detail" in caplog.text
+        # B13 public logs retain the category, never raw upstream exceptions.
+        assert "upstream-private-detail" not in caplog.text
+        assert any(getattr(record, "error_code", None) == code for record in caplog.records)
         assert client.get(ready_url).json()["status"] == "ready"
     # Also proves the operation lock is released on model failure.
     assert client.post(ready_url + "/ask", json={"question": "entry"}).status_code == 200
@@ -86,7 +88,8 @@ def test_unexpected_index_error_is_logged_and_sanitized(
         task = client.get(f"/api/v1/tasks/{response.json()['task_id']}").json()
         assert task["error_code"] == "internal_error"
         assert "internal implementation detail" not in task["error_message"]
-        assert "internal implementation detail" in caplog.text
+        assert "internal implementation detail" not in caplog.text
+        assert any(getattr(record, "error_code", None) == "internal_error" for record in caplog.records)
         assert client.get(project_url).json()["status"] == "failed"
 
 

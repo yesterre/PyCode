@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import AbstractContextManager
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, TypedDict
 from uuid import UUID
 
 from backend.app.core.models import (
@@ -11,6 +11,19 @@ from backend.app.core.models import (
     BackgroundTaskCreation, IndexSummary, Project, ProjectSnapshot,
     ProjectStatus, TraceEvent, User, UserStatus,
 )
+
+
+METRIC_TASK_TYPES = ("health", "repository_index", "agent_run", "other")
+METRIC_TASK_STATUSES = ("queued", "running", "completed", "failed", "other")
+
+
+class TaskMetricRow(TypedDict):
+    task_type: str
+    status: str
+    count: int
+    started_count: int
+    wait_sum: float
+    oldest_age: float
 
 
 class UserRepository(Protocol):
@@ -132,6 +145,8 @@ class TraceEventRepository(Protocol):
 
 
 class BackgroundTaskRepository(Protocol):
+    def metrics_snapshot(self) -> list[TaskMetricRow]: ...
+
     def lock_owner_and_count_active(self, owner_id: UUID) -> int: ...
 
     def create(

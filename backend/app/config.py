@@ -24,6 +24,24 @@ def _non_negative_int(name: str, default: str) -> int:
 
 
 @dataclass(frozen=True)
+class ObservabilitySettings:
+    metrics_token: str = field(default="", repr=False)
+
+    def __post_init__(self) -> None:
+        if self.metrics_token and (
+            not 32 <= len(self.metrics_token) <= 256
+            or not self.metrics_token.isascii()
+            or any(character.isspace() for character in self.metrics_token)
+        ):
+            raise ValueError("PYCODE_METRICS_TOKEN must be empty or 32-256 ASCII characters without whitespace.")
+
+    @classmethod
+    def from_environment(cls) -> "ObservabilitySettings":
+        load_environment()
+        return cls(metrics_token=os.environ.get("PYCODE_METRICS_TOKEN", ""))
+
+
+@dataclass(frozen=True)
 class AdmissionSettings:
     window_seconds: int = 60
     index_requests: int = 10

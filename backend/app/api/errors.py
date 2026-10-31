@@ -6,6 +6,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from backend.app.core.errors import BackendError, ERROR_CATALOG, error_spec
+from backend.app.observability import safe_error_code
 
 
 logger = logging.getLogger("pycode.backend")
@@ -15,6 +16,7 @@ ERROR_STATUS = {code: spec.http_status for code, spec in ERROR_CATALOG.items()}
 
 def register_error_handlers(app: FastAPI) -> None:
     async def handle_validation(request: Request, exc: RequestValidationError):
+        request.scope.get("state", {}).get("observation", {})["error_code"] = "request_validation"
         if not request.url.path.startswith("/api/v1/auth/"):
             return await request_validation_exception_handler(request, exc)
         # Pydantic's default error JSON includes raw input, including passwords
@@ -37,10 +39,17 @@ def register_error_handlers(app: FastAPI) -> None:
         else:
             status_code, code, message = 500, "internal_error", "An unexpected server error occurred."
         auth_request = request.url.path.startswith("/api/v1/auth/")
+        observation = request.scope.get("state", {}).get("observation", {})
+        observation["error_code"] = safe_error_code(code)
         if exc.__cause__ is not None or status_code >= 500 or not isinstance(exc, BackendError):
-            logger.error("Request failed: %s %s (%s)", request.method, request.url.path, code,
-                         exc_info=None if auth_request else (type(exc), exc, exc.__traceback__))
+            logger.error("request_failed error_code=%s", safe_error_code(code), extra={
+                "request_id": observation.get("request_id"),
+                "route": getattr(request.scope.get("route"), "path", "unmatched"),
+                "status": status_code, "error_code": safe_error_code(code),
+            })
         headers = {"WWW-Authenticate": "Bearer"} if status_code == 401 else {}
+        if observation.get("request_id"):
+            headers["X-Request-ID"] = observation["request_id"]
         if auth_request:
             headers.update({"Cache-Control": "no-store", "Pragma": "no-cache"})
         return JSONResponse(status_code=status_code, content={"detail": {"code": code, "message": message}},

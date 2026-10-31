@@ -11,6 +11,7 @@ from backend.app.config import (
     StaleReconciliationSettings,
 )
 from backend.app.infrastructure.redis import RedisSettings
+from backend.app.observability import configure_logging
 from backend.app.services.background_tasks import (
     AGENT_RUN_CELERY_TASK_NAME, HEALTH_CELERY_TASK_NAME,
     REPOSITORY_INDEX_CELERY_TASK_NAME,
@@ -24,6 +25,7 @@ from backend.app.services.stale_reconciliation import (
 
 
 def create_celery_app(redis_url: str | None = None) -> Celery:
+    configure_logging()
     redis = RedisSettings(redis_url) if redis_url else RedisSettings.from_environment()
     delivery = CeleryDeliverySettings.from_environment()
     broker_url = redis.url
