@@ -132,6 +132,8 @@ class TraceEventRepository(Protocol):
 
 
 class BackgroundTaskRepository(Protocol):
+    def lock_owner_and_count_active(self, owner_id: UUID) -> int: ...
+
     def create(
         self, task_type: str, *, project_id: UUID | None = None,
         snapshot_id: UUID | None = None, agent_run_id: UUID | None = None,

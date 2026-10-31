@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from backend.app.config import AuthSettings, QueuedReconciliationSettings, load_environment
+from backend.app.config import AdmissionSettings, AuthSettings, QueuedReconciliationSettings, load_environment
 from backend.app.db.session import DatabaseSessionManager
 from backend.app.api.errors import register_error_handlers
 from backend.app.api.agent_runs import router as agent_runs_router
@@ -17,6 +17,7 @@ from backend.app.infrastructure.agent_workspace import AgentSnapshotWorkspace
 from backend.app.infrastructure.artifacts import SnapshotArtifactStore
 from backend.app.infrastructure.projects import ProjectOperationLocks
 from backend.app.infrastructure.repositories import RepositoryWorkspace
+from backend.app.infrastructure.redis import RedisRateLimiter
 from backend.app.integrations.pycode import PyCodeAdapter
 from backend.app.integrations.llm import backend_llm_client_factory_from_environment
 from backend.app.repositories import InMemoryPersistence
@@ -25,6 +26,7 @@ from backend.app.runtime import (
     repository_workspace_from_environment,
 )
 from backend.app.services.background_tasks import BackgroundTaskDispatcher
+from backend.app.services.admission import AdmissionControl
 
 
 def create_app(*, adapter: PyCodeAdapter | None = None,
@@ -35,7 +37,8 @@ def create_app(*, adapter: PyCodeAdapter | None = None,
                task_dispatcher: BackgroundTaskDispatcher | None = None,
                project_operations: ProjectOperationLocks | None = None,
                reconciliation_settings: QueuedReconciliationSettings | None = None,
-               auth_settings: AuthSettings | None = None) -> FastAPI:
+               auth_settings: AuthSettings | None = None,
+               admission: AdmissionControl | None = None) -> FastAPI:
     """Use PostgreSQL by default; tests may explicitly inject memory persistence."""
     load_environment()
     database = DatabaseSessionManager(database_url) if persistence is None else None
@@ -45,6 +48,8 @@ def create_app(*, adapter: PyCodeAdapter | None = None,
         yield
         if app.state.realtime_redis is not None:
             await app.state.realtime_redis.aclose()
+        if app.state.admission is not None:
+            app.state.admission.limiter.close()
         if database is not None:
             database.dispose()
 
@@ -64,6 +69,12 @@ def create_app(*, adapter: PyCodeAdapter | None = None,
     app.state.persistence = persistence
     app.state.database = database
     app.state.auth_settings = auth_settings
+    # Explicit memory persistence is a test facility; tests can inject the same
+    # real Redis admission control. PostgreSQL applications enable it by default.
+    app.state.admission = admission or (
+        AdmissionControl(AdmissionSettings.from_environment(), RedisRateLimiter())
+        if persistence is None else None
+    )
     app.state.realtime_redis = None
     app.state.realtime_redis_lock = asyncio.Lock()
     app.state.project_operations = (

@@ -63,6 +63,9 @@ ERROR_CATALOG.update({
         "auth_unavailable": 503,
         "task_queue_unavailable": 503,
         "realtime_trace_unavailable": 503,
+        "rate_limited": 429,
+        "task_quota_exceeded": 429,
+        "admission_unavailable": 503,
     }.items()
 })
 ERROR_CATALOG.update({

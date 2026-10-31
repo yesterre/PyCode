@@ -82,6 +82,7 @@ def get_project_service(
         workspace=request.app.state.workspace,
         operations=request.app.state.project_operations,
         artifacts=request.app.state.artifacts,
+        admission=request.app.state.admission,
     )
 
 
@@ -98,6 +99,7 @@ def get_background_task_service(
         unit_of_work,
         request.app.state.task_dispatcher,
         request.app.state.reconciliation_settings,
+        admission=request.app.state.admission,
     )
 
 
@@ -114,6 +116,7 @@ def get_agent_run_service(
         unit_of_work,
         request.app.state.task_dispatcher,
         request.app.state.reconciliation_settings,
+        admission=request.app.state.admission,
     )
     projects = build_project_service(
         unit_of_work,

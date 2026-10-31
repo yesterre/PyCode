@@ -533,6 +533,19 @@ class SqlAlchemyTraceEventRepository:
 
 
 class SqlAlchemyBackgroundTaskRepository:
+    def lock_owner_and_count_active(self, owner_id: UUID) -> int:
+        # Serialize admissions across all of this user's projects/processes.
+        # A subsequent READ COMMITTED statement sees the previous admission's commit.
+        owner = self.session.scalar(select(UserORM.id).where(UserORM.id == owner_id).with_for_update())
+        if owner is None:
+            raise BackendError("user_not_found", "User does not exist.")
+        return self.session.scalar(select(func.count()).select_from(BackgroundTaskORM).join(
+            ProjectORM, BackgroundTaskORM.project_id == ProjectORM.id,
+        ).where(
+            ProjectORM.owner_id == owner_id,
+            BackgroundTaskORM.status.in_(("queued", "running")),
+        ))
+
     def __init__(self, session: Session) -> None:
         self.session = session
 

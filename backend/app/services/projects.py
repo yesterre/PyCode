@@ -17,6 +17,7 @@ from backend.app.infrastructure.projects import ProjectOperationLocks
 from backend.app.infrastructure.repositories import RepositoryWorkspace
 from backend.app.integrations.pycode import PyCodeAdapter
 from backend.app.repositories.interfaces import UnitOfWork
+from backend.app.services.admission import AdmissionControl
 
 
 T = TypeVar("T")
@@ -36,12 +37,14 @@ class ProjectService:
         self, unit_of_work: UnitOfWork, adapter: PyCodeAdapter, *,
         workspace: RepositoryWorkspace, operations: ProjectOperationLocks,
         artifacts: SnapshotArtifactStore,
+        admission: AdmissionControl | None = None,
     ) -> None:
         self.uow = unit_of_work
         self.adapter = adapter
         self.workspace = workspace
         self.operations = operations
         self.artifacts = artifacts
+        self.admission = admission
 
     def create(self, name: str, repo_url: str, branch: str | None = None) -> Project:
         self.workspace.validate_source(repo_url, branch)
@@ -406,6 +409,8 @@ class ProjectService:
                     raise BackendError(
                         "project_not_ready", "Build the project index before analysis.",
                     )
+                if self.admission is not None:
+                    self.admission.admit_analysis(owner_id)
                 run = self.uow.agent_runs.create(
                     project_id, snapshot.id, task=text,
                     run_type="impact" if impact else "ask", model=model,

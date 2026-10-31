@@ -17,6 +17,7 @@ from backend.app.repositories import UnitOfWork
 from backend.app.services.projects import ProjectService
 from backend.app.services.agent_runs import AgentRunService
 from backend.app.services.background_tasks import BackgroundTaskService
+from backend.app.services.admission import AdmissionControl
 
 
 def repository_workspace_from_environment() -> RepositoryWorkspace:
@@ -54,10 +55,11 @@ def build_project_service(
     unit_of_work: UnitOfWork, *, adapter: PyCodeAdapter,
     workspace: RepositoryWorkspace, artifacts: SnapshotArtifactStore,
     operations: ProjectOperationLocks,
+    admission: AdmissionControl | None = None,
 ) -> ProjectService:
     return ProjectService(
         unit_of_work, adapter, workspace=workspace,
-        operations=operations, artifacts=artifacts,
+        operations=operations, artifacts=artifacts, admission=admission,
     )
 
 

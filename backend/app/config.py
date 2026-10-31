@@ -24,6 +24,33 @@ def _non_negative_int(name: str, default: str) -> int:
 
 
 @dataclass(frozen=True)
+class AdmissionSettings:
+    window_seconds: int = 60
+    index_requests: int = 10
+    agent_requests: int = 20
+    analysis_requests: int = 30
+    active_tasks: int = 4
+
+    def __post_init__(self) -> None:
+        if any(type(value) is not int or value <= 0 for value in vars(self).values()):
+            raise ValueError("Admission limits and window must be positive integers.")
+
+    @classmethod
+    def from_environment(cls) -> "AdmissionSettings":
+        load_environment()
+        return cls(**{
+            field: int(os.environ.get(name, str(default)))
+            for field, name, default in (
+                ("window_seconds", "PYCODE_RATE_WINDOW_SECONDS", 60),
+                ("index_requests", "PYCODE_RATE_INDEX_REQUESTS", 10),
+                ("agent_requests", "PYCODE_RATE_AGENT_REQUESTS", 20),
+                ("analysis_requests", "PYCODE_RATE_ANALYSIS_REQUESTS", 30),
+                ("active_tasks", "PYCODE_MAX_ACTIVE_TASKS_PER_USER", 4),
+            )
+        })
+
+
+@dataclass(frozen=True)
 class AuthSettings:
     jwt_secret: str = field(repr=False)
     jwt_algorithm: str = "HS256"

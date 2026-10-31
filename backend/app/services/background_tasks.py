@@ -14,6 +14,7 @@ from backend.app.core.models import (
 )
 from backend.app.repositories import UnitOfWork
 from backend.app.services.idempotency import repository_index_fingerprint
+from backend.app.services.admission import AdmissionControl
 
 
 logger = logging.getLogger("pycode.backend.tasks")
@@ -45,6 +46,7 @@ class BackgroundTaskService:
             [BackgroundTask], AbstractContextManager
         ] | None = None,
         clock: Callable[[], datetime] | None = None,
+        admission: AdmissionControl | None = None,
     ) -> None:
         self.unit_of_work = unit_of_work
         self.dispatcher = dispatcher
@@ -54,6 +56,7 @@ class BackgroundTaskService:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.lease_settings = lease_settings or ExecutionLeaseSettings()
         self.heartbeat_factory = heartbeat_factory
+        self.admission = admission
 
     def create_health_task(self) -> BackgroundTask:
         if self.dispatcher is None:
@@ -102,6 +105,8 @@ class BackgroundTaskService:
             if creation.created:
                 # Replays remain readable; a new archived submission rolls back.
                 project.ensure_not_archived()
+                if owner_id is not None and self.admission is not None:
+                    self.admission.admit_task(self.unit_of_work, owner_id, "index")
         if creation.created:
             return self._enqueue(
                 creation.task, self.dispatcher.enqueue_repository_index,

@@ -27,7 +27,8 @@ router = APIRouter(
 )
 
 
-@router.post("", status_code=202, response_model=AgentRunAcceptedResponse, responses={401: {"model": ErrorResponse}})
+@router.post("", status_code=202, response_model=AgentRunAcceptedResponse,
+             responses={code: {"model": ErrorResponse} for code in (401, 429)})
 def create_agent_run(
     body: CreateAgentRunRequest, user: CurrentUser, service: Service,
     idempotency_key: IdempotencyKeyHeader = None,

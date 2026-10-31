@@ -111,6 +111,8 @@ class AgentRunService:
                 raise BackendError(
                     "project_not_ready", "Build the project index before analysis.",
                 )
+            if self.background_tasks.admission is not None:
+                self.background_tasks.admission.admit_task(self.unit_of_work, owner_id, "agent")
             run = self.unit_of_work.agent_runs.create_queued(
                 project_id,
                 snapshot.id,

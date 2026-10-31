@@ -429,6 +429,16 @@ class InMemoryTraceEventRepository:
 
 
 class InMemoryBackgroundTaskRepository:
+    def lock_owner_and_count_active(self, owner_id: UUID) -> int:
+        # InMemoryUnitOfWork already holds the shared persistence RLock.
+        InMemoryUserRepository(self.state).get(owner_id)
+        return sum(
+            task.status in {BackgroundTaskStatus.QUEUED, BackgroundTaskStatus.RUNNING}
+            and task.project_id in self.state.projects
+            and self.state.projects[task.project_id].owner_id == owner_id
+            for task in self.state.background_tasks.values()
+        )
+
     def __init__(self, state: InMemoryPersistence) -> None:
         self.state = state
 

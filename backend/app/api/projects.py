@@ -113,6 +113,7 @@ def get_graph(project_id: UUID, snapshot_id: UUID, user: CurrentUser, service: S
 @router.post(
     "/{project_id}/index", status_code=202,
     response_model=RepositoryIndexTaskResponse,
+    responses={429: {"model": ErrorResponse}},
 )
 def index_project(
     project_id: UUID, user: CurrentUser, service: TaskService,
@@ -124,11 +125,11 @@ def index_project(
     )
 
 
-@router.post("/{project_id}/ask", response_model=AnalysisResponse)
+@router.post("/{project_id}/ask", response_model=AnalysisResponse, responses={429: {"model": ErrorResponse}})
 def ask_project(project_id: UUID, body: AskRequest, user: CurrentUser, service: Service):
     return service.ask(project_id, body.question, body.model, owner_id=user.id)
 
 
-@router.post("/{project_id}/impact", response_model=AnalysisResponse)
+@router.post("/{project_id}/impact", response_model=AnalysisResponse, responses={429: {"model": ErrorResponse}})
 def impact_project(project_id: UUID, body: ImpactRequest, user: CurrentUser, service: Service):
     return service.impact(project_id, body.file_path, body.model, owner_id=user.id)
