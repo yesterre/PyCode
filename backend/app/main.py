@@ -29,6 +29,7 @@ from backend.app.services.background_tasks import BackgroundTaskDispatcher
 from backend.app.services.admission import AdmissionControl
 from backend.app.metrics import RequestMetrics, router as metrics_router
 from backend.app.observability import RequestObservabilityMiddleware, configure_logging
+from backend.app.readiness import ReadinessProbe, router as readiness_router
 
 
 def create_app(*, adapter: PyCodeAdapter | None = None,
@@ -50,6 +51,7 @@ def create_app(*, adapter: PyCodeAdapter | None = None,
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         yield
+        app.state.readiness.close()
         if app.state.realtime_redis is not None:
             await app.state.realtime_redis.aclose()
         if app.state.admission is not None:
@@ -72,6 +74,7 @@ def create_app(*, adapter: PyCodeAdapter | None = None,
     )
     app.state.persistence = persistence
     app.state.database = database
+    app.state.readiness = ReadinessProbe(database)
     app.state.auth_settings = auth_settings
     app.state.observability_settings = observability_settings or ObservabilitySettings.from_environment()
     app.state.request_metrics = RequestMetrics()
@@ -104,6 +107,7 @@ def create_app(*, adapter: PyCodeAdapter | None = None,
     app.include_router(agent_runs_router)
     app.include_router(auth_router)
     app.include_router(metrics_router)
+    app.include_router(readiness_router)
 
     @app.get("/health", tags=["health"])
     def health() -> dict[str, str]:

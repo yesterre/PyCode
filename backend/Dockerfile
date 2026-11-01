@@ -21,4 +21,6 @@ RUN python -m pip install --no-cache-dir ".[backend]" \
 
 USER pycode
 
+ENTRYPOINT ["python", "-m", "backend.check_config", "--exec"]
+
 CMD ["python", "-m", "uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]

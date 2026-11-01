@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 import os
+from math import isfinite
 
 from dotenv import load_dotenv
 
@@ -11,7 +12,7 @@ def load_environment() -> None:
 
 def _positive_float(name: str, default: str) -> float:
     value = float(os.environ.get(name, default))
-    if value <= 0:
+    if not isfinite(value) or value <= 0:
         raise RuntimeError(f"{name} must be positive.")
     return value
 
@@ -263,3 +264,75 @@ class CeleryDeliverySettings:
                 "PYCODE_CELERY_VISIBILITY_TIMEOUT_SECONDS must be positive.",
             )
         return cls(visibility_timeout_seconds=timeout)
+
+
+def validate_deployment_configuration(role: str) -> None:
+    """Validate existing settings without I/O or exposing their secret values."""
+    from sqlalchemy.engine import make_url
+    from backend.app.infrastructure.redis import RedisSettings
+
+    if role not in {"api", "worker", "migration"}:
+        raise ValueError("Unknown backend process role.")
+    load_environment()
+
+    def checked(name, read):
+        try:
+            value = read()
+            if any(isinstance(item, float) and not isfinite(item) for item in vars(value).values()):
+                raise ValueError()
+            return value
+        except Exception:
+            raise ValueError(f"Invalid {name} configuration.") from None
+
+    def database():
+        url = make_url(os.environ.get("DATABASE_URL", ""))
+        if (url.drivername != "postgresql+psycopg" or not url.database
+                or (url.password and url.password.lower().startswith(("replace-", "change-me", "changeme")))):
+            raise ValueError()
+        # Force validation of a possibly malformed port without printing its value.
+        url.port
+        return DatabaseSettings.from_environment()
+
+    def redis_settings():
+        from redis import Redis
+        settings = RedisSettings.from_environment()
+        client = Redis.from_url(settings.url, socket_connect_timeout=settings.connect_timeout_seconds,
+                                socket_timeout=settings.socket_timeout_seconds)
+        try:
+            options = client.connection_pool.connection_kwargs
+            for name in ("socket_connect_timeout", "socket_timeout"):
+                if not isfinite(float(options[name])) or float(options[name]) <= 0:
+                    raise ValueError()
+            if int(options.get("db", 0)) < 0:
+                raise ValueError()
+        finally:
+            client.close()
+        return settings
+
+    checked("database", database)
+    if role == "migration":
+        return
+    checked("Redis", redis_settings)
+    checked("admission", AdmissionSettings.from_environment)
+    checked("queued reconciliation", QueuedReconciliationSettings.from_environment)
+    lease = checked("execution lease", ExecutionLeaseSettings.from_environment)
+    stale = checked("stale reconciliation", StaleReconciliationSettings.from_environment)
+    delivery = checked("broker delivery", CeleryDeliverySettings.from_environment)
+    checked("repository retry", RepositoryRetrySettings.from_environment)
+    checked("LLM transport", LLMTransportSettings.from_environment)
+
+    try:
+        ttl = _positive_float("PYCODE_PROJECT_LOCK_TTL_SECONDS", "300")
+        renewal = (_positive_float("PYCODE_PROJECT_LOCK_RENEW_SECONDS", "60")
+                   if os.environ.get("PYCODE_PROJECT_LOCK_RENEW_SECONDS", "").strip() else min(60, ttl / 3))
+        _positive_float("PYCODE_GIT_TIMEOUT_SECONDS", "120")
+        if not os.environ.get("PYCODE_GIT_ALLOWED_HOSTS", "github.com,gitlab.com,gitee.com").strip():
+            raise ValueError()
+        if (renewal >= ttl or lease.ttl_seconds <= ttl + max(lease.heartbeat_interval_seconds, stale.interval_seconds)
+                or delivery.visibility_timeout_seconds <= lease.ttl_seconds):
+            raise ValueError()
+    except Exception:
+        raise ValueError("Invalid lock/lease/delivery timing configuration.") from None
+    if role == "api":
+        checked("authentication", AuthSettings.from_environment)
+        checked("observability", ObservabilitySettings.from_environment)

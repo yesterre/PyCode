@@ -123,9 +123,12 @@ Analysis History 中的每一项都是独立分析记录，不是多轮对话线
 
 需要 Docker Engine（或 Docker Desktop）及 Docker Compose plugin。
 
+当前后端的配置预检、就绪探针、初始化与升级/回滚步骤见[后端部署说明](backend/DEPLOYMENT.md)。请先检出要部署的目标版本，下面的复制操作不要覆盖已有 `.env`。
+
 ```bash
-git clone --branch v2.0 https://github.com/yesterre/PyCode.git
+git clone https://github.com/yesterre/PyCode.git
 cd PyCode
+# 先检出要部署的固定版本/提交，再继续配置与构建。
 cp .env.example .env
 ```
 
@@ -135,12 +138,13 @@ PowerShell 中复制配置文件：
 Copy-Item .env.example .env
 ```
 
-编辑 `.env`，至少确认以下变量。不要提交真实密码或 API Key。
+编辑 `.env`，至少配置数据库密码和随机 JWT 密钥；LLM 相关变量只在启用问答/Agent 时需要。不要提交真实密码或 API Key。
 
 ```dotenv
 POSTGRES_USER=pycode
 POSTGRES_PASSWORD=replace-with-a-url-safe-password
 POSTGRES_DB=pycode
+PYCODE_JWT_SECRET=replace-with-a-generated-secret-of-at-least-32-bytes
 
 OPENAI_API_KEY=replace-with-your-api-key
 OPENAI_MODEL=your-model
@@ -161,6 +165,7 @@ docker compose up --build -d
 - Web UI：<http://127.0.0.1:8080>
 - Backend Swagger：<http://127.0.0.1:8000/docs>
 - Backend health：<http://127.0.0.1:8000/health>
+- Backend readiness：<http://127.0.0.1:8000/ready>（配置、迁移版本和 Redis 就绪）
 
 Compose 会先等待 PostgreSQL healthy，再运行 `alembic upgrade head`；Migration 成功后启动 Backend、Worker、Beat 和 Frontend。PostgreSQL、Redis 与 Workspace 分别使用 named volume。
 
@@ -266,7 +271,7 @@ docker compose restart frontend
 
 按 [`.env.example`](.env.example) 配置 `PYCODE_JWT_SECRET`，使用至少 32 字节的随机密钥。
 `PYCODE_JWT_ALGORITHM` 仅支持 `HS256`；`PYCODE_ACCESS_TOKEN_TTL_SECONDS` 默认 900 秒，
-允许范围为 1～3600 秒。缺少有效密钥时，认证入口返回 503。
+允许范围为 1～3600 秒。直接运行 API 时缺少有效密钥会使认证入口和 `/ready` 返回 503，`/health` 仍表示进程存活；容器入口会在启动 API 前拒绝无效配置。Worker 不依赖浏览器 JWT。
 
 可通过 Swagger 完成注册和登录，将返回的 `access_token` 填入 Authorize，
 再调用 `/api/v1/auth/me`；API 客户端使用 `Authorization: Bearer <access_token>` Header。
@@ -340,7 +345,7 @@ npm run e2e
 
 Playwright 流程使用受控 FastAPI test server、Vite 和 headless Chromium，不调用付费 LLM，也不要求 PostgreSQL 或 Redis。首次运行前需要安装 Playwright Chromium。
 
-GitHub Actions 中的 `backend`、`frontend` 和 `docker` jobs 分别覆盖 Python 测试、Frontend 测试/类型检查/构建，以及 Compose 配置与镜像构建验证。
+GitHub Actions 中的 `backend`、`frontend` 和 `docker` jobs 分别覆盖 Python 配置/迁移/授权与隔离测试、Frontend 测试/类型检查/构建，以及隔离 Compose 的构建、启动、持久化和健康故障恢复验证。
 
 ## ⚠️ 当前限制
 

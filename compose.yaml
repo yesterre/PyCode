@@ -1,5 +1,5 @@
 x-backend-image: &backend-image
-  image: pycode-backend:phase9
+  image: ${PYCODE_BACKEND_IMAGE:-pycode-backend:phase9}
   build:
     context: .
     dockerfile: backend/Dockerfile
@@ -50,7 +50,7 @@ services:
   migrate:
     <<: *backend-image
     env_file:
-      - .env
+      - "${PYCODE_ENV_FILE:-.env}"
     environment: *backend-environment
     command: ["python", "-m", "alembic", "upgrade", "head"]
     depends_on:
@@ -60,7 +60,7 @@ services:
   backend:
     <<: *backend-image
     env_file:
-      - .env
+      - "${PYCODE_ENV_FILE:-.env}"
     environment: *backend-environment
     command: ["python", "-m", "uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     depends_on:
@@ -71,11 +71,11 @@ services:
     volumes:
       - pycode_workspace:/var/lib/pycode/workspaces
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${PYCODE_API_PORT:-8000}:8000"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=8).read()"]
       interval: 10s
-      timeout: 5s
+      timeout: 10s
       retries: 5
       start_period: 10s
     restart: unless-stopped
@@ -84,7 +84,7 @@ services:
   worker:
     <<: *backend-image
     env_file:
-      - .env
+      - "${PYCODE_ENV_FILE:-.env}"
     environment: *backend-environment
     command: ["python", "-m", "celery", "-A", "backend.app.worker:app", "worker", "--loglevel=INFO"]
     depends_on:
@@ -100,7 +100,7 @@ services:
   beat:
     <<: *backend-image
     env_file:
-      - .env
+      - "${PYCODE_ENV_FILE:-.env}"
     environment: *backend-environment
     command: ["python", "-m", "celery", "-A", "backend.app.worker:app", "beat", "--loglevel=INFO", "--schedule=/tmp/celerybeat-schedule"]
     depends_on:
@@ -112,7 +112,7 @@ services:
     logging: *default-logging
 
   frontend:
-    image: pycode-frontend:phase9
+    image: ${PYCODE_FRONTEND_IMAGE:-pycode-frontend:phase9}
     build:
       context: .
       dockerfile: frontend/Dockerfile
@@ -122,7 +122,7 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "127.0.0.1:8080:80"
+      - "127.0.0.1:${PYCODE_WEB_PORT:-8080}:80"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
       interval: 10s

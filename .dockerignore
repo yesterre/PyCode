@@ -47,6 +47,10 @@ CCLearning*.zip
 docs_demo/
 docs_v1.0/
 docs_v2.0/
+docs_v3.0/
+AGENTS.md
+overall_review/
+.aws/
 ui/
 examples
 tests
