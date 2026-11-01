@@ -59,7 +59,7 @@ def create_app(*, adapter: PyCodeAdapter | None = None,
         if database is not None:
             database.dispose()
 
-    app = FastAPI(title="PyCode Backend", version="2.0-phase5d2", lifespan=lifespan)
+    app = FastAPI(title="PyCode Backend", version="3.0.0", lifespan=lifespan)
     if workspace is None:
         workspace = repository_workspace_from_environment()
     app.state.workspace = workspace
