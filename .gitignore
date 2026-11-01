@@ -91,7 +91,8 @@ celerybeat-schedule.*
 docs_demo/
 docs_v1.0/
 docs_v2.0/
-docs_v3.0/*
+docs_v3.0/
+
 docs_v3.0/v3_backend/
 docs_v3.0/v3_backend/*
 ui/
