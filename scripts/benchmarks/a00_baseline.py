@@ -25,6 +25,7 @@ from pycode.storage import save_graph, save_index
 
 
 ROOT = Path(__file__).resolve().parents[2]
+DATASET_DIR = ROOT / "tests" / "fixtures" / "a00"
 STAGE = ROOT / "docs_v3.0" / "v3_agent" / "A00"
 CORPUS_PREFIXES = ("pycode/", "backend/")
 
@@ -232,7 +233,7 @@ def run_baseline(repo: Path, dataset_path: Path, *, repeats: int = 5) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", type=Path, default=STAGE / "questions.json")
+    parser.add_argument("--dataset", type=Path, default=DATASET_DIR / "questions.json")
     parser.add_argument("--output", type=Path, default=STAGE / "baseline.json")
     parser.add_argument("--repeats", type=int, default=5)
     args = parser.parse_args()

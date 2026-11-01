@@ -9,7 +9,7 @@ import pytest
 import pycode.engine
 from pycode.retriever import ContextItem
 from scripts.benchmarks.a00_baseline import (
-    ROOT, STAGE, materialize, read_corpus, run_baseline, score, sha256,
+    DATASET_DIR, ROOT, materialize, read_corpus, run_baseline, score, sha256,
     symbol_span, validate_dataset,
 )
 
@@ -78,8 +78,8 @@ def test_pinned_question_set_and_real_pipelines_remain_offline(monkeypatch):
 
     monkeypatch.setattr(pycode.engine, "OpenAIResponsesClient", forbidden)
     monkeypatch.setattr(socket, "create_connection", forbidden)
-    dataset = json.loads((STAGE / "questions.json").read_text(encoding="utf-8"))
-    report = run_baseline(ROOT, STAGE / "questions.json", repeats=1)
+    dataset = json.loads((DATASET_DIR / "questions.json").read_text(encoding="utf-8"))
+    report = run_baseline(ROOT, DATASET_DIR / "questions.json", repeats=1)
     assert report["commit"] == dataset["commit"]
     assert report["snapshot_binding"] == "git:" + dataset["commit"]
     assert report["scored_cases"] == sum(bool(case["evidence"]) for case in dataset["cases"])
