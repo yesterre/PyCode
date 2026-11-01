@@ -13,6 +13,26 @@ class CallInfo:
     calls: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ChunkSpan:
+    """Transient lexical boundaries collected during the existing AST parse."""
+
+    symbol_name: str
+    qualified_name: str
+    symbol_key: str
+    symbol_kind: str
+    class_name: str | None
+    parent_symbol: str | None
+    occurrence: int
+    symbol_start_line: int
+    symbol_end_line: int
+    start_line: int
+    end_line: int
+    part_index: int
+    part_count: int
+    oversized: bool
+
+
 @dataclass
 class FileInfo:
     path: str
@@ -21,6 +41,9 @@ class FileInfo:
     functions: list[str] = field(default_factory=list)
     call_infos: list[CallInfo] = field(default_factory=list)
     has_main_guard: bool = False
+    # Build-only data, deliberately excluded from the legacy Index JSON.
+    source_text: str | None = field(default=None, compare=False, repr=False)
+    chunk_spans: list[ChunkSpan] = field(default_factory=list, compare=False, repr=False)
 
 
 @dataclass

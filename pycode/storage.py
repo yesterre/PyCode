@@ -18,8 +18,12 @@ def save_index(index: ProjectIndex, output_path: Path) -> None:
     """Save a project index as a readable JSON file."""
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    data = asdict(index)
+    for file in data["files"]:
+        file.pop("source_text")
+        file.pop("chunk_spans")
     path.write_text(
-        json.dumps(asdict(index), ensure_ascii=False, indent=2),
+        json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 

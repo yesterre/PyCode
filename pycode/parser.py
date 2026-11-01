@@ -2,6 +2,7 @@ import ast
 from pathlib import Path
 
 from pycode.models import CallInfo, ClassInfo, FileInfo
+from pycode.chunks import collect_chunk_spans
 
 
 def parse_python_file(file_path: Path, project_path: Path | None = None) -> FileInfo:
@@ -51,6 +52,8 @@ def parse_python_file(file_path: Path, project_path: Path | None = None) -> File
         functions=functions,
         call_infos=call_infos,
         has_main_guard=has_main_guard,
+        source_text=source,
+        chunk_spans=collect_chunk_spans(tree, source),
     )
 
 

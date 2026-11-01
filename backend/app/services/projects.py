@@ -12,7 +12,7 @@ from backend.app.core.models import (
     AnalysisHistoryItem, AnalysisHistoryMode, IndexSummary, Project,
     ProjectAnalysis, ProjectSnapshot, ProjectStatus,
 )
-from backend.app.infrastructure.artifacts import SnapshotArtifactBundle, SnapshotArtifactStore
+from backend.app.infrastructure.artifacts import CHUNKS_FILE, SnapshotArtifactBundle, SnapshotArtifactStore
 from backend.app.infrastructure.projects import ProjectOperationLocks
 from backend.app.infrastructure.repositories import RepositoryWorkspace
 from backend.app.integrations.pycode import PyCodeAdapter
@@ -149,6 +149,7 @@ class ProjectService:
                     project_id, ProjectStatus.PREPARING, workspace_path=workspace_path,
                 )
             target_snapshot: ProjectSnapshot | None = None
+            preserved_snapshot: ProjectSnapshot | None = None
             try:
                 project = self._reconcile_legacy_snapshots(project)
                 root, revision = self.workspace.synchronize(project)
@@ -176,6 +177,11 @@ class ProjectService:
                             project, existing.id, revision.commit_sha,
                         )
                         self._ensure_execution(project_lock, execution)
+                        if bundle.chunks_path is None:
+                            preserved_snapshot = existing
+                            bundle = self._ensure_chunks(
+                                project, existing, root, bundle, project_lock, execution,
+                            )
                         return self._activate(
                             project_id, existing, bundle,
                             task_id=task_id, execution_token=execution_token,
@@ -195,6 +201,9 @@ class ProjectService:
                             project, existing.id, revision.commit_sha,
                         )
                         self._ensure_execution(project_lock, execution)
+                        recovered = self._ensure_chunks(
+                            project, existing, root, recovered, project_lock, execution,
+                        )
                         return self._activate(
                             project_id, existing, recovered, finalize=True,
                             task_id=task_id, execution_token=execution_token,
@@ -226,13 +235,7 @@ class ProjectService:
                     self.workspace.assert_head(project, revision.commit_sha)
                     self._ensure_execution(project_lock, execution)
 
-                bundle = self.artifacts.build_and_publish(
-                    project_id, target_snapshot.id, revision.commit_sha,
-                    lambda index_path, graph_path: self.adapter.index(
-                        root, index_path=index_path, graph_path=graph_path,
-                    ),
-                    before_publish=before_publish,
-                )
+                bundle = self._build_bundle(project_id, target_snapshot, root, before_publish)
                 self._ensure_execution(project_lock, execution)
                 return self._activate(
                     project_id, target_snapshot, bundle, finalize=True,
@@ -250,15 +253,23 @@ class ProjectService:
                 # source text or credentials); the HTTP handler logs the error.
                 with self.uow.transaction():
                     current = self.uow.projects.get(project_id)
-                    if target_snapshot is not None:
-                        self.uow.snapshots.mark_failed(
-                            target_snapshot.id, _safe_index_error(exc),
+                    if preserved_snapshot is not None:
+                        # Chunk backfill never clears or fails an already-ready
+                        # base Snapshot. The store rolls back failed replacement.
+                        self._ensure_execution(project_lock, execution)
+                        self.uow.projects.set_status(
+                            project_id, ProjectStatus.FAILED, error=_safe_index_error(exc),
                         )
-                        if current.current_snapshot_id == target_snapshot.id:
-                            self.uow.projects.set_current_snapshot(project_id, None)
-                    self.uow.projects.set_status(
-                        project_id, ProjectStatus.FAILED, error=_safe_index_error(exc),
-                    )
+                    else:
+                        if target_snapshot is not None:
+                            self.uow.snapshots.mark_failed(
+                                target_snapshot.id, _safe_index_error(exc),
+                            )
+                            if current.current_snapshot_id == target_snapshot.id:
+                                self.uow.projects.set_current_snapshot(project_id, None)
+                        self.uow.projects.set_status(
+                            project_id, ProjectStatus.FAILED, error=_safe_index_error(exc),
+                        )
                 raise
 
     def recover_index_for_snapshot(
@@ -274,6 +285,7 @@ class ProjectService:
 
         with self.operations.operation(project_id) as project_lock:
             target_snapshot: ProjectSnapshot | None = None
+            preserved_snapshot: ProjectSnapshot | None = None
             try:
                 self._ensure_execution(project_lock, execution)
                 with self.uow.transaction():
@@ -309,7 +321,16 @@ class ProjectService:
 
                 if target_snapshot.status == "ready":
                     bundle = self.artifacts.validate(project_id, target_snapshot)
-                    return replace(project, index_summary=bundle.summary)
+                    if bundle.chunks_path is None:
+                        preserved_snapshot = target_snapshot
+                        root = self.workspace.checkout_exact(project, target_snapshot.commit_sha)
+                        self.workspace.assert_head(project, target_snapshot.commit_sha)
+                        bundle = self._ensure_chunks(
+                            project, target_snapshot, root, bundle, project_lock, execution,
+                        )
+                    self._ensure_execution(project_lock, execution)
+                    return self._activate(project_id, target_snapshot, bundle,
+                                          task_id=task_id, execution_token=execution_token)
 
                 if not self.workspace.commit_available(
                     project, target_snapshot.commit_sha,
@@ -338,13 +359,10 @@ class ProjectService:
                         )
                         self._ensure_execution(project_lock, execution)
 
-                    bundle = self.artifacts.build_and_publish(
-                        project_id, target_snapshot.id, target_snapshot.commit_sha,
-                        lambda index_path, graph_path: self.adapter.index(
-                            root, index_path=index_path, graph_path=graph_path,
-                        ),
-                        before_publish=before_publish,
-                    )
+                    bundle = self._build_bundle(project_id, target_snapshot, root, before_publish)
+                bundle = self._ensure_chunks(
+                    project, target_snapshot, root, bundle, project_lock, execution,
+                )
                 self._ensure_execution(project_lock, execution)
                 return self._activate(
                     project_id, target_snapshot, bundle, finalize=True,
@@ -358,17 +376,57 @@ class ProjectService:
                     raise
                 with self.uow.transaction():
                     current = self.uow.projects.get(project_id)
-                    if target_snapshot is not None:
-                        self.uow.snapshots.mark_failed(
-                            target_snapshot.id, _safe_index_error(exc),
+                    if preserved_snapshot is not None:
+                        self._ensure_execution(project_lock, execution)
+                        self.uow.projects.set_status(
+                            project_id, ProjectStatus.FAILED, error=_safe_index_error(exc),
                         )
-                        if current.current_snapshot_id == target_snapshot.id:
-                            self.uow.projects.set_current_snapshot(project_id, None)
-                    self.uow.projects.set_status(
-                        project_id, ProjectStatus.FAILED,
-                        error=_safe_index_error(exc),
-                    )
+                    else:
+                        if target_snapshot is not None:
+                            self.uow.snapshots.mark_failed(
+                                target_snapshot.id, _safe_index_error(exc),
+                            )
+                            if current.current_snapshot_id == target_snapshot.id:
+                                self.uow.projects.set_current_snapshot(project_id, None)
+                        self.uow.projects.set_status(
+                            project_id, ProjectStatus.FAILED,
+                            error=_safe_index_error(exc),
+                        )
                 raise
+
+    def _build_bundle(self, project_id, snapshot, root, before_publish, *, preserve_base=False, base_summary=None):
+        def build(index_path, graph_path):
+            if preserve_base:
+                if base_summary is None:
+                    raise ValueError("Chunk backfill requires the original base summary.")
+                self.adapter.build_chunks(
+                    root, index_path.parent / CHUNKS_FILE,
+                    project_id=project_id, snapshot_id=snapshot.id, commit_sha=snapshot.commit_sha,
+                )
+                return base_summary
+            return self.adapter.index(
+                root, index_path=index_path, graph_path=graph_path,
+                project_id=project_id, snapshot_id=snapshot.id, commit_sha=snapshot.commit_sha,
+            )
+
+        return self.artifacts.build_and_publish(
+            project_id, snapshot.id, snapshot.commit_sha, build,
+            before_publish=before_publish, require_chunks=True, preserve_base=preserve_base,
+        )
+
+    def _ensure_chunks(self, project, snapshot, root, bundle, project_lock, execution):
+        if bundle.chunks_path is not None:
+            return bundle
+        self._ensure_execution(project_lock, execution)
+        with self.uow.transaction():
+            self.uow.projects.set_status(project.id, ProjectStatus.INDEXING)
+
+        def before_publish():
+            self.workspace.assert_head(project, snapshot.commit_sha)
+            self._ensure_execution(project_lock, execution)
+
+        return self._build_bundle(project.id, snapshot, root, before_publish,
+                                  preserve_base=True, base_summary=bundle.summary)
 
     def ask(self, project_id: UUID, question: str, model: str | None, *, owner_id: UUID) -> ProjectAnalysis:
         return self._analyze(project_id, question, model, impact=False, owner_id=owner_id)

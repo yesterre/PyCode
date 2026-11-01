@@ -146,11 +146,23 @@ class StaleRunningReconciler:
                     current.id, current.execution_token,
                 )
                 return "completed" if completed is not None else "noop"
+            chunk_backfill = (
+                snapshot.status == "ready"
+                and project.current_snapshot_id == snapshot.id
+                and project.status in {ProjectStatus.PREPARING, ProjectStatus.INDEXING}
+            )
             if (
-                snapshot.status != "indexing"
+                (snapshot.status != "indexing" and not chunk_backfill)
                 or project.current_snapshot_id not in {None, snapshot.id}
                 or current.attempt_count >= self.settings.max_execution_attempts
             ):
+                if chunk_backfill:
+                    # Retry exhaustion fails this task, not the pre-existing base
+                    # Snapshot. No new derived-data status or queue is introduced.
+                    decision = self._fail_repository_consistency(current)
+                    if decision == "failed":
+                        self.uow.projects.set_status(project.id, ProjectStatus.READY)
+                    return decision
                 return self._fail_repository_consistency(current)
             requeued = self.uow.background_tasks.requeue_if_stale(
                 current.id, current.execution_token,

@@ -13,11 +13,14 @@ from uuid import UUID, uuid4
 from backend.app.core.errors import BackendError
 from backend.app.core.models import IndexSummary, ProjectSnapshot
 from pycode.storage import load_graph, load_index
+from pycode.chunks import ChunkIndex, SnapshotBinding, load_chunk_index
+from pycode.utils import normalize_path
 
 
 INDEX_FILE = "index.json"
 GRAPH_FILE = "code_graph.json"
 MANIFEST_FILE = "manifest.json"
+CHUNKS_FILE = "chunks.json"
 
 
 @dataclass(frozen=True)
@@ -27,6 +30,7 @@ class SnapshotArtifactBundle:
     index_artifact_path: str
     graph_artifact_path: str
     summary: IndexSummary
+    chunks_path: Path | None = None
 
 
 class SnapshotArtifactStore:
@@ -46,16 +50,21 @@ class SnapshotArtifactStore:
         self, project_id: UUID, snapshot_id: UUID, commit_sha: str,
         builder: Callable[[Path, Path], IndexSummary],
         *, before_publish: Callable[[], None] | None = None,
+        require_chunks: bool = False, preserve_base: bool = False,
     ) -> SnapshotArtifactBundle:
         artifact_root = self._artifact_root(project_id)
         artifact_root.mkdir(exist_ok=True)
         self._check_entry(artifact_root, self._project_root(project_id))
         self._recover(project_id, snapshot_id, commit_sha)
+        original = self._read_bundle(project_id, snapshot_id, commit_sha) if preserve_base else None
         with TemporaryDirectory(
             prefix=f".{snapshot_id}.staging-", dir=artifact_root,
         ) as temporary:
             staging = Path(temporary) / "bundle"
             staging.mkdir()
+            if original is not None:
+                shutil.copyfile(original.index_path, staging / INDEX_FILE)
+                shutil.copyfile(original.graph_path, staging / GRAPH_FILE)
             summary = builder(staging / INDEX_FILE, staging / GRAPH_FILE)
             verified = self._verify_artifacts(staging / INDEX_FILE, staging / GRAPH_FILE)
             if verified != summary:
@@ -63,6 +72,15 @@ class SnapshotArtifactStore:
                     "artifacts_unavailable",
                     "Generated Snapshot artifacts do not match their summary.",
                 )
+            if require_chunks and not (staging / CHUNKS_FILE).is_file():
+                raise BackendError("artifacts_unavailable", "Snapshot chunks were not generated.")
+            if original is not None:
+                # A derived-data upgrade does not rewrite published base bytes.
+                # Older parsers may have produced different graph counts; the
+                # new chunks must match the old file set, not rewrite its graph.
+                shutil.copyfile(original.index_path, staging / INDEX_FILE)
+                shutil.copyfile(original.graph_path, staging / GRAPH_FILE)
+                summary = original.summary
             self._write_manifest(
                 staging, project_id, snapshot_id, commit_sha, summary,
             )
@@ -158,6 +176,11 @@ class SnapshotArtifactStore:
         self, project_id: UUID, snapshot_id: UUID, commit_sha: str,
     ) -> SnapshotArtifactBundle:
         directory = self._bundle_dir(project_id, snapshot_id)
+        return self._read_directory(directory, project_id, snapshot_id, commit_sha)
+
+    def _read_directory(
+        self, directory: Path, project_id: UUID, snapshot_id: UUID, commit_sha: str,
+    ) -> SnapshotArtifactBundle:
         try:
             self._check_tree(directory, self._project_root(project_id))
             manifest = json.loads((directory / MANIFEST_FILE).read_text(encoding="utf-8"))
@@ -174,6 +197,15 @@ class SnapshotArtifactStore:
                 "index_sha256": self._sha256(index_path),
                 "graph_sha256": self._sha256(graph_path),
             }
+            version = manifest.get("version")
+            chunks_path = None
+            if type(version) is not int or version not in {1, 2}:
+                raise ValueError("Unsupported Snapshot manifest version")
+            if version == 2:
+                chunks_path = directory / CHUNKS_FILE
+                chunks = self._verify_chunks(chunks_path, project_id, snapshot_id, commit_sha, index_path)
+                expected.update(version=2, chunks_schema_version=chunks.schema_version,
+                                chunks_sha256=self._sha256(chunks_path), chunk_count=len(chunks.chunks))
             if manifest != expected:
                 raise ValueError("Snapshot artifact manifest mismatch")
         except BackendError:
@@ -184,8 +216,30 @@ class SnapshotArtifactStore:
             ) from exc
         index_relative, graph_relative = self.relative_paths(snapshot_id)
         return SnapshotArtifactBundle(
-            index_path, graph_path, index_relative, graph_relative, summary,
+            index_path, graph_path, index_relative, graph_relative, summary, chunks_path,
         )
+
+    def read_chunks(self, project_id: UUID, snapshot: ProjectSnapshot) -> ChunkIndex | None:
+        """Trusted store read; user-facing callers must authorize Project first.
+
+        A valid v1 bundle has no chunks, and is not a corrupt Snapshot.
+        """
+        bundle = self.read_ready(project_id, snapshot)
+        if bundle.chunks_path is None:
+            return None
+        return self._verify_chunks(bundle.chunks_path, project_id, snapshot.id,
+                                   snapshot.commit_sha, bundle.index_path)
+
+    @staticmethod
+    def _verify_chunks(path, project_id, snapshot_id, commit_sha, index_path):
+        try:
+            chunks = load_chunk_index(path, SnapshotBinding(str(project_id), str(snapshot_id), commit_sha))
+            expected_paths = {normalize_path(file.path) for file in load_index(index_path).files}
+            if {file.path for file in chunks.files} != expected_paths:
+                raise ValueError("Chunk file set differs from the base Index")
+            return chunks
+        except (OSError, ValueError, UnicodeError, KeyError, TypeError, AttributeError) as exc:
+            raise BackendError("artifacts_unavailable", "Snapshot chunks are unavailable.") from exc
 
     def _write_manifest(
         self, directory: Path, project_id: UUID, snapshot_id: UUID,
@@ -202,6 +256,11 @@ class SnapshotArtifactStore:
             "index_sha256": self._sha256(directory / INDEX_FILE),
             "graph_sha256": self._sha256(directory / GRAPH_FILE),
         }
+        if (directory / CHUNKS_FILE).exists():
+            chunks = self._verify_chunks(directory / CHUNKS_FILE, project_id, snapshot_id,
+                                         commit_sha, directory / INDEX_FILE)
+            manifest.update(version=2, chunks_schema_version=chunks.schema_version,
+                            chunks_sha256=self._sha256(directory / CHUNKS_FILE), chunk_count=len(chunks.chunks))
         (directory / MANIFEST_FILE).write_text(
             json.dumps(manifest, sort_keys=True, separators=(",", ":")),
             encoding="utf-8",
@@ -220,7 +279,12 @@ class SnapshotArtifactStore:
                 final.rename(backup)
             try:
                 staging.rename(final)
-            except OSError:
+                # Validate before discarding the old directory. Failed post-publish
+                # checks roll back as well as Windows rename failures.
+                self._read_bundle(project_id, snapshot_id, commit_sha)
+            except (OSError, BackendError):
+                if final.exists() and not staging.exists():
+                    final.rename(staging)
                 if backup is not None and backup.exists() and not final.exists():
                     backup.rename(final)
                 raise
@@ -230,8 +294,6 @@ class SnapshotArtifactStore:
             ) from exc
         if backup is not None:
             self._remove_tree_best_effort(backup, self._project_root(project_id))
-        # Refuse to report success unless the newly published bundle is complete.
-        self._read_bundle(project_id, snapshot_id, commit_sha)
 
     def _recover(
         self, project_id: UUID, snapshot_id: UUID, commit_sha: str,
@@ -246,6 +308,7 @@ class SnapshotArtifactStore:
             reverse=True,
         ) if artifact_root.exists() else []
         if not final.exists() and backups:
+            self._read_directory(backups[0], project_id, snapshot_id, commit_sha)
             try:
                 backups[0].rename(final)
             except OSError as exc:
@@ -258,8 +321,27 @@ class SnapshotArtifactStore:
             try:
                 self._read_bundle(project_id, snapshot_id, commit_sha)
             except BackendError:
-                # A repair will replace this directory. Preserve backups until
-                # that replacement succeeds.
+                # An interrupted replacement may leave a bad new directory and
+                # a complete backup. Validate the backup before touching either.
+                for backup in backups:
+                    try:
+                        self._read_directory(backup, project_id, snapshot_id, commit_sha)
+                    except BackendError:
+                        continue
+                    self._check_tree(final, self._project_root(project_id))
+                    damaged = artifact_root / f".{snapshot_id}.damaged-{uuid4()}"
+                    try:
+                        final.rename(damaged)
+                        try:
+                            backup.rename(final)
+                        except OSError:
+                            damaged.rename(final)
+                            raise
+                    except OSError as exc:
+                        raise BackendError("artifact_publish_failed", "Snapshot artifact recovery failed.") from exc
+                    self._remove_tree_best_effort(damaged, self._project_root(project_id))
+                    self._recover(project_id, snapshot_id, commit_sha)
+                    break
                 return
             for backup in backups:
                 self._remove_tree_best_effort(backup, self._project_root(project_id))

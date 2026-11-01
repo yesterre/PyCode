@@ -5,6 +5,7 @@ from pathlib import Path
 
 from pycode.agent import AgentResult, run_agent_task
 from pycode.constants import DEFAULT_ARTIFACT_DIR, DEFAULT_GRAPH_FILE, DEFAULT_INDEX_FILE
+from pycode.chunks import SnapshotBinding, build_chunk_index, save_chunk_index
 from pycode.graph_builder import build_code_graph
 from pycode.llm_client import LLMClient, OpenAIResponsesClient
 from pycode.models import CodeGraph, GraphEdge, GraphNode, ProjectIndex
@@ -58,8 +59,13 @@ class PyCodeEngine:
 
     def index(
         self, project_path: str | Path, output_path: str | Path | None = None,
+        *, graph_output_path: str | Path | None = None,
+        chunk_output_path: str | Path | None = None,
+        binding: SnapshotBinding | None = None,
     ) -> ProjectIndex:
-        """Build and save only the index; explicit output paths are cwd-relative."""
+        """Build once; optionally save Graph/Chunk derivatives from that parse."""
+        if (chunk_output_path is None) != (binding is None):
+            raise ValueError("Chunk output and Snapshot binding must be supplied together.")
         root = Path(project_path)
         result = self.build_index(root)
         destination = (
@@ -67,14 +73,21 @@ class PyCodeEngine:
             else root / DEFAULT_ARTIFACT_DIR / DEFAULT_INDEX_FILE
         )
         save_index(result, destination)
+        if graph_output_path is not None:
+            self.graph(root, output_path=graph_output_path, index=result)
+        if chunk_output_path is not None:
+            save_chunk_index(build_chunk_index(result, binding), Path(chunk_output_path))
         return result
 
     def graph(
         self, project_path: str | Path, output_path: str | Path | None = None,
+        *, index: ProjectIndex | None = None,
     ) -> CodeGraph:
         """Scan current sources and save only the graph, without requiring an index file."""
         root = Path(project_path)
-        result = build_code_graph(self.build_index(root))
+        if index is not None and Path(index.project_path).resolve() != root.resolve():
+            raise ValueError("Graph Index belongs to another project root.")
+        result = build_code_graph(index if index is not None else self.build_index(root))
         destination = (
             Path(output_path) if output_path is not None
             else root / DEFAULT_ARTIFACT_DIR / DEFAULT_GRAPH_FILE

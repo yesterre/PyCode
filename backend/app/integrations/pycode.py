@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from inspect import signature
 from pathlib import Path
+from uuid import UUID
 
 from backend.app.core.errors import BackendError
 from backend.app.core.models import Analysis, IndexSummary
@@ -12,6 +13,7 @@ from pycode.llm_client import (
     LLM_ERROR_MISSING_CONFIG, LLM_ERROR_TIMEOUT, LLM_ERROR_UNSUPPORTED_API_TYPE,
 )
 from pycode.storage import load_graph, load_index
+from pycode.chunks import SnapshotBinding, build_chunk_index, save_chunk_index
 
 
 class PyCodeAdapter:
@@ -33,17 +35,33 @@ class PyCodeAdapter:
     def index(
         self, root: Path, *, index_path: Path | None = None,
         graph_path: Path | None = None,
+        project_id: UUID | None = None, snapshot_id: UUID | None = None,
+        commit_sha: str | None = None,
     ) -> IndexSummary:
         if index_path is None or graph_path is None:
             if index_path is not None or graph_path is not None:
                 raise ValueError("Both Snapshot artifact paths are required.")
-            self._artifact_paths(root)
-            index = self.engine.index(root)
-            graph = self.engine.graph(root)
-        else:
-            index = self.engine.index(root, output_path=index_path)
-            graph = self.engine.graph(root, output_path=graph_path)
+            index_path, graph_path = self._artifact_paths(root)
+        identity = (project_id, snapshot_id, commit_sha)
+        if any(value is not None for value in identity) and any(value is None for value in identity):
+            raise ValueError("A complete Project/Snapshot/Commit binding is required.")
+        binding = SnapshotBinding(str(project_id), str(snapshot_id), commit_sha) if project_id is not None else None
+        index = self.engine.index(
+            root, output_path=index_path, graph_output_path=graph_path,
+            chunk_output_path=index_path.parent / "chunks.json" if binding is not None else None,
+            binding=binding,
+        )
+        graph = load_graph(graph_path)
         return IndexSummary(len(index.files), len(graph.nodes), len(graph.edges))
+
+    def build_chunks(
+        self, root: Path, output_path: Path, *, project_id: UUID,
+        snapshot_id: UUID, commit_sha: str,
+    ) -> None:
+        """Backfill only the missing derivative; never rebuild valid base data."""
+        index = self.engine.build_index(root)
+        binding = SnapshotBinding(str(project_id), str(snapshot_id), commit_sha)
+        save_chunk_index(build_chunk_index(index, binding), output_path)
 
     def ask(
         self, root: Path, question: str, model: str | None, *,
