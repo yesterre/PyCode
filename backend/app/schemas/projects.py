@@ -20,10 +20,6 @@ class CreateProjectRequest(RequestModel):
     branch: NonEmptyString | None = None
 
 
-class IndexProjectRequest(RequestModel):
-    snapshot_id: UUID | None = None
-
-
 class AskRequest(RequestModel):
     question: NonEmptyString
     model: NonEmptyString | None = None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from contextlib import AbstractContextManager
 from typing import Protocol
@@ -34,6 +35,16 @@ class BackgroundTaskDispatcher(Protocol):
     def enqueue_repository_index(self, task_id: UUID) -> None: ...
 
     def enqueue_agent_run(self, task_id: UUID) -> None: ...
+
+
+@dataclass(frozen=True)
+class TaskCompletion:
+    """Reserve an accepted continuation in the owner's terminal-write transaction."""
+
+    snapshot_id: UUID
+    lock: Callable[[], object]
+    reserve: Callable[[], BackgroundTask | None]
+    enqueue: Callable[[BackgroundTask | None], None]
 
 
 class BackgroundTaskService:
@@ -78,14 +89,9 @@ class BackgroundTaskService:
 
     def create_owned_repository_index_task(
         self, project_id: UUID, owner_id: UUID, idempotency_key: str | None = None,
-        *, snapshot_id: UUID | None = None, semantics=None,
     ) -> BackgroundTask:
         if owner_id is None:
             raise BackendError("project_not_found", "Project does not exist.")
-        if snapshot_id is not None:
-            if semantics is None:
-                raise BackendError('embedding_unavailable', 'Semantic indexing is unavailable.')
-            return semantics.submit(project_id, snapshot_id, owner_id, idempotency_key, self)
         return self._create_repository_index_task(project_id, idempotency_key, owner_id=owner_id)
 
     def enqueue_semantic(self, task: BackgroundTask) -> BackgroundTask:
@@ -108,10 +114,6 @@ class BackgroundTaskService:
                 project = self.unit_of_work.projects.get(project_id, for_update=True)
             else:
                 project = self.unit_of_work.projects.get_owned(project_id, owner_id, for_update=True)
-            if idempotency_key is not None:
-                existing = self.unit_of_work.background_tasks.find_index_submission(project_id, idempotency_key)
-                if existing is not None and existing.task_type != REPOSITORY_INDEX_TASK_TYPE:
-                    raise BackendError('idempotency_conflict', 'The Idempotency-Key was already used for a different request.')
             creation = self.unit_of_work.background_tasks.create_submission(
                 REPOSITORY_INDEX_TASK_TYPE,
                 project_id=project_id,
@@ -167,12 +169,12 @@ class BackgroundTaskService:
 
     def execute_repository_index(
         self, task_id: UUID, index_project: Callable[[UUID], Project], *,
-        owned_operation: Callable[[BackgroundTask, object], Project | UUID] | None = None,
+        owned_operation: Callable[[BackgroundTask, object], Project | UUID | TaskCompletion] | None = None,
         worker_id: str | None = None,
     ) -> BackgroundTask:
         from backend.app.services.snapshot_semantics import SEMANTIC_TASK_TYPE
 
-        def operation(task: BackgroundTask, ownership) -> UUID:
+        def operation(task: BackgroundTask, ownership) -> UUID | TaskCompletion:
             if task.project_id is None:  # pragma: no cover - persistent invariant
                 raise BackendError(
                     "background_task_state_conflict",
@@ -188,6 +190,8 @@ class BackgroundTaskService:
                 if owned_operation is not None
                 else index_project(task.project_id)
             )
+            if isinstance(project, TaskCompletion):
+                return project
             if project.current_snapshot_id is None:  # pragma: no cover - Phase 4 invariant
                 raise BackendError(
                     "database_conflict", "A related persistent record is invalid.",
@@ -202,7 +206,7 @@ class BackgroundTaskService:
 
     def _execute(
         self, task_id: UUID, expected_type: str | tuple[str, ...],
-        operation: Callable[[BackgroundTask, object], UUID | None], *,
+        operation: Callable[[BackgroundTask, object], UUID | TaskCompletion | None], *,
         error_mapper: Callable[[Exception], tuple[str, str]],
         worker_id: str | None = None,
     ) -> BackgroundTask:
@@ -255,7 +259,9 @@ class BackgroundTaskService:
         with self._heartbeat(task) as ownership:
             try:
                 ownership.ensure_owned()
-                snapshot_id = operation(task, ownership)
+                result = operation(task, ownership)
+                completion = result if isinstance(result, TaskCompletion) else None
+                snapshot_id = completion.snapshot_id if completion is not None else result
                 ownership.ensure_owned()
             except Exception as exc:
                 error_code, error_message = error_mapper(exc)
@@ -285,10 +291,13 @@ class BackgroundTaskService:
                 raise
 
             with self.unit_of_work.transaction():
+                if completion is not None:
+                    completion.lock()
                 completed = self.unit_of_work.background_tasks.mark_completed(
                     task_id, snapshot_id=snapshot_id,
                     execution_token=execution_token,
                 )
+                continuation = completion.reserve() if completed is not None and completion is not None else None
             if completed is None:
                 logger.warning(
                     "Stale task completion write rejected task_id=%s task_type=%s "
@@ -296,6 +305,8 @@ class BackgroundTaskService:
                     task_id, expected_type, str(execution_token)[:8],
                 )
                 return self.get(task_id)
+            if completion is not None:
+                completion.enqueue(continuation)
             log_event("task_completed", task_id=task.id, task_type=task.task_type)
             return completed
 

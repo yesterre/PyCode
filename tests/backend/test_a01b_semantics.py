@@ -70,12 +70,10 @@ def semantic_env(resources, application, monkeypatch):
     return env
 
 
-def post(env, snapshot_id=None, key=None, project=None, headers=None):
-    kwargs = {'headers': {**(env.r.headers if headers is None else headers),
-                           **({'Idempotency-Key': key} if key else {})}}
-    if snapshot_id is not None:
-        kwargs['json'] = {'snapshot_id': str(snapshot_id)}
-    return env.r.context.client.post(f'/api/v1/projects/{project or env.r.own}/index', **kwargs)
+def post(env, key=None, project=None, headers=None):
+    return env.r.context.client.post(f'/api/v1/projects/{project or env.r.own}/index',
+        headers={**(env.r.headers if headers is None else headers),
+                 **({'Idempotency-Key': key} if key else {})})
 
 
 def detail(env, snapshot_id=None):
@@ -85,14 +83,14 @@ def detail(env, snapshot_id=None):
     return response.json()
 
 
-def automatic(env):
-    accepted = post(env)
+def automatic(env, key=None):
+    accepted = post(env, key=key)
     assert accepted.status_code == 202, accepted.text
     base = env.run(accepted.json()['task_id'])
     assert base.status == 'completed'
     with env.r.context.uow_factory() as uow, uow.transaction():
         tasks = uow.background_tasks.list_for_snapshot(env.r.own, base.snapshot_id, SEMANTIC_TASK_TYPE)
-    return base, tasks
+    return base, [t for t in tasks if t.idempotency_key.startswith('auto:' + str(base.id) + ':')]
 
 
 def base_bytes(env, snapshot_id):
@@ -102,20 +100,13 @@ def base_bytes(env, snapshot_id):
     return {path.name: path.read_bytes() for path in bundle.index_path.parent.iterdir()}
 
 
-def another_snapshot(env):
-    """Publish a second valid fixture Snapshot using the real adapter/store contracts."""
-    with env.r.context.uow_factory() as uow, uow.transaction():
-        snapshot = uow.snapshots.start(env.r.own, 'b' * 40)
-    artifacts, adapter = env.app.state.artifacts, env.app.state.adapter
-    repo = env.app.state.workspace.path_for(env.r.own)
-    bundle = artifacts.build_and_publish(env.r.own, snapshot.id, snapshot.commit_sha,
-        lambda index_path, graph_path: adapter.index(repo, index_path=index_path, graph_path=graph_path,
-            project_id=env.r.own, snapshot_id=snapshot.id, commit_sha=snapshot.commit_sha), require_chunks=True)
-    with env.r.context.uow_factory() as uow, uow.transaction():
-        snapshot = uow.snapshots.mark_ready(snapshot.id, index_artifact_path=bundle.index_artifact_path,
-            graph_artifact_path=bundle.graph_artifact_path, summary=bundle.summary)
-        uow.projects.set_current_snapshot(env.r.own, snapshot.id)
-    return snapshot
+def advance_commit(env, monkeypatch):
+    from backend.app.infrastructure.repositories import RepositoryRevision
+    source = env.app.state.workspace.source
+    monkeypatch.setattr(source, 'update', lambda *a, **k: RepositoryRevision('default', 'b' * 40))
+    monkeypatch.setattr(source, 'resolve_head', lambda *a, **k: 'b' * 40)
+    monkeypatch.setattr(source, 'checkout_exact', lambda *a, **k: None)
+    monkeypatch.setattr(source, 'protect_snapshot', lambda *a, **k: None)
 
 
 def test_disabled_and_original_no_body_or_empty_body(semantic_env):
@@ -124,9 +115,10 @@ def test_disabled_and_original_no_body_or_empty_body(semantic_env):
     base, tasks = automatic(env)
     assert tasks == [] and env.providers == []
     assert detail(env)['semantic_index']['status'] == 'disabled'
-    assert env.r.context.client.post(f'/api/v1/projects/{env.r.own}/index', json={},
-                                     headers=env.r.headers).status_code == 202
-    assert post(env, base.snapshot_id).status_code == 503
+    response = env.r.context.client.post(f'/api/v1/projects/{env.r.own}/index', json={}, headers=env.r.headers)
+    assert response.status_code == 202
+    repeated = env.run(response.json()['task_id'])
+    assert repeated.snapshot_id == base.snapshot_id and env.providers == []
 
 
 def test_auto_build_and_duplicate_artifact_reuse(semantic_env):
@@ -142,9 +134,9 @@ def test_auto_build_and_duplicate_artifact_reuse(semantic_env):
     assert metadata['artifact']['vector_count'] > 0 and metadata['built_at']
     assert base_bytes(env, base.snapshot_id) == before
     count = len(env.providers)
-    repeated = post(env, base.snapshot_id, key='repeat')
-    assert repeated.status_code == 202
-    env.run(repeated.json()['task_id'])
+    repeated, derived = automatic(env, key='repeat')
+    assert repeated.snapshot_id == base.snapshot_id and len(derived) == 1
+    env.run(derived[0].id)
     assert len(env.providers) == count
     assert 'fake-only' not in json.dumps(metadata) and 'vectors' not in metadata
 
@@ -164,8 +156,8 @@ def test_failed_semantics_preserves_base_and_resumes_batches(semantic_env):
     assert detail(env)['semantic_index']['status'] == 'failed'
     assert base_bytes(env, base.snapshot_id) == before
     env.failures = {}
-    retry = post(env, base.snapshot_id)
-    env.run(retry.json()['task_id'])
+    _, retry = automatic(env)
+    env.run(retry[0].id)
     assert detail(env)['semantic_index']['status'] == 'ready'
     with env.r.context.uow_factory() as uow:
         snapshot = uow.snapshots.get(base.snapshot_id)
@@ -173,85 +165,87 @@ def test_failed_semantics_preserves_base_and_resumes_batches(semantic_env):
     assert len(env.providers[-1].calls) == count - 1
 
 
-def test_historical_backfill_no_base_work_no_current_switch(semantic_env, monkeypatch):
+def test_historical_snapshot_is_preserved_without_manual_backfill(semantic_env, monkeypatch):
     env = semantic_env
-    base, tasks = automatic(env)
-    newer = another_snapshot(env)
-    before = base_bytes(env, base.snapshot_id)
-    new_before = base_bytes(env, newer.id)
-    def forbidden(*args, **kwargs): pytest.fail('Historical backfill reached Git/Scanner/Parser/base writes')
-    for obj, names in [(env.app.state.workspace, ['synchronize', 'checkout_exact', 'assert_head']),
-                       (env.app.state.adapter, ['index']),
-                       (env.app.state.artifacts, ['build_and_publish'])]:
-        for name in names: monkeypatch.setattr(obj, name, forbidden)
-    monkeypatch.setattr('pycode.engine.scan_python_files', forbidden)
-    monkeypatch.setattr('pycode.engine.parse_python_file', forbidden)
-    accepted = post(env, base.snapshot_id)
-    assert accepted.status_code == 202
-    completed = env.run(accepted.json()['task_id'])
-    assert completed.snapshot_id == base.snapshot_id
-    assert detail(env, base.snapshot_id)['semantic_index']['status'] == 'ready'
-    assert detail(env, newer.id)['semantic_index']['status'] == 'not_built'
+    env.settings = EmbeddingSettings()
+    older, tasks = automatic(env)
+    assert tasks == []
     with env.r.context.uow_factory() as uow, uow.transaction():
-        assert uow.projects.get(env.r.own).current_snapshot_id == newer.id
-    assert base_bytes(env, base.snapshot_id) == before
-    assert base_bytes(env, newer.id) == new_before
-    # The earlier automatically reserved task also targets history safely.
-    assert env.run(tasks[0].id).snapshot_id == base.snapshot_id
+        snapshot = uow.snapshots.get(older.snapshot_id)
+    legacy_bundle(env.app.state.artifacts, snapshot)
+    before = base_bytes(env, older.snapshot_id)
+    env.settings = EmbeddingSettings(enabled=True, api_key='fake-only', batch_size=1)
+    advance_commit(env, monkeypatch)
+    newer, tasks = automatic(env)
+    assert newer.snapshot_id != older.snapshot_id
+    env.run(tasks[0].id)
+    assert detail(env, older.snapshot_id)['semantic_index']['status'] == 'not_built'
+    assert detail(env, newer.snapshot_id)['semantic_index']['status'] == 'ready'
+    assert base_bytes(env, older.snapshot_id) == before
+    with env.r.context.uow_factory() as uow, uow.transaction():
+        assert uow.projects.get(env.r.own).current_snapshot_id == newer.snapshot_id
+        assert uow.background_tasks.list_for_snapshot(env.r.own, older.snapshot_id, SEMANTIC_TASK_TYPE) == []
 
 
-def test_models_and_snapshots_independent(semantic_env):
+def test_models_and_snapshots_independent(semantic_env, monkeypatch):
     env = semantic_env
     base, tasks = automatic(env)
     env.run(tasks[0].id)
     first = detail(env)['semantic_index']['fingerprint']
     env.settings = replace(env.settings, model='kinfra-text-embedding-4b')
-    accepted = post(env, base.snapshot_id)
-    env.run(accepted.json()['task_id'])
+    same, tasks = automatic(env)
+    assert same.snapshot_id == base.snapshot_id
+    env.run(tasks[0].id)
     metadata = detail(env)['semantic_index']
     assert metadata['dimension'] == 2560 and metadata['fingerprint'] != first
     assert {v['dimension'] for v in metadata['versions']} == {1024, 2560}
-    newer = another_snapshot(env)
-    accepted = post(env, newer.id)
-    env.run(accepted.json()['task_id'])
-    assert detail(env, newer.id)['semantic_index']['fingerprint'] != metadata['fingerprint']
+    advance_commit(env, monkeypatch)
+    newer, tasks = automatic(env)
+    env.run(tasks[0].id)
+    assert newer.snapshot_id != base.snapshot_id
+    assert detail(env, newer.snapshot_id)['semantic_index']['fingerprint'] != metadata['fingerprint']
 
 
-def test_missing_chunks_legacy_and_auth_boundaries(semantic_env, monkeypatch):
+def test_current_legacy_snapshot_upgrade_and_normal_submission_auth(semantic_env, monkeypatch):
     env = semantic_env
+    env.settings = EmbeddingSettings()
     base, _ = automatic(env)
     with env.r.context.uow_factory() as uow, uow.transaction():
         snapshot = uow.snapshots.get(base.snapshot_id)
-    legacy_bundle(env.app.state.artifacts, snapshot)
-    rejected = post(env, snapshot.id)
-    assert rejected.status_code == 409
-    assert detail(env)['status'] == 'ready'
+    bundle = legacy_bundle(env.app.state.artifacts, snapshot)
+    before = bundle.index_path.read_bytes(), bundle.graph_path.read_bytes()
+    env.settings = EmbeddingSettings(enabled=True, api_key='fake-only', batch_size=1)
+    same, tasks = automatic(env)
+    assert same.snapshot_id == base.snapshot_id and len(tasks) == 1
+    env.run(tasks[0].id)
+    assert detail(env)['status'] == 'ready' and detail(env)['semantic_index']['status'] == 'ready'
+    assert (bundle.index_path.read_bytes(), bundle.graph_path.read_bytes()) == before
     with monkeypatch.context() as patch:
-        patch.setattr(env.app.state.artifacts, 'read_chunks', lambda *a: pytest.fail('unauthorized artifact read'))
-        assert post(env, snapshot.id, headers=env.r.other_headers).status_code == 404
-        assert post(env, env.r.foreign_snapshot.id).status_code == 404
-        assert post(env, uuid4()).status_code == 404
+        patch.setattr(env.app.state.artifacts, 'read_chunks', lambda *a: pytest.fail('unauthorized Artifact read'))
+        assert post(env, headers=env.r.other_headers).status_code == 404
+        assert post(env, project=env.r.foreign).status_code == 404
+        assert post(env, project=uuid4()).status_code == 404
     env.r.context.client.post(f'/api/v1/projects/{env.r.own}/archive', headers=env.r.headers)
-    assert post(env, snapshot.id).status_code == 409
-    assert env.providers == []
+    assert post(env).status_code == 409
 
 
 def test_idempotency_quota_and_config_change(semantic_env):
     env = semantic_env
-    base, _ = automatic(env)
-    first = post(env, base.snapshot_id, key='fixed')
-    assert post(env, base.snapshot_id, key='fixed').json() == first.json()
-    newer = another_snapshot(env)
-    assert post(env, newer.id, key='fixed').status_code == 409
+    first = post(env, key='fixed')
+    assert post(env, key='fixed').json() == first.json()
+    base = env.run(first.json()['task_id'])
+    with env.r.context.uow_factory() as uow, uow.transaction():
+        task = uow.background_tasks.list_for_snapshot(env.r.own, base.snapshot_id, SEMANTIC_TASK_TYPE)[0]
     env.settings = replace(env.settings, model='kinfra-text-embedding-4b')
     with pytest.raises(BackendError, match='target changed'):
-        env.run(first.json()['task_id'])
+        env.run(task.id)
     assert env.providers == []
+    assert post(env, key='fixed').json()['task_id'] == first.json()['task_id']
     class RejectLimiter:
         def check(self, *args): raise BackendError('rate_limited', 'Request rate limit exceeded.')
         def close(self): pass
     env.app.state.admission = AdmissionControl(AdmissionSettings(active_tasks=20), RejectLimiter())
-    assert post(env, newer.id).status_code == 429
+    assert post(env).status_code == 429
 
 
 def test_stale_recovery_and_fenced_writer(semantic_env):
@@ -387,49 +381,61 @@ def test_stale_after_publication_completes_without_provider(semantic_env):
     assert env.run(task.id).attempt_count == 1 and len(env.providers) == count
 
 
-def test_corruption_and_cross_project_do_not_reach_provider(semantic_env):
+def test_corruption_does_not_reach_provider_or_fail_base_metadata(semantic_env):
     env = semantic_env
     _, tasks = automatic(env)
-    env.run(tasks[0].id)
     with env.r.context.uow_factory() as uow, uow.transaction():
         snapshot = uow.snapshots.get(env.r.snapshot.id)
     bundle = env.app.state.artifacts.read_ready(env.r.own, snapshot)
     bundle.chunks_path.write_text('{}', encoding='utf-8')
-    count = len(env.providers)
-    assert post(env, snapshot.id).status_code == 409
-    assert len(env.providers) == count
+    with pytest.raises(BackendError):
+        env.run(tasks[0].id)
+    assert env.providers == []
     assert detail(env)['semantic_index']['status'] == 'unavailable'
     assert detail(env)['status'] == 'ready'
 
 
-def test_idempotency_spans_index_modes_and_replay_needs_no_artifacts(semantic_env, monkeypatch):
+def test_index_openapi_has_no_historical_selector_and_body_cannot_select_target(semantic_env, monkeypatch):
     env = semantic_env
-    accepted = post(env, key='base-key')
-    base = env.run(accepted.json()['task_id'])
-    assert post(env, base.snapshot_id, key='base-key').status_code == 409
-    semantic = post(env, base.snapshot_id, key='semantic-key')
-    assert post(env, key='semantic-key').status_code == 409
-    with monkeypatch.context() as patch:
-        patch.setattr(env.app.state.artifacts, 'read_chunks', lambda *a: pytest.fail('idempotent replay read artifact'))
-        env.settings = replace(env.settings, model='kinfra-text-embedding-4b')
-        assert post(env, base.snapshot_id, key='semantic-key').json() == semantic.json()
+    schema = env.app.openapi()
+    operation = schema['paths']['/api/v1/projects/{project_id}/index']['post']
+    assert 'requestBody' not in operation
+    assert all(p['name'] != 'snapshot_id' for p in operation.get('parameters', []))
+    assert 'IndexProjectRequest' not in schema.get('components', {}).get('schemas', {})
+    assert 'semantic_index' in schema['components']['schemas']['SnapshotDetailResponse']['properties']
+    monkeypatch.setattr(env.app.state.artifacts, 'read_chunks', lambda *a: pytest.fail('normal submission read Artifact'))
+    accepted = env.r.context.client.post(f'/api/v1/projects/{env.r.own}/index',
+        headers={**env.r.headers, 'Idempotency-Key': 'ordinary-index'},
+        json={'snapshot_id': str(env.r.foreign_snapshot.id)})
+    assert accepted.status_code == 202
+    with env.r.context.uow_factory() as uow, uow.transaction():
+        task = uow.background_tasks.get(UUID(accepted.json()['task_id']))
+    assert task.task_type == 'repository_index' and task.snapshot_id is None and task.project_id == env.r.own
+    assert post(env, key='ordinary-index').json() == accepted.json()
 
 
-def test_auto_semantic_quota_failure_keeps_base_success(semantic_env):
+def test_auto_continuation_transfers_active_slot_without_second_submission(semantic_env):
     env = semantic_env
-    class AllowLimiter:
-        def check(self, *args): pass
+    calls = []
+    class Limiter:
+        def check(self, *args): calls.append(args)
         def close(self): pass
-    env.app.state.admission = AdmissionControl(AdmissionSettings(active_tasks=1), AllowLimiter())
-    base, tasks = automatic(env)
-    assert base.status == 'completed' and tasks[0].status == 'failed'
-    assert tasks[0].error_code == 'task_quota_exceeded'
-    assert detail(env)['status'] == 'ready'
-    # After the base task releases its quota slot, manual retry can be admitted.
-    retry = post(env, base.snapshot_id)
-    assert retry.status_code == 202
-    env.run(retry.json()['task_id'])
+    env.app.state.admission = AdmissionControl(AdmissionSettings(active_tasks=1), Limiter())
+    base, tasks = automatic(env, key='accepted-once')
+    assert base.status == 'completed' and tasks[0].status == 'queued'
+    assert len(calls) == 1
+    assert env.run(base.id).attempt_count == 1 and len(calls) == 1
+    with env.r.context.uow_factory() as uow, uow.transaction():
+        assert uow.background_tasks.lock_owner_and_count_active(env.r.owner) == 1
+    rejected = post(env, key='another-request')
+    assert rejected.status_code == 429 and rejected.json()['detail']['code'] == 'task_quota_exceeded'
+    assert len(calls) == 1
+    assert post(env, key='accepted-once').json()['task_id'] == str(base.id)
+    assert env.run(tasks[0].id).status == 'completed'
+    assert env.run(tasks[0].id).attempt_count == 1 and len(calls) == 1
     assert detail(env)['semantic_index']['status'] == 'ready'
+    with env.r.context.uow_factory() as uow, uow.transaction():
+        assert uow.background_tasks.lock_owner_and_count_active(env.r.owner) == 0
 
 
 def test_two_users_concurrent_semantic_workers_keep_project_bindings(semantic_env):

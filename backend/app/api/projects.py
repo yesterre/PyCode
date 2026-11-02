@@ -9,7 +9,7 @@ from backend.app.api.idempotency import IdempotencyKeyHeader
 from backend.app.schemas.projects import (
     AnalysisHistoryItem, AnalysisHistoryResponse, AnalysisResponse, AskRequest,
     CreateProjectRequest, ErrorResponse, ImpactRequest, ProjectResponse,
-    ProjectListResponse, IndexProjectRequest,
+    ProjectListResponse,
 )
 from backend.app.schemas.snapshots import SnapshotListResponse, SnapshotResponse, SnapshotDetailResponse
 from backend.app.schemas.graph import GraphResponse
@@ -119,13 +119,9 @@ def get_graph(project_id: UUID, snapshot_id: UUID, user: CurrentUser, service: S
 )
 def index_project(
     project_id: UUID, user: CurrentUser, service: TaskService,
-    projects: Service,
-    body: IndexProjectRequest | None = None,
     idempotency_key: IdempotencyKeyHeader = None,
 ):
-    task = service.create_owned_repository_index_task(
-        project_id, user.id, idempotency_key,
-        snapshot_id=body.snapshot_id if body else None, semantics=projects.semantics)
+    task = service.create_owned_repository_index_task(project_id, user.id, idempotency_key)
     return RepositoryIndexTaskResponse(
         task_id=task.id, project_id=project_id, status=task.status,
     )

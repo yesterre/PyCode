@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from backend.app.config import EmbeddingSettings
 from backend.app.core.errors import BackendError
@@ -39,7 +39,7 @@ class SnapshotSemantics:
                                   settings.max_input_chars, settings.base_url.rstrip('/'), chunks.schema_version)
         return target, chunks
 
-    def automatic_intent(self, snapshot, bundle):
+    def automatic_intent(self, snapshot, bundle=None):
         """Prepare outside the activation transaction; invalid config cannot fail base indexing."""
         try:
             settings = self._settings()
@@ -47,6 +47,8 @@ class SnapshotSemantics:
             return identity({'snapshot': str(snapshot.id), 'configuration': 'invalid'})
         if not settings.enabled:
             return None
+        if bundle is None:
+            bundle = self.artifacts.read_ready(snapshot.project_id, snapshot)
         if bundle.chunks_path is None:
             return identity({'snapshot': str(snapshot.id), 'chunks': 'missing'})
         return SemanticIdentity(
@@ -56,19 +58,51 @@ class SnapshotSemantics:
             settings.base_url.rstrip('/'),
         ).fingerprint
 
-    def reserve_automatic(self, snapshot, fingerprint, source_task_id):
-        """Caller owns the same transaction that commits base Snapshot ready."""
+    def completion_for(self, task, snapshot_id=None):
+        """Prepare file metadata outside the terminal-write transaction, including recovery."""
+        from backend.app.services.background_tasks import REPOSITORY_INDEX_TASK_TYPE, TaskCompletion
+        snapshot_id = snapshot_id or task.snapshot_id
+        if snapshot_id is None:
+            return None
+        with self.uow.transaction():
+            current = self.uow.background_tasks.get(task.id)
+            if (current.task_type != REPOSITORY_INDEX_TASK_TYPE or current.project_id != task.project_id
+                    or current.snapshot_id != snapshot_id or current.execution_token != task.execution_token
+                    or current.status != 'running'):
+                raise BackendError('background_task_consistency_error', 'Index continuation binding is invalid.')
+            self.uow.projects.get(task.project_id)
+            snapshot = self.uow.snapshots.get_for_project(task.project_id, snapshot_id)
+        if snapshot.status != 'ready':
+            return None
+        fingerprint = self.automatic_intent(snapshot)
         if fingerprint is None:
             return None
-        task = self.uow.background_tasks.create_submission(
+        return TaskCompletion(snapshot.id,
+                              lambda: self.uow.projects.get(snapshot.project_id, for_update=True),
+                              lambda: self.reserve_automatic(snapshot, fingerprint, task.id), self.enqueue)
+
+    def reserve_automatic(self, snapshot, fingerprint, source_task_id):
+        """Caller completes the parent first, then transfers its slot in the same transaction."""
+        from backend.app.services.background_tasks import REPOSITORY_INDEX_TASK_TYPE
+        if fingerprint is None:
+            return None
+        parent = self.uow.background_tasks.get(source_task_id)
+        if (parent.task_type != REPOSITORY_INDEX_TASK_TYPE or parent.status != 'completed'
+                or parent.project_id != snapshot.project_id or parent.snapshot_id != snapshot.id):
+            raise BackendError('background_task_consistency_error', 'Index continuation parent is invalid.')
+        creation = self.uow.background_tasks.create_submission(
             SEMANTIC_TASK_TYPE, project_id=snapshot.project_id, snapshot_id=snapshot.id,
-            idempotency_key='auto:' + str(source_task_id or uuid4()) + ':' + fingerprint,
+            idempotency_key='auto:' + str(source_task_id) + ':' + fingerprint,
             request_fingerprint=fingerprint,
-        ).task
+        )
+        task = creation.task
         project = self.uow.projects.get(snapshot.project_id)
-        if self.admission is not None and project.owner_id is not None and task.status == 'queued':
-            active = self.uow.background_tasks.lock_owner_and_count_active(project.owner_id)
-            if active > self.admission.settings.active_tasks:
+        if creation.created and self.admission is not None and project.owner_id is not None:
+            try:
+                self.admission.admit_task(self.uow, project.owner_id, 'index', count_request=False)
+            except BackendError as exc:
+                if exc.code != 'task_quota_exceeded':
+                    raise
                 claimed = self.uow.background_tasks.claim(task.id).task
                 task = self.uow.background_tasks.mark_failed(
                     task.id, execution_token=claimed.execution_token,
@@ -85,50 +119,12 @@ class SnapshotSemantics:
                 # The durable task is already committed with the ready base bundle.
                 logger.warning('Semantic task awaiting queued reconciliation task_id=%s', task.id)
 
-    def submit(self, project_id, snapshot_id, owner_id, idempotency_key, tasks):
-        # Authorization precedes even config validation and all Artifact reads.
-        with self.uow.transaction():
-            project = self.uow.projects.get_owned(project_id, owner_id, for_update=True)
-            if idempotency_key is not None:
-                existing = self.uow.background_tasks.find_index_submission(project_id, idempotency_key)
-                if existing is not None:
-                    if existing.task_type != SEMANTIC_TASK_TYPE or existing.snapshot_id != snapshot_id:
-                        raise BackendError('idempotency_conflict', 'The Idempotency-Key was already used for a different request.')
-                    return existing
-            snapshot = self.uow.snapshots.get_for_project(project_id, snapshot_id)
-            project.ensure_not_archived()
-        settings = self._settings()
-        if not settings.enabled:
-            raise BackendError('embedding_unavailable', 'Embedding is disabled.')
-        target, _ = self.target(snapshot, settings)
-        # Serialize the existing owner quota and project submission boundaries.
-        with self.uow.transaction():
-            project = self.uow.projects.get_owned(project_id, owner_id, for_update=True)
-            if idempotency_key is not None:
-                existing = self.uow.background_tasks.find_index_submission(project_id, idempotency_key)
-                if existing is not None:
-                    if existing.task_type != SEMANTIC_TASK_TYPE or existing.snapshot_id != snapshot_id:
-                        raise BackendError('idempotency_conflict', 'The Idempotency-Key was already used for a different request.')
-                    return existing
-            project.ensure_not_archived()
-            self.uow.snapshots.get_for_project(project_id, snapshot_id)
-            creation = self.uow.background_tasks.create_submission(
-                SEMANTIC_TASK_TYPE, project_id=project_id, snapshot_id=snapshot_id,
-                idempotency_key=idempotency_key or 'manual:' + str(uuid4()),
-                request_fingerprint=target.fingerprint,
-                next_enqueue_attempt_at=tasks.initial_enqueue_due_at(),
-            )
-            if creation.created and tasks.admission is not None:
-                tasks.admission.admit_task(self.uow, owner_id, 'index')
-        return tasks.enqueue_semantic(creation.task) if creation.created else creation.task
-
     def build_task(self, task, ownership, operations):
         if task.project_id is None or task.snapshot_id is None:
             raise BackendError('background_task_consistency_error', 'Semantic task binding is invalid.')
         with operations.operation(task.project_id) as lock:
             with self.uow.transaction():
-                project = self.uow.projects.get(task.project_id)
-                project.ensure_not_archived()
+                self.uow.projects.get(task.project_id)
                 snapshot = self.uow.snapshots.get_for_project(task.project_id, task.snapshot_id)
             settings = self._settings()
             if not settings.enabled:
@@ -141,8 +137,7 @@ class SnapshotSemantics:
                 lock.ensure_owned()
                 ownership.ensure_owned()
                 with self.uow.transaction():
-                    project = self.uow.projects.get(task.project_id)
-                    project.ensure_not_archived()
+                    self.uow.projects.get(task.project_id)
                     current = self.uow.snapshots.get_for_project(task.project_id, task.snapshot_id)
                 if current.status != 'ready' or current.commit_sha != snapshot.commit_sha:
                     raise BackendError('artifacts_unavailable', 'Semantic Snapshot binding changed.')
@@ -190,6 +185,10 @@ class SnapshotSemantics:
             return result
         try:
             # Even disabled configuration may expose already published versions.
+            bundle = self.artifacts.read_ready(snapshot.project_id, snapshot)
+            if bundle.chunks_path is None:
+                result['status'] = 'not_built' if settings.enabled else 'disabled'
+                return result
             target, chunks = self.target(snapshot, settings)
             result.update(provider=target.provider, model=target.model, fingerprint=target.fingerprint)
             parent = self.artifacts.semantic_directory(target).parent

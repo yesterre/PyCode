@@ -6,13 +6,14 @@ from collections.abc import Iterator
 from backend.app.db.session import DatabaseSessionManager
 from backend.app.config import (
     ExecutionLeaseSettings, QueuedReconciliationSettings,
-    StaleReconciliationSettings,
+    StaleReconciliationSettings, AdmissionSettings,
 )
 from backend.app.infrastructure.celery import CeleryTaskDispatcher
 from backend.app.infrastructure.artifacts import SnapshotArtifactStore
 from backend.app.infrastructure.agent_workspace import AgentSnapshotWorkspace
 from backend.app.infrastructure.execution import ExecutionOwnership
 from backend.app.infrastructure.realtime_trace import RedisStreamPublisher
+from backend.app.infrastructure.redis import RedisRateLimiter
 from backend.app.integrations.pycode import PyCodeAdapter
 from backend.app.integrations.llm import backend_llm_client_factory_from_environment
 from backend.app.repositories import SqlAlchemyUnitOfWork
@@ -27,6 +28,7 @@ from backend.app.services.background_tasks import BackgroundTaskService
 from backend.app.services.projects import ProjectService
 from backend.app.services.queued_reconciliation import QueuedTaskReconciler
 from backend.app.services.stale_reconciliation import StaleRunningReconciler
+from backend.app.services.admission import AdmissionControl
 
 
 _database = DatabaseSessionManager()
@@ -42,6 +44,7 @@ _lease_settings = ExecutionLeaseSettings.from_environment()
 _stale_settings = StaleReconciliationSettings.from_environment()
 _dispatcher = CeleryTaskDispatcher()
 _trace_publisher = RedisStreamPublisher()
+_admission = AdmissionControl(AdmissionSettings.from_environment(), RedisRateLimiter())
 
 if _lease_settings.ttl_seconds <= (
     _project_operations.ttl_ms / 1000
@@ -89,6 +92,7 @@ def worker_repository_index_services(
                 unit_of_work, adapter=_adapter, workspace=_workspace,
                 artifacts=_artifacts, operations=_project_operations,
                 dispatcher=_dispatcher,
+                admission=_admission,
             ),
         )
     finally:
@@ -110,6 +114,7 @@ def worker_agent_run_service() -> Iterator[AgentRunService]:
             artifacts=_artifacts,
             operations=_project_operations,
             dispatcher=_dispatcher,
+            admission=_admission,
         )
         yield build_agent_run_service(
             unit_of_work,
@@ -146,9 +151,10 @@ def worker_stale_running_reconciler() -> Iterator[StaleRunningReconciler]:
     try:
         from backend.app.services.snapshot_semantics import SnapshotSemantics
         uow = SqlAlchemyUnitOfWork(session)
-        semantics = SnapshotSemantics(uow, _artifacts)
+        semantics = SnapshotSemantics(uow, _artifacts, dispatcher=_dispatcher, admission=_admission)
         yield StaleRunningReconciler(
             uow, _project_operations, _stale_settings, semantic_ready=semantics.task_ready,
+            index_completion=semantics.completion_for,
         )
     finally:
         if session.in_transaction():

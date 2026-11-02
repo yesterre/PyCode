@@ -23,19 +23,21 @@ def run_repository_index_task(self, task_id: str) -> None:
                 if task.task_type == SEMANTIC_TASK_TYPE:
                     return projects.semantics.build_task(task, ownership, projects.operations)
                 if task.snapshot_id is not None:
-                    return projects.recover_index_for_snapshot(
+                    project = projects.recover_index_for_snapshot(
                         task.project_id,
                         task.snapshot_id,
                         task_id=task.id,
                         execution_token=task.execution_token,
                         execution=ownership,
                     )
-                return projects.index(
-                    task.project_id,
-                    task_id=task.id,
-                    execution_token=task.execution_token,
-                    execution=ownership,
-                )
+                else:
+                    project = projects.index(
+                        task.project_id,
+                        task_id=task.id,
+                        execution_token=task.execution_token,
+                        execution=ownership,
+                    )
+                return projects.semantics.completion_for(task, project.current_snapshot_id) or project
 
             background_tasks.execute_repository_index(
                 UUID(task_id), projects.index,

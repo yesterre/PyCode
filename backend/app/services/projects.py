@@ -542,7 +542,6 @@ class ProjectService:
         bundle: SnapshotArtifactBundle, *, finalize: bool = False,
         task_id: UUID | None = None, execution_token: UUID | None = None,
     ) -> Project:
-        semantic_fingerprint = self.semantics.automatic_intent(snapshot, bundle)
         with self.uow.transaction():
             if task_id is not None and execution_token is not None:
                 if self.uow.background_tasks.guard_execution(
@@ -561,9 +560,6 @@ class ProjectService:
                 )
             self.uow.projects.set_current_snapshot(project_id, snapshot.id)
             ready = self.uow.projects.set_status(project_id, ProjectStatus.READY)
-            semantic_task = self.semantics.reserve_automatic(snapshot, semantic_fingerprint, task_id)
-        # Durable queued reconciliation covers a producer outage after commit.
-        self.semantics.enqueue(semantic_task)
         return replace(ready, index_summary=bundle.summary)
 
     def _bind_task_snapshot(

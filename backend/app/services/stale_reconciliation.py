@@ -47,11 +47,13 @@ class StaleRunningReconciler:
         project_operations: ProjectOperationLocks,
         settings: StaleReconciliationSettings | None = None,
         semantic_ready=None,
+        index_completion=None,
     ) -> None:
         self.uow = unit_of_work
         self.project_operations = project_operations
         self.settings = settings or StaleReconciliationSettings()
         self.semantic_ready = semantic_ready
+        self.index_completion = index_completion
 
     def reconcile(self) -> StaleReconciliationResult:
         with self.uow.transaction():
@@ -119,8 +121,8 @@ class StaleRunningReconciler:
             current = self.uow.background_tasks.get(candidate.id)
             try:
                 snapshot = self.uow.snapshots.get_for_project(current.project_id, current.snapshot_id)
-                project = self.uow.projects.get(current.project_id)
-                valid = snapshot.status == 'ready' and project.archived_at is None
+                self.uow.projects.get(current.project_id)
+                valid = snapshot.status == 'ready'
             except BackendError:
                 valid = False
         ready = valid and self.semantic_ready is not None and self.semantic_ready(current)
@@ -134,7 +136,20 @@ class StaleRunningReconciler:
             return self._fail_repository_consistency(current)
 
     def _repository(self, candidate: BackgroundTask) -> str:
+        completion = None
+        completion_unavailable = False
+        if self.index_completion is not None:
+            try:
+                completion = self.index_completion(candidate)
+            except BackendError as exc:
+                if exc.code == 'database_unavailable':
+                    raise
+                completion_unavailable = True
         with self.uow.transaction():
+            if completion is not None:
+                # Match API/terminal-write Project locking before transferring a
+                # quota slot. The outer operation lock also fences base activation.
+                completion.lock()
             current = self.uow.background_tasks.get(candidate.id)
             if current.snapshot_id is None or current.execution_token is None:
                 failed = self.uow.background_tasks.fail_if_stale(
@@ -143,8 +158,8 @@ class StaleRunningReconciler:
                     error_message=WORKER_LOST_MESSAGE,
                 )
                 return "failed" if failed is not None else "noop"
-            # Establish the same BackgroundTask-first lock order used by worker
-            # correctness boundaries. This fences heartbeat/activation races.
+            # Fence execution ownership before a recovery decision or terminal
+            # write. Continuations already locked their Project above.
             current = self.uow.background_tasks.guard_execution(
                 current.id, current.execution_token,
             )
@@ -167,32 +182,39 @@ class StaleRunningReconciler:
                 and project.status == ProjectStatus.READY
                 and project.current_snapshot_id == snapshot.id
             ):
+                if completion_unavailable or (completion is not None and completion.snapshot_id != snapshot.id):
+                    if current.attempt_count >= self.settings.max_execution_attempts:
+                        return self._fail_repository_consistency(current)
+                    requeued = self.uow.background_tasks.requeue_if_stale(current.id, current.execution_token)
+                    return 'requeued' if requeued is not None else 'noop'
                 completed = self.uow.background_tasks.complete_if_stale(
                     current.id, current.execution_token,
                 )
-                return "completed" if completed is not None else "noop"
-            chunk_backfill = (
-                snapshot.status == "ready"
-                and project.current_snapshot_id == snapshot.id
-                and project.status in {ProjectStatus.PREPARING, ProjectStatus.INDEXING}
-            )
-            if (
-                (snapshot.status != "indexing" and not chunk_backfill)
-                or project.current_snapshot_id not in {None, snapshot.id}
-                or current.attempt_count >= self.settings.max_execution_attempts
-            ):
-                if chunk_backfill:
-                    # Retry exhaustion fails this task, not the pre-existing base
-                    # Snapshot. No new derived-data status or queue is introduced.
-                    decision = self._fail_repository_consistency(current)
-                    if decision == "failed":
-                        self.uow.projects.set_status(project.id, ProjectStatus.READY)
-                    return decision
-                return self._fail_repository_consistency(current)
-            requeued = self.uow.background_tasks.requeue_if_stale(
-                current.id, current.execution_token,
-            )
-            return "requeued" if requeued is not None else "noop"
+                if completed is None:
+                    return 'noop'
+                continuation = completion.reserve() if completion is not None else None
+            else:
+                chunk_backfill = (
+                    snapshot.status == "ready"
+                    and project.current_snapshot_id == snapshot.id
+                    and project.status in {ProjectStatus.PREPARING, ProjectStatus.INDEXING}
+                )
+                if (
+                    (snapshot.status != "indexing" and not chunk_backfill)
+                    or project.current_snapshot_id not in {None, snapshot.id}
+                    or current.attempt_count >= self.settings.max_execution_attempts
+                ):
+                    if chunk_backfill:
+                        decision = self._fail_repository_consistency(current)
+                        if decision == "failed":
+                            self.uow.projects.set_status(project.id, ProjectStatus.READY)
+                        return decision
+                    return self._fail_repository_consistency(current)
+                requeued = self.uow.background_tasks.requeue_if_stale(current.id, current.execution_token)
+                return "requeued" if requeued is not None else "noop"
+        if completion is not None:
+            completion.enqueue(continuation)
+        return 'completed'
 
     def _fail_repository_consistency(self, task: BackgroundTask) -> str:
         failed = self.uow.background_tasks.fail_if_stale(

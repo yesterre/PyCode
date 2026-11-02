@@ -11,13 +11,15 @@ class AdmissionControl:
     def __init__(self, settings: AdmissionSettings, limiter: RedisRateLimiter) -> None:
         self.settings, self.limiter = settings, limiter
 
-    def admit_task(self, uow: UnitOfWork, owner_id: UUID, operation: str) -> None:
-        # The caller has inserted its new task in this transaction. Include that
-        # row in the count and roll the entire submission back on rejection.
+    def admit_task(self, uow: UnitOfWork, owner_id: UUID, operation: str, *,
+                   count_request: bool = True) -> None:
+        # Include the inserted task in active work. A continuation replaces its
+        # completed parent atomically and does not charge another user request.
         if uow.background_tasks.lock_owner_and_count_active(owner_id) > self.settings.active_tasks:
             raise BackendError("task_quota_exceeded", "Active background task quota exceeded.")
-        limit = {"index": self.settings.index_requests, "agent": self.settings.agent_requests}[operation]
-        self.limiter.check(owner_id, operation, limit, self.settings.window_seconds)
+        if count_request:
+            limit = {"index": self.settings.index_requests, "agent": self.settings.agent_requests}[operation]
+            self.limiter.check(owner_id, operation, limit, self.settings.window_seconds)
 
     def admit_analysis(self, owner_id: UUID) -> None:
         self.limiter.check(owner_id, "analysis", self.settings.analysis_requests, self.settings.window_seconds)
