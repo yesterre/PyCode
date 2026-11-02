@@ -88,6 +88,7 @@ def worker_repository_index_services(
             build_project_service(
                 unit_of_work, adapter=_adapter, workspace=_workspace,
                 artifacts=_artifacts, operations=_project_operations,
+                dispatcher=_dispatcher,
             ),
         )
     finally:
@@ -108,6 +109,7 @@ def worker_agent_run_service() -> Iterator[AgentRunService]:
             workspace=_workspace,
             artifacts=_artifacts,
             operations=_project_operations,
+            dispatcher=_dispatcher,
         )
         yield build_agent_run_service(
             unit_of_work,
@@ -142,8 +144,11 @@ def worker_queued_task_reconciler() -> Iterator[QueuedTaskReconciler]:
 def worker_stale_running_reconciler() -> Iterator[StaleRunningReconciler]:
     session = _database.open_session()
     try:
+        from backend.app.services.snapshot_semantics import SnapshotSemantics
+        uow = SqlAlchemyUnitOfWork(session)
+        semantics = SnapshotSemantics(uow, _artifacts)
         yield StaleRunningReconciler(
-            SqlAlchemyUnitOfWork(session), _project_operations, _stale_settings,
+            uow, _project_operations, _stale_settings, semantic_ready=semantics.task_ready,
         )
     finally:
         if session.in_transaction():

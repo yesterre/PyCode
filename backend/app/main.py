@@ -42,7 +42,8 @@ def create_app(*, adapter: PyCodeAdapter | None = None,
                reconciliation_settings: QueuedReconciliationSettings | None = None,
                auth_settings: AuthSettings | None = None,
                admission: AdmissionControl | None = None,
-               observability_settings: ObservabilitySettings | None = None) -> FastAPI:
+               observability_settings: ObservabilitySettings | None = None,
+               embedding_settings_factory=None, embedding_provider_factory=None) -> FastAPI:
     """Use PostgreSQL by default; tests may explicitly inject memory persistence."""
     load_environment()
     configure_logging()
@@ -66,6 +67,8 @@ def create_app(*, adapter: PyCodeAdapter | None = None,
     app.state.artifacts = (
         artifacts if artifacts is not None else SnapshotArtifactStore(workspace.root)
     )
+    app.state.embedding_settings_factory = embedding_settings_factory
+    app.state.embedding_provider_factory = embedding_provider_factory
     app.state.adapter = (
         adapter if adapter is not None
         else PyCodeAdapter(

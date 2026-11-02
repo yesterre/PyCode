@@ -78,10 +78,21 @@ class BackgroundTaskService:
 
     def create_owned_repository_index_task(
         self, project_id: UUID, owner_id: UUID, idempotency_key: str | None = None,
+        *, snapshot_id: UUID | None = None, semantics=None,
     ) -> BackgroundTask:
         if owner_id is None:
             raise BackendError("project_not_found", "Project does not exist.")
+        if snapshot_id is not None:
+            if semantics is None:
+                raise BackendError('embedding_unavailable', 'Semantic indexing is unavailable.')
+            return semantics.submit(project_id, snapshot_id, owner_id, idempotency_key, self)
         return self._create_repository_index_task(project_id, idempotency_key, owner_id=owner_id)
+
+    def enqueue_semantic(self, task: BackgroundTask) -> BackgroundTask:
+        from backend.app.services.snapshot_semantics import SEMANTIC_TASK_TYPE
+        if self.dispatcher is None or task.task_type != SEMANTIC_TASK_TYPE:
+            raise BackendError('background_task_state_conflict', 'Semantic task cannot be enqueued.')
+        return self._enqueue(task, self.dispatcher.enqueue_repository_index)
 
     def _create_repository_index_task(
         self, project_id: UUID, idempotency_key: str | None, *, owner_id: UUID | None = None,
@@ -97,6 +108,10 @@ class BackgroundTaskService:
                 project = self.unit_of_work.projects.get(project_id, for_update=True)
             else:
                 project = self.unit_of_work.projects.get_owned(project_id, owner_id, for_update=True)
+            if idempotency_key is not None:
+                existing = self.unit_of_work.background_tasks.find_index_submission(project_id, idempotency_key)
+                if existing is not None and existing.task_type != REPOSITORY_INDEX_TASK_TYPE:
+                    raise BackendError('idempotency_conflict', 'The Idempotency-Key was already used for a different request.')
             creation = self.unit_of_work.background_tasks.create_submission(
                 REPOSITORY_INDEX_TASK_TYPE,
                 project_id=project_id,
@@ -152,15 +167,22 @@ class BackgroundTaskService:
 
     def execute_repository_index(
         self, task_id: UUID, index_project: Callable[[UUID], Project], *,
-        owned_operation: Callable[[BackgroundTask, object], Project] | None = None,
+        owned_operation: Callable[[BackgroundTask, object], Project | UUID] | None = None,
         worker_id: str | None = None,
     ) -> BackgroundTask:
+        from backend.app.services.snapshot_semantics import SEMANTIC_TASK_TYPE
+
         def operation(task: BackgroundTask, ownership) -> UUID:
             if task.project_id is None:  # pragma: no cover - persistent invariant
                 raise BackendError(
                     "background_task_state_conflict",
                     "Background task cannot make the requested state transition.",
                 )
+            if task.task_type == SEMANTIC_TASK_TYPE:
+                result = owned_operation(task, ownership) if owned_operation is not None else None
+                if not isinstance(result, UUID) or result != task.snapshot_id:
+                    raise BackendError('background_task_consistency_error', 'Semantic task result binding is invalid.')
+                return result
             project = (
                 owned_operation(task, ownership)
                 if owned_operation is not None
@@ -173,13 +195,13 @@ class BackgroundTaskService:
             return project.current_snapshot_id
 
         return self._execute(
-            task_id, REPOSITORY_INDEX_TASK_TYPE, operation,
+            task_id, (REPOSITORY_INDEX_TASK_TYPE, SEMANTIC_TASK_TYPE), operation,
             error_mapper=_repository_index_task_error,
             worker_id=worker_id,
         )
 
     def _execute(
-        self, task_id: UUID, expected_type: str,
+        self, task_id: UUID, expected_type: str | tuple[str, ...],
         operation: Callable[[BackgroundTask, object], UUID | None], *,
         error_mapper: Callable[[Exception], tuple[str, str]],
         worker_id: str | None = None,
@@ -198,7 +220,8 @@ class BackgroundTaskService:
             if task is None:  # pragma: no cover - repository contract
                 raise RuntimeError("Background task claim returned no task.")
 
-        if task.task_type != expected_type:
+        allowed_types = (expected_type,) if isinstance(expected_type, str) else expected_type
+        if task.task_type not in allowed_types:
             error = BackendError(
                 "background_task_state_conflict",
                 "Background task cannot make the requested state transition.",
@@ -212,6 +235,7 @@ class BackgroundTaskService:
                         execution_token=task.execution_token,
                     )
             raise error
+        expected_type = task.task_type
         if claim.status != BackgroundTaskClaimStatus.CLAIMED:
             logger.info(
                 "Duplicate background task delivery ignored task_id=%s "

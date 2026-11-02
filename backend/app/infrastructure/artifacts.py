@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import stat
 from collections.abc import Callable
@@ -271,18 +272,27 @@ class SnapshotArtifactStore:
         commit_sha: str,
     ) -> None:
         final = self._bundle_dir(project_id, snapshot_id)
+        self._publish_directory(staging, final, self._project_root(project_id),
+                                lambda: self._read_bundle(project_id, snapshot_id, commit_sha))
+
+    def _publish_directory(self, staging: Path, final: Path, root: Path, validate) -> None:
+        """Shared rename/rollback boundary for base and independently versioned artifacts."""
+        self._check_tree(staging, root)
+        self._check_entry(final.parent, root)
+        if final.exists() or final.is_symlink():
+            self._check_tree(final, root)
         artifact_root = final.parent
         backup: Path | None = None
         try:
             if final.exists() or final.is_symlink():
-                backup = artifact_root / f".{snapshot_id}.backup-{uuid4()}"
+                backup = artifact_root / f".{final.name}.backup-{uuid4()}"
                 final.rename(backup)
             try:
                 staging.rename(final)
                 # Validate before discarding the old directory. Failed post-publish
                 # checks roll back as well as Windows rename failures.
-                self._read_bundle(project_id, snapshot_id, commit_sha)
-            except (OSError, BackendError):
+                validate()
+            except Exception:
                 if final.exists() and not staging.exists():
                     final.rename(staging)
                 if backup is not None and backup.exists() and not final.exists():
@@ -293,7 +303,66 @@ class SnapshotArtifactStore:
                 "artifact_publish_failed", "Snapshot artifacts could not be published.",
             ) from exc
         if backup is not None:
-            self._remove_tree_best_effort(backup, self._project_root(project_id))
+            self._remove_tree_best_effort(backup, root)
+
+    def semantic_directory(self, target, *, create=False) -> Path:
+        """Resolve every parent before writes; never accept raw client path components."""
+        project_id = UUID(target.binding.project_id)
+        root = self._project_root(project_id)
+        # UUID + fingerprint layouts exceed legacy MAX_PATH in nested workspaces.
+        path = Path('\\\\?\\' + str(root)) if os.name == 'nt' and not str(root).startswith('\\\\?\\') else root
+        for name in ('artifacts', 'semantic', target.binding.snapshot_id, target.fingerprint):
+            path = path / name
+            if path.exists() or path.is_symlink():
+                self._check_entry(path, root)
+            if create:
+                path.mkdir(exist_ok=True)
+                self._check_entry(path, root)
+        return path
+
+    def read_semantic(self, target, chunks) -> dict:
+        from pycode.semantic_index import read_artifact
+        directory = self.semantic_directory(target) / 'ready'
+        try:
+            self._check_tree(directory, self._project_root(UUID(target.binding.project_id)))
+            return read_artifact(directory, target, chunks)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            raise BackendError('artifacts_unavailable', 'Semantic artifacts are unavailable.') from None
+
+    def publish_semantic(self, staging: Path, target, chunks, *, before_publish) -> dict:
+        from pycode.semantic_index import read_artifact
+        parent = self.semantic_directory(target, create=True)
+        root = self._project_root(UUID(target.binding.project_id))
+        self._check_tree(staging, root)
+        if staging.parent != parent:
+            raise BackendError('path_forbidden', 'Semantic staging path is invalid.')
+        read_artifact(staging, target, chunks)
+        before_publish()
+        self._publish_directory(staging, parent / 'ready', root,
+                                lambda: self.read_semantic(target, chunks))
+        return self.read_semantic(target, chunks)
+
+    def recover_semantic(self, target, chunks, *, before_publish=lambda: None) -> dict | None:
+        from pycode.semantic_index import read_artifact
+        parent = self.semantic_directory(target)
+        if not parent.exists():
+            return None
+        root = self._project_root(UUID(target.binding.project_id))
+        self._check_tree(parent, root)
+        try:
+            return self.read_semantic(target, chunks)
+        except BackendError:
+            pass
+        for backup in sorted(parent.glob('.ready.backup-*'), reverse=True):
+            try:
+                read_artifact(backup, target, chunks)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                continue
+            before_publish()
+            self._publish_directory(backup, parent / 'ready', root,
+                                    lambda: self.read_semantic(target, chunks))
+            return self.read_semantic(target, chunks)
+        return None
 
     def _recover(
         self, project_id: UUID, snapshot_id: UUID, commit_sha: str,
@@ -402,7 +471,8 @@ class SnapshotArtifactStore:
             raise BackendError("artifacts_unavailable", "Snapshot artifacts are unavailable.") from exc
         if (stat.S_ISLNK(info.st_mode)
                 or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
-                or not path.resolve().is_relative_to(root)
+                or not Path(str(path.resolve()).removeprefix('\\\\?\\')).is_relative_to(
+                    Path(str(root.resolve()).removeprefix('\\\\?\\')))
                 or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))
                 or (stat.S_ISREG(info.st_mode) and info.st_nlink > 1)):
             raise BackendError(

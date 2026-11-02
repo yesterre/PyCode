@@ -535,6 +535,18 @@ class InMemoryBackgroundTaskRepository:
         )
         return BackgroundTaskCreation(task, True)
 
+    def list_for_snapshot(self, project_id: UUID, snapshot_id: UUID,
+                          task_type: str, limit: int = 100) -> list[BackgroundTask]:
+        return sorted((t for t in self.state.background_tasks.values()
+                       if t.project_id == project_id and t.snapshot_id == snapshot_id
+                       and t.task_type == task_type), key=lambda t: (t.created_at, t.id),
+                      reverse=True)[:limit]
+
+    def find_index_submission(self, project_id: UUID, key: str) -> BackgroundTask | None:
+        return next((task for task in self.state.background_tasks.values()
+                     if task.project_id == project_id and task.idempotency_key == key
+                     and task.task_type in {'repository_index', 'snapshot_embedding'}), None)
+
     def _insert(
         self, task_type: str, *, project_id: UUID | None,
         snapshot_id: UUID | None, agent_run_id: UUID | None,

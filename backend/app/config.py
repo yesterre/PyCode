@@ -5,6 +5,56 @@ from math import isfinite
 from dotenv import load_dotenv
 
 
+@dataclass(frozen=True)
+class EmbeddingSettings:
+    enabled: bool = False
+    provider: str = "tencent_tokenhub"
+    api_key: str = field(default="", repr=False)
+    base_url: str = "https://tokenhub.tencentmaas.com/v1"
+    model: str = "kinfra-text-embedding-0.6b"
+    batch_size: int = 64
+    timeout_seconds: float = 60.0
+    max_retries: int = 2
+    max_input_chars: int = 1800
+
+    def __post_init__(self) -> None:
+        from urllib.parse import urlsplit
+        url = urlsplit(self.base_url)
+        if (type(self.enabled) is not bool or self.provider != "tencent_tokenhub"
+                or url.scheme != "https" or not url.hostname or url.username or url.password
+                or url.query or url.fragment
+                or type(self.batch_size) is not int or not 1 <= self.batch_size <= 128
+                or type(self.max_input_chars) is not int or not 13 < self.max_input_chars <= 2000
+                or type(self.max_retries) is not int or not 0 <= self.max_retries <= 10
+                or not isfinite(self.timeout_seconds) or self.timeout_seconds <= 0
+                or self.model not in {"kinfra-text-embedding-0.6b", "kinfra-text-embedding-4b"}
+                or (self.enabled and not self.api_key.strip())):
+            raise ValueError("Embedding configuration is invalid.")
+
+    @classmethod
+    def from_environment(cls) -> "EmbeddingSettings":
+        # The application owns dotenv loading. This factory never searches key files.
+        prefix = "PYCODE_EMBEDDING_"
+        enabled = os.environ.get(prefix + "ENABLED", "false").lower()
+        if enabled not in {"true", "false", "1", "0"}:
+            raise ValueError("Embedding configuration is invalid.")
+        if enabled in {"false", "0"}:
+            return cls()  # Disabled operation is independent of obsolete provider settings.
+        try:
+            return cls(
+                enabled=True, api_key=os.environ.get(prefix + "API_KEY", ""),
+                provider=os.environ.get(prefix + "PROVIDER", "tencent_tokenhub"),
+                base_url=os.environ.get(prefix + "BASE_URL", "https://tokenhub.tencentmaas.com/v1"),
+                model=os.environ.get(prefix + "MODEL", "kinfra-text-embedding-0.6b"),
+                batch_size=int(os.environ.get(prefix + "BATCH_SIZE", "64")),
+                timeout_seconds=float(os.environ.get(prefix + "TIMEOUT_SECONDS", "60")),
+                max_retries=int(os.environ.get(prefix + "MAX_RETRIES", "2")),
+                max_input_chars=int(os.environ.get(prefix + "MAX_INPUT_CHARS", "1800")),
+            )
+        except (ValueError, TypeError):
+            raise ValueError("Embedding configuration is invalid.") from None
+
+
 def load_environment() -> None:
     """Load local development settings without overriding process variables."""
     load_dotenv(override=False)

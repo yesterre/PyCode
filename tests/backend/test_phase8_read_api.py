@@ -49,7 +49,13 @@ def test_snapshot_list_detail_ownership_and_nullable_counts(client, persistence)
     detail = client.get(f"{base}/{older.id}").json()
     assert detail["file_count"] is None and detail["status"] == "indexing"
     assert set(detail) == {"id", "project_id", "commit_sha", "status", "file_count",
-                           "node_count", "edge_count", "created_at", "updated_at", "error_message"}
+                           "node_count", "edge_count", "created_at", "updated_at", "error_message",
+                           "semantic_index"}
+    assert detail['semantic_index'] == {
+        'status': 'disabled', 'provider': None, 'model': None, 'dimension': None,
+        'fingerprint': None, 'artifact': None, 'built_at': None,
+        'error_code': None, 'error_message': None, 'versions': [],
+    }
     assert client.get(f"{base}/{foreign.id}").status_code == 404
     assert client.get(f"{base}/{uuid4()}").status_code == 404
     assert client.get(f"/api/v1/projects/{uuid4()}/snapshots").status_code == 404

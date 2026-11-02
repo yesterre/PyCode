@@ -123,8 +123,10 @@ class QueuedTaskReconciler:
         return result
 
     def _publisher(self, task: BackgroundTask):
+        from backend.app.services.snapshot_semantics import SEMANTIC_TASK_TYPE
         return {
             HEALTH_TASK_TYPE: self.dispatcher.enqueue_health,
             REPOSITORY_INDEX_TASK_TYPE: self.dispatcher.enqueue_repository_index,
+            SEMANTIC_TASK_TYPE: self.dispatcher.enqueue_repository_index,
             AGENT_RUN_TASK_TYPE: self.dispatcher.enqueue_agent_run,
         }.get(task.task_type)

@@ -1,0 +1,245 @@
+"""Snapshot-specific orchestration on the existing task/Artifact infrastructure."""
+from __future__ import annotations
+
+import json
+import logging
+from uuid import UUID, uuid4
+
+from backend.app.config import EmbeddingSettings
+from backend.app.core.errors import BackendError
+from backend.app.integrations.embedding import TencentEmbeddingProvider, MODEL_DIMENSIONS
+from backend.app.integrations.semantic_index import (
+    SemanticIndexBuilder, EmbeddingError, identity, SnapshotBinding, SemanticIdentity, file_hash,
+)
+
+SEMANTIC_TASK_TYPE = 'snapshot_embedding'
+logger = logging.getLogger('pycode.backend.tasks')
+
+
+class SnapshotSemantics:
+    def __init__(self, uow, artifacts, *, settings_factory=EmbeddingSettings.from_environment,
+                 provider_factory=TencentEmbeddingProvider, dispatcher=None, admission=None):
+        self.uow, self.artifacts = uow, artifacts
+        self.settings_factory, self.provider_factory = settings_factory, provider_factory
+        self.dispatcher, self.admission = dispatcher, admission
+
+    def _settings(self):
+        try:
+            return self.settings_factory()
+        except (ValueError, TypeError, RuntimeError):
+            raise BackendError('embedding_configuration', 'Embedding configuration is invalid.') from None
+
+    def target(self, snapshot, settings):
+        chunks = self.artifacts.read_chunks(snapshot.project_id, snapshot)
+        if chunks is None:
+            raise BackendError('artifacts_unavailable', 'This Snapshot has no Chunk Artifact. Build its base chunks first.')
+        bundle = self.artifacts.read_ready(snapshot.project_id, snapshot)
+        target = SemanticIdentity(chunks.binding, file_hash(bundle.chunks_path), settings.provider,
+                                  settings.model, MODEL_DIMENSIONS[settings.model],
+                                  settings.max_input_chars, settings.base_url.rstrip('/'), chunks.schema_version)
+        return target, chunks
+
+    def automatic_intent(self, snapshot, bundle):
+        """Prepare outside the activation transaction; invalid config cannot fail base indexing."""
+        try:
+            settings = self._settings()
+        except BackendError:
+            return identity({'snapshot': str(snapshot.id), 'configuration': 'invalid'})
+        if not settings.enabled:
+            return None
+        if bundle.chunks_path is None:
+            return identity({'snapshot': str(snapshot.id), 'chunks': 'missing'})
+        return SemanticIdentity(
+            SnapshotBinding(str(snapshot.project_id), str(snapshot.id), snapshot.commit_sha),
+            file_hash(bundle.chunks_path), settings.provider, settings.model,
+            MODEL_DIMENSIONS[settings.model], settings.max_input_chars,
+            settings.base_url.rstrip('/'),
+        ).fingerprint
+
+    def reserve_automatic(self, snapshot, fingerprint, source_task_id):
+        """Caller owns the same transaction that commits base Snapshot ready."""
+        if fingerprint is None:
+            return None
+        task = self.uow.background_tasks.create_submission(
+            SEMANTIC_TASK_TYPE, project_id=snapshot.project_id, snapshot_id=snapshot.id,
+            idempotency_key='auto:' + str(source_task_id or uuid4()) + ':' + fingerprint,
+            request_fingerprint=fingerprint,
+        ).task
+        project = self.uow.projects.get(snapshot.project_id)
+        if self.admission is not None and project.owner_id is not None and task.status == 'queued':
+            active = self.uow.background_tasks.lock_owner_and_count_active(project.owner_id)
+            if active > self.admission.settings.active_tasks:
+                claimed = self.uow.background_tasks.claim(task.id).task
+                task = self.uow.background_tasks.mark_failed(
+                    task.id, execution_token=claimed.execution_token,
+                    error_code='task_quota_exceeded',
+                    error_message='Semantic task quota exceeded; base Snapshot remains available.')
+        return task
+
+    def enqueue(self, task):
+        if task is not None and task.status == 'queued' and self.dispatcher is not None:
+            from backend.app.services.background_tasks import BackgroundTaskService
+            try:
+                BackgroundTaskService(self.uow, self.dispatcher).enqueue_semantic(task)
+            except BackendError:
+                # The durable task is already committed with the ready base bundle.
+                logger.warning('Semantic task awaiting queued reconciliation task_id=%s', task.id)
+
+    def submit(self, project_id, snapshot_id, owner_id, idempotency_key, tasks):
+        # Authorization precedes even config validation and all Artifact reads.
+        with self.uow.transaction():
+            project = self.uow.projects.get_owned(project_id, owner_id, for_update=True)
+            if idempotency_key is not None:
+                existing = self.uow.background_tasks.find_index_submission(project_id, idempotency_key)
+                if existing is not None:
+                    if existing.task_type != SEMANTIC_TASK_TYPE or existing.snapshot_id != snapshot_id:
+                        raise BackendError('idempotency_conflict', 'The Idempotency-Key was already used for a different request.')
+                    return existing
+            snapshot = self.uow.snapshots.get_for_project(project_id, snapshot_id)
+            project.ensure_not_archived()
+        settings = self._settings()
+        if not settings.enabled:
+            raise BackendError('embedding_unavailable', 'Embedding is disabled.')
+        target, _ = self.target(snapshot, settings)
+        # Serialize the existing owner quota and project submission boundaries.
+        with self.uow.transaction():
+            project = self.uow.projects.get_owned(project_id, owner_id, for_update=True)
+            if idempotency_key is not None:
+                existing = self.uow.background_tasks.find_index_submission(project_id, idempotency_key)
+                if existing is not None:
+                    if existing.task_type != SEMANTIC_TASK_TYPE or existing.snapshot_id != snapshot_id:
+                        raise BackendError('idempotency_conflict', 'The Idempotency-Key was already used for a different request.')
+                    return existing
+            project.ensure_not_archived()
+            self.uow.snapshots.get_for_project(project_id, snapshot_id)
+            creation = self.uow.background_tasks.create_submission(
+                SEMANTIC_TASK_TYPE, project_id=project_id, snapshot_id=snapshot_id,
+                idempotency_key=idempotency_key or 'manual:' + str(uuid4()),
+                request_fingerprint=target.fingerprint,
+                next_enqueue_attempt_at=tasks.initial_enqueue_due_at(),
+            )
+            if creation.created and tasks.admission is not None:
+                tasks.admission.admit_task(self.uow, owner_id, 'index')
+        return tasks.enqueue_semantic(creation.task) if creation.created else creation.task
+
+    def build_task(self, task, ownership, operations):
+        if task.project_id is None or task.snapshot_id is None:
+            raise BackendError('background_task_consistency_error', 'Semantic task binding is invalid.')
+        with operations.operation(task.project_id) as lock:
+            with self.uow.transaction():
+                project = self.uow.projects.get(task.project_id)
+                project.ensure_not_archived()
+                snapshot = self.uow.snapshots.get_for_project(task.project_id, task.snapshot_id)
+            settings = self._settings()
+            if not settings.enabled:
+                raise BackendError('embedding_unavailable', 'Embedding is disabled; base Snapshot remains available.')
+            target, chunks = self.target(snapshot, settings)
+            if task.request_fingerprint != target.fingerprint:
+                raise BackendError('embedding_configuration', 'Embedding target changed; submit a new task. Base Snapshot remains available.')
+
+            def guard():
+                lock.ensure_owned()
+                ownership.ensure_owned()
+                with self.uow.transaction():
+                    project = self.uow.projects.get(task.project_id)
+                    project.ensure_not_archived()
+                    current = self.uow.snapshots.get_for_project(task.project_id, task.snapshot_id)
+                if current.status != 'ready' or current.commit_sha != snapshot.commit_sha:
+                    raise BackendError('artifacts_unavailable', 'Semantic Snapshot binding changed.')
+
+            guard()
+            # Do not instantiate a Provider or call it when a valid version exists.
+            if self.artifacts.recover_semantic(target, chunks, before_publish=guard) is not None:
+                return snapshot.id
+            provider = None
+            try:
+                provider = self.provider_factory(settings)
+                SemanticIndexBuilder(self.artifacts).build(
+                    target, chunks, provider, batch_size=settings.batch_size, guard=guard)
+            except EmbeddingError as exc:
+                raise BackendError(exc.code, 'Semantic indexing failed; base Snapshot remains available.') from None
+            except (ValueError, TypeError, OSError):
+                raise BackendError('embedding_failed', 'Semantic artifact construction failed; base Snapshot remains available.') from None
+            finally:
+                if provider is not None and callable(getattr(provider, 'close', None)):
+                    provider.close()
+            return snapshot.id
+
+    def task_ready(self, task):
+        try:
+            with self.uow.transaction():
+                snapshot = self.uow.snapshots.get_for_project(task.project_id, task.snapshot_id)
+            settings = self._settings()
+            target, chunks = self.target(snapshot, settings)
+            return task.request_fingerprint == target.fingerprint and self.artifacts.read_semantic(target, chunks) is not None
+        except (BackendError, ValueError, OSError):
+            return False
+
+    def describe(self, snapshot):
+        result = {'status': 'not_built', 'provider': None, 'model': None, 'dimension': None,
+                  'fingerprint': None, 'artifact': None, 'built_at': None,
+                  'error_code': None, 'error_message': None, 'versions': []}
+        try:
+            settings = self._settings()
+        except BackendError:
+            result.update(status='failed', error_code='embedding_configuration',
+                          error_message='Embedding configuration is invalid.')
+            return result
+        if snapshot.status != 'ready':
+            result['status'] = 'not_built' if settings.enabled else 'disabled'
+            return result
+        try:
+            # Even disabled configuration may expose already published versions.
+            target, chunks = self.target(snapshot, settings)
+            result.update(provider=target.provider, model=target.model, fingerprint=target.fingerprint)
+            parent = self.artifacts.semantic_directory(target).parent
+            if parent.exists():
+                root = self.artifacts._project_root(snapshot.project_id)
+                self.artifacts._check_entry(parent, root)
+                for directory in sorted(parent.iterdir()):
+                    if len(directory.name) != 64 or any(c not in '0123456789abcdef' for c in directory.name):
+                        continue
+                    self.artifacts._check_entry(directory, root)
+                    ready = directory / 'ready'
+                    if not ready.exists():
+                        continue
+                    self.artifacts._check_tree(ready, root)
+                    try:
+                        metadata = json.loads((ready / 'manifest.json').read_text(encoding='utf-8'))
+                        fields = dict(metadata['identity'])
+                        fields.pop('binding')
+                        version = SemanticIdentity(chunks.binding, **fields)
+                        if version.chunk_hash != target.chunk_hash or directory.name != version.fingerprint:
+                            continue
+                        manifest = self.artifacts.read_semantic(version, chunks)
+                    except (BackendError, OSError, ValueError, KeyError, TypeError, AttributeError):
+                        continue
+                    result['versions'].append(self._summary(manifest))
+            with self.uow.transaction():
+                tasks = self.uow.background_tasks.list_for_snapshot(snapshot.project_id, snapshot.id, SEMANTIC_TASK_TYPE)
+            task = next((t for t in tasks if t.request_fingerprint == target.fingerprint), None)
+            current = next((v for v in result['versions'] if v['fingerprint'] == target.fingerprint), None)
+            if current:
+                result.update(current, status='ready')
+            elif task:
+                result['status'] = {'running': 'building', 'queued': 'queued',
+                                    'failed': 'failed', 'completed': 'unavailable'}[task.status]
+                result['error_code'] = task.error_code
+                result['error_message'] = task.error_message
+            if not settings.enabled:
+                result['status'] = 'disabled'
+        except (BackendError, OSError, ValueError, TypeError, KeyError):
+            result.update(status='disabled' if not settings.enabled else 'unavailable',
+                          error_code='artifacts_unavailable', error_message='Semantic artifacts are unavailable.')
+        return result
+
+    @staticmethod
+    def _summary(manifest):
+        fields = manifest['identity']
+        return {'provider': fields['provider'], 'model': fields['model'],
+                'dimension': fields['dimension'], 'fingerprint': manifest['fingerprint'],
+                'built_at': manifest['built_at'], 'artifact': {
+                    'format_version': fields['format_version'], 'dtype': manifest['dtype'],
+                    'dimension_source': manifest['dimension_source'],
+                    'byte_order': manifest['byte_order'], 'vector_count': manifest['vector_count'],
+                    'byte_count': manifest['byte_count'], 'sha256': manifest['vectors_sha256']}}

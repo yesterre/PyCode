@@ -9,9 +9,9 @@ from backend.app.api.idempotency import IdempotencyKeyHeader
 from backend.app.schemas.projects import (
     AnalysisHistoryItem, AnalysisHistoryResponse, AnalysisResponse, AskRequest,
     CreateProjectRequest, ErrorResponse, ImpactRequest, ProjectResponse,
-    ProjectListResponse,
+    ProjectListResponse, IndexProjectRequest,
 )
-from backend.app.schemas.snapshots import SnapshotListResponse, SnapshotResponse
+from backend.app.schemas.snapshots import SnapshotListResponse, SnapshotResponse, SnapshotDetailResponse
 from backend.app.schemas.graph import GraphResponse
 from backend.app.schemas.tasks import RepositoryIndexTaskResponse
 from backend.app.services.background_tasks import BackgroundTaskService
@@ -78,9 +78,11 @@ def list_snapshots(project_id: UUID, user: CurrentUser, service: Service,
         for snapshot in service.list_snapshots(project_id, limit, owner_id=user.id)])
 
 
-@router.get("/{project_id}/snapshots/{snapshot_id}", response_model=SnapshotResponse)
+@router.get("/{project_id}/snapshots/{snapshot_id}", response_model=SnapshotDetailResponse)
 def get_snapshot(project_id: UUID, snapshot_id: UUID, user: CurrentUser, service: Service):
-    return service.get_snapshot(project_id, snapshot_id, owner_id=user.id)
+    snapshot = service.get_snapshot(project_id, snapshot_id, owner_id=user.id)
+    return SnapshotDetailResponse(**SnapshotResponse.model_validate(snapshot).model_dump(),
+                                  semantic_index=service.semantics.describe(snapshot))
 
 
 @router.get("/{project_id}/snapshots/{snapshot_id}/graph", response_model=GraphResponse)
@@ -117,9 +119,13 @@ def get_graph(project_id: UUID, snapshot_id: UUID, user: CurrentUser, service: S
 )
 def index_project(
     project_id: UUID, user: CurrentUser, service: TaskService,
+    projects: Service,
+    body: IndexProjectRequest | None = None,
     idempotency_key: IdempotencyKeyHeader = None,
 ):
-    task = service.create_owned_repository_index_task(project_id, user.id, idempotency_key)
+    task = service.create_owned_repository_index_task(
+        project_id, user.id, idempotency_key,
+        snapshot_id=body.snapshot_id if body else None, semantics=projects.semantics)
     return RepositoryIndexTaskResponse(
         task_id=task.id, project_id=project_id, status=task.status,
     )

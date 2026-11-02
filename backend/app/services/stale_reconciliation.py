@@ -46,10 +46,12 @@ class StaleRunningReconciler:
         unit_of_work: UnitOfWork,
         project_operations: ProjectOperationLocks,
         settings: StaleReconciliationSettings | None = None,
+        semantic_ready=None,
     ) -> None:
         self.uow = unit_of_work
         self.project_operations = project_operations
         self.settings = settings or StaleReconciliationSettings()
+        self.semantic_ready = semantic_ready
 
     def reconcile(self) -> StaleReconciliationResult:
         with self.uow.transaction():
@@ -90,6 +92,7 @@ class StaleRunningReconciler:
         return result
 
     def _decide(self, candidate: BackgroundTask) -> str:
+        from backend.app.services.snapshot_semantics import SEMANTIC_TASK_TYPE
         logger.warning(
             "Stale execution detected task_id=%s task_type=%s worker_id=%s "
             "execution_token=%s lease_expires_at=%s",
@@ -98,6 +101,8 @@ class StaleRunningReconciler:
         )
         if candidate.task_type == REPOSITORY_INDEX_TASK_TYPE:
             return self._repository(candidate)
+        if candidate.task_type == SEMANTIC_TASK_TYPE:
+            return self._semantic(candidate)
         if candidate.task_type == AGENT_RUN_TASK_TYPE:
             return self._agent(candidate)
         with self.uow.transaction():
@@ -107,6 +112,26 @@ class StaleRunningReconciler:
                 error_message=WORKER_LOST_MESSAGE,
             )
         return "failed" if failed is not None else "noop"
+
+    def _semantic(self, candidate: BackgroundTask) -> str:
+        # Artifact validation is deliberately outside the row-lock transaction.
+        with self.uow.transaction():
+            current = self.uow.background_tasks.get(candidate.id)
+            try:
+                snapshot = self.uow.snapshots.get_for_project(current.project_id, current.snapshot_id)
+                project = self.uow.projects.get(current.project_id)
+                valid = snapshot.status == 'ready' and project.archived_at is None
+            except BackendError:
+                valid = False
+        ready = valid and self.semantic_ready is not None and self.semantic_ready(current)
+        with self.uow.transaction():
+            if ready:
+                completed = self.uow.background_tasks.complete_if_stale(current.id, current.execution_token)
+                return 'completed' if completed is not None else 'noop'
+            if valid and current.attempt_count < self.settings.max_execution_attempts:
+                requeued = self.uow.background_tasks.requeue_if_stale(current.id, current.execution_token)
+                return 'requeued' if requeued is not None else 'noop'
+            return self._fail_repository_consistency(current)
 
     def _repository(self, candidate: BackgroundTask) -> str:
         with self.uow.transaction():

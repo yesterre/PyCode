@@ -83,6 +83,9 @@ def get_project_service(
         operations=request.app.state.project_operations,
         artifacts=request.app.state.artifacts,
         admission=request.app.state.admission,
+        dispatcher=request.app.state.task_dispatcher,
+        embedding_settings_factory=request.app.state.embedding_settings_factory,
+        embedding_provider_factory=request.app.state.embedding_provider_factory,
     )
 
 

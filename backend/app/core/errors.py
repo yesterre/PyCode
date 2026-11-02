@@ -66,6 +66,14 @@ ERROR_CATALOG.update({
         "rate_limited": 429,
         "task_quota_exceeded": 429,
         "admission_unavailable": 503,
+        "embedding_unavailable": 503,
+        "embedding_configuration": 503,
+        "embedding_failed": 502,
+        "embedding_invalid_response": 502,
+        "embedding_invalid_input": 422,
+        "embedding_authentication": 503,
+        "embedding_rate_limited": 429,
+        "embedding_timeout": 504,
     }.items()
 })
 ERROR_CATALOG.update({

@@ -7,6 +7,7 @@ from celery.exceptions import Reject
 from backend.app.core.errors import BackendError
 from backend.app.services.background_tasks import REPOSITORY_INDEX_CELERY_TASK_NAME
 from backend.app.tasks.runtime import worker_repository_index_services
+from backend.app.services.snapshot_semantics import SEMANTIC_TASK_TYPE
 
 
 @shared_task(bind=True, name=REPOSITORY_INDEX_CELERY_TASK_NAME, ignore_result=True)
@@ -19,6 +20,8 @@ def run_repository_index_task(self, task_id: str) -> None:
             def owned_operation(task, ownership):
                 if task.execution_token is None or task.project_id is None:
                     raise RuntimeError("Claimed Repository task has no execution owner.")
+                if task.task_type == SEMANTIC_TASK_TYPE:
+                    return projects.semantics.build_task(task, ownership, projects.operations)
                 if task.snapshot_id is not None:
                     return projects.recover_index_for_snapshot(
                         task.project_id,

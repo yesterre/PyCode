@@ -713,6 +713,23 @@ class SqlAlchemyBackgroundTaskRepository:
         record = self.session.scalars(statement).one_or_none()
         return _background_task(record) if record is not None else None
 
+    def list_for_snapshot(self, project_id: UUID, snapshot_id: UUID,
+                          task_type: str, limit: int = 100) -> list[BackgroundTask]:
+        records = self.session.scalars(select(BackgroundTaskORM).where(
+            BackgroundTaskORM.project_id == project_id,
+            BackgroundTaskORM.snapshot_id == snapshot_id,
+            BackgroundTaskORM.task_type == task_type,
+        ).order_by(BackgroundTaskORM.created_at.desc(), BackgroundTaskORM.id.desc()).limit(limit))
+        return [_background_task(record) for record in records]
+
+    def find_index_submission(self, project_id: UUID, key: str) -> BackgroundTask | None:
+        record = self.session.scalars(select(BackgroundTaskORM).where(
+            BackgroundTaskORM.project_id == project_id,
+            BackgroundTaskORM.idempotency_key == key,
+            BackgroundTaskORM.task_type.in_(['repository_index', 'snapshot_embedding']),
+        ).order_by(BackgroundTaskORM.created_at).limit(1)).one_or_none()
+        return _background_task(record) if record is not None else None
+
     def _get_active_repository_index(
         self, project_id: UUID,
     ) -> BackgroundTask | None:
