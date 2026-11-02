@@ -15,6 +15,58 @@ from pycode.models import (
 from pycode.storage import load_graph, load_index, save_graph, save_index
 
 
+@pytest.mark.parametrize("include_metadata", [False, True])
+def test_index_serialization_preserves_exact_legacy_text_without_asdict(tmp_path, monkeypatch, include_metadata):
+    import pycode.storage as storage
+    from pycode.engine import PyCodeEngine
+
+    (tmp_path / "source.py").write_text(
+        "import os\nclass 示例:\n    def method(self):\n        return 1\n"
+        "def main():\n    return 示例()\n", encoding="utf-8",
+    )
+    index = PyCodeEngine().build_index(tmp_path, include_chunk_metadata=include_metadata)
+    file = index.files[0]
+    assert (file.source_text is not None) == include_metadata
+    assert bool(file.chunk_spans) == include_metadata
+    expected = {
+        "project_path": str(tmp_path),
+        "files": [{"path": "source.py", "imports": ["os"],
+                   "classes": [{"name": "示例", "methods": ["method"]}],
+                   "functions": ["main"],
+                   "call_infos": [{"caller": "main", "calls": ["示例"]}],
+                   "has_main_guard": False}],
+    }
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Index serialization must not recursively call asdict")
+
+    monkeypatch.setattr(storage, "asdict", forbidden)
+    output = tmp_path / "index.json"
+    storage.save_index(index, output)
+    text = output.read_text(encoding="utf-8")
+    assert text == json.dumps(expected, ensure_ascii=False, indent=2)
+    assert list(json.loads(text)) == ["project_path", "files"]
+    assert list(json.loads(text)["files"][0]) == ["path", "imports", "classes", "functions", "call_infos", "has_main_guard"]
+    assert storage.load_index(output) == index
+    assert storage.load_index(output).files[0].source_text is None
+
+
+def test_index_serialization_does_not_traverse_transient_fields(tmp_path):
+    class DoNotCopy:
+        def __deepcopy__(self, memo):
+            raise AssertionError("Transient metadata must not be copied")
+
+        def __iter__(self):
+            raise AssertionError("Transient metadata must not be traversed")
+
+    file = FileInfo(path="source.py", source_text=DoNotCopy(), chunk_spans=DoNotCopy())
+    output = tmp_path / "index.json"
+    save_index(ProjectIndex("project", [file]), output)
+    assert set(json.loads(output.read_text(encoding="utf-8"))["files"][0]) == {
+        "path", "imports", "classes", "functions", "call_infos", "has_main_guard",
+    }
+
+
 def test_save_index_creates_parent_directory_and_writes_json(tmp_path: Path) -> None:
     index = ProjectIndex(
         project_path="demo_project",

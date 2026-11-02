@@ -25,7 +25,7 @@ def binding():
 
 def parsed(tmp_path, source):
     (tmp_path / "source.py").write_text(source, encoding="utf-8")
-    return PyCodeEngine().build_index(tmp_path)
+    return PyCodeEngine().build_index(tmp_path, include_chunk_metadata=True)
 
 
 def reconstruct(index):
@@ -56,7 +56,7 @@ def test_decorators_nested_duplicates_classes_and_module_code_are_complete(tmp_p
 def test_ids_are_repeatable_and_bound_to_project_snapshot_commit(tmp_path, binding):
     index = parsed(tmp_path, FIXTURE.read_text(encoding="utf-8"))
     first = build_chunk_index(index, binding)
-    second = build_chunk_index(PyCodeEngine().build_index(tmp_path), binding)
+    second = build_chunk_index(PyCodeEngine().build_index(tmp_path, include_chunk_metadata=True), binding)
     assert first == second
     original = {chunk.id for chunk in first.chunks}
     for changed in (replace(binding, project_id=str(uuid4())), replace(binding, snapshot_id=str(uuid4())),
@@ -113,7 +113,7 @@ def test_empty_and_module_only_files_round_trip(tmp_path, binding, source):
 
 
 def test_empty_repository(tmp_path, binding):
-    result = build_chunk_index(PyCodeEngine().build_index(tmp_path), binding)
+    result = build_chunk_index(PyCodeEngine().build_index(tmp_path, include_chunk_metadata=True), binding)
     assert result.files == [] and result.chunks == []
 
 

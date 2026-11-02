@@ -59,7 +59,7 @@ class PyCodeAdapter:
         snapshot_id: UUID, commit_sha: str,
     ) -> None:
         """Backfill only the missing derivative; never rebuild valid base data."""
-        index = self.engine.build_index(root)
+        index = self.engine.build_index(root, include_chunk_metadata=True)
         binding = SnapshotBinding(str(project_id), str(snapshot_id), commit_sha)
         save_chunk_index(build_chunk_index(index, binding), output_path)
 

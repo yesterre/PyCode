@@ -6,6 +6,42 @@ from pycode.models import FileInfo
 from pycode.parser import parse_python_file
 
 
+@pytest.mark.parametrize("enabled", [None, False, True])
+def test_chunk_metadata_is_opt_in_and_reuses_the_parsed_tree(tmp_path, monkeypatch, enabled):
+    import pycode.parser as parser
+
+    path = tmp_path / "source.py"
+    path.write_text("@decorate\ndef answer():\n    return 42\n", encoding="utf-8")
+    trees, collected = [], []
+    original_parse, original_collect = parser.ast.parse, parser.collect_chunk_spans
+
+    def parse(*args, **kwargs):
+        tree = original_parse(*args, **kwargs)
+        trees.append(tree)
+        return tree
+
+    def collect(tree, source):
+        assert enabled is True, "Unrequested Chunk metadata was collected"
+        assert tree is trees[0]
+        collected.append(tree)
+        return original_collect(tree, source)
+
+    monkeypatch.setattr(parser.ast, "parse", parse)
+    monkeypatch.setattr(parser, "collect_chunk_spans", collect)
+    kwargs = {} if enabled is None else {"include_chunk_metadata": enabled}
+    file = parser.parse_python_file(path, tmp_path, **kwargs)
+    assert len(trees) == 1
+    assert file.functions == ["answer"]
+    if enabled:
+        assert len(collected) == 1
+        assert file.source_text == path.read_text(encoding="utf-8")
+        assert file.chunk_spans[0].symbol_name == "answer"
+        assert file.chunk_spans[0].start_line == 1
+    else:
+        assert collected == []
+        assert file.source_text is None and file.chunk_spans == []
+
+
 def test_parse_python_file_extracts_basic_structure(tmp_path: Path) -> None:
     file_path = tmp_path / "sample.py"
     file_path.write_text(

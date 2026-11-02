@@ -49,12 +49,15 @@ class PyCodeEngine:
     cached between calls. Concurrent writes to the same project are not managed.
     """
 
-    def build_index(self, project_path: str | Path) -> ProjectIndex:
+    def build_index(
+        self, project_path: str | Path, *, include_chunk_metadata: bool = False,
+    ) -> ProjectIndex:
         """Scan and parse without writing files."""
         root = Path(project_path)
         return ProjectIndex(
             project_path=str(root),
-            files=[parse_python_file(path, root) for path in scan_python_files(root)],
+            files=[parse_python_file(path, root, include_chunk_metadata=include_chunk_metadata)
+                   for path in scan_python_files(root)],
         )
 
     def index(
@@ -67,7 +70,7 @@ class PyCodeEngine:
         if (chunk_output_path is None) != (binding is None):
             raise ValueError("Chunk output and Snapshot binding must be supplied together.")
         root = Path(project_path)
-        result = self.build_index(root)
+        result = self.build_index(root, include_chunk_metadata=chunk_output_path is not None)
         destination = (
             Path(output_path) if output_path is not None
             else root / DEFAULT_ARTIFACT_DIR / DEFAULT_INDEX_FILE

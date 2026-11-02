@@ -5,7 +5,10 @@ from pycode.models import CallInfo, ClassInfo, FileInfo
 from pycode.chunks import collect_chunk_spans
 
 
-def parse_python_file(file_path: Path, project_path: Path | None = None) -> FileInfo:
+def parse_python_file(
+    file_path: Path, project_path: Path | None = None, *,
+    include_chunk_metadata: bool = False,
+) -> FileInfo:
     """Parse a Python file and return its basic structure information."""
     path = Path(file_path)
     if not path.exists():
@@ -52,8 +55,8 @@ def parse_python_file(file_path: Path, project_path: Path | None = None) -> File
         functions=functions,
         call_infos=call_infos,
         has_main_guard=has_main_guard,
-        source_text=source,
-        chunk_spans=collect_chunk_spans(tree, source),
+        source_text=source if include_chunk_metadata else None,
+        chunk_spans=collect_chunk_spans(tree, source) if include_chunk_metadata else [],
     )
 
 

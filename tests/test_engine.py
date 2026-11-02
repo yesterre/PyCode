@@ -43,6 +43,49 @@ def prepare(root):
     return engine
 
 
+@pytest.mark.parametrize("mode", ["build_index", "index", "graph"])
+def test_plain_builds_do_not_collect_or_retain_chunk_metadata(project, monkeypatch, mode):
+    import pycode.parser as parser
+
+    captured, calls = [], []
+    original_parse = parser.ast.parse
+
+    def parse(*args, **kwargs):
+        calls.append(kwargs.get("filename"))
+        return original_parse(*args, **kwargs)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Plain Index/Graph must not collect Chunk spans")
+
+    class RecordingEngine(PyCodeEngine):
+        def build_index(self, *args, **kwargs):
+            result = super().build_index(*args, **kwargs)
+            captured.append(result)
+            return result
+
+    monkeypatch.setattr(parser.ast, "parse", parse)
+    monkeypatch.setattr(parser, "collect_chunk_spans", forbidden)
+    getattr(RecordingEngine(), mode)(project)
+    assert len(captured) == 1 and len(calls) == 2
+    assert all(file.source_text is None and file.chunk_spans == [] for file in captured[0].files)
+
+
+def test_explicit_metadata_and_existing_graph_index_do_not_reparse(project, monkeypatch):
+    import pycode.parser as parser
+
+    engine = PyCodeEngine()
+    index = engine.build_index(project, include_chunk_metadata=True)
+    assert all(file.source_text is not None and file.chunk_spans for file in index.files)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Graph must reuse the supplied ProjectIndex")
+
+    monkeypatch.setattr(parser.ast, "parse", forbidden)
+    monkeypatch.setattr(engine, "build_index", forbidden)
+    graph = engine.graph(project, index=index)
+    assert graph.nodes and graph.edges
+
+
 def test_engine_build_save_query_and_answer_without_output(project, capsys):
     engine = PyCodeEngine()
     assert not (project / ".pclens").exists()
