@@ -142,3 +142,41 @@ def test_worker_hybrid_pack_keeps_original_snapshot_after_switch_and_redelivery(
     summaries=[e.payload['retrieval'] for e in events if 'retrieval' in e.payload]
     assert summaries and all(s['mode']=='hybrid' and s['binding']['snapshot_id']==str(env.snapshot_id) for s in summaries)
     assert all(s['pack']['estimated_tokens']<=12000 for s in summaries)
+
+
+def test_hybrid_entry_http_and_onboard_tool_retain_structural_evidence_without_provider(hybrid_env,monkeypatch):
+    env=hybrid_env
+    env.failure=EmbeddingError('embedding_unavailable')
+    contexts=[]
+    original=env.app.state.adapter.engine.ask
+    def ask(*args,**kwargs):
+        contexts.append(kwargs['retrieval_context'])
+        return original(*args,**kwargs)
+    monkeypatch.setattr(env.app.state.adapter.engine,'ask',ask)
+    response=env.ask('return 入口在哪里')
+    assert response.status_code==200,response.text
+    body=response.json()
+    assert body['intent']=='entry'
+    assert [r['path'] for r in body['retrieval']['references']]==['main.py']
+    assert body['retrieval']['references'][0]['coverage']=='complete_file'
+    context=contexts[0]
+    tool=retrieve_context(ToolContext(context.root,retrieval_context=context),'生成项目新手阅读顺序',intent='onboard')
+    assert tool.ok and [i['path'] for i in tool.data['items']]==['main.py','service.py']
+    assert tool.data['retrieval']['binding']['snapshot_id']==str(env.snapshot_id)
+    assert tool.data['retrieval']['pack']['estimated_tokens']<=env.config.token_budget
+    assert not env.created
+
+
+def test_hybrid_impact_http_preserves_importer_when_graph_expansion_is_disabled(hybrid_env):
+    env=hybrid_env
+    env.config=replace(env.config,graph_depth=0,graph_edge_checks=1)
+    env.failure=EmbeddingError('embedding_unavailable')
+    response=env.r.context.client.post(f'/api/v1/projects/{env.r.own}/impact',headers=env.r.headers,
+                                      json={'file_path':'service.py'})
+    assert response.status_code==200,response.text
+    body=response.json()
+    assert [r['path'] for r in body['retrieval']['references']]==['service.py','main.py']
+    assert 'file:main.py --imports--> file:service.py' in body['evidence']
+    assert body['retrieval']['mode']=='hybrid' and body['retrieval']['pack']
+    assert body['retrieval']['binding']['snapshot_id']==str(env.snapshot_id)
+    assert snapshot(env).status=='ready' and not env.created

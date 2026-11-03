@@ -26,11 +26,17 @@ def retrieve(request: RetrievalRequest, context: RetrievalContext) -> RetrievalR
     intent = query.intent or _detect_intent(query.text)
     if intent not in {"general", "explain", "impact", "onboard", "entry", "dependency"}:
         raise ValueError("Unsupported retrieval intent.")
-    if context.retrieval_mode == "hybrid":
-        return _hybrid(request, context, intent, started)
     graph = context.graph
     paths = {file.path for file in context.index.files}
     target = query.target or _best_file_match(query.text, context.index)
+    structured_intent = intent in {"entry", "onboard"} or (
+        intent in {"impact", "dependency", "explain"}
+        and (target in paths or (query.target and intent in {"impact", "explain"}))
+    )
+    # Keep established structural strategies in this same Retriever. General
+    # and targetless semantic queries retain the existing Hybrid ranking path.
+    if context.retrieval_mode == "hybrid" and not structured_intent:
+        return _hybrid(request, context, intent, started)
     specs = []
     diagnostics = list(context.diagnostics)
     if intent in {"impact", "explain"} and query.target and query.target not in paths:
@@ -125,9 +131,6 @@ def _hybrid(request, context, intent, started):
         keyword = [(query.target, 'exact_path', 'explicit_target', 100., None, 'definition')] if query.target in paths else []
         if query.target not in paths:
             diagnostics.append('target_not_indexed')
-    if intent in {'entry','onboard'} and context.graph is not None:
-        keyword.extend((n.path, 'entry', 'entry_candidate_not_proven_runtime_entry', 1., None, 'definition')
-                       for n in find_entry_candidates(context.graph) if n.path in paths)
     vector = []
     exact = any(s[1] in {'exact_path','exact_symbol'} for s in keyword)
     if not exact and 'target_not_indexed' not in diagnostics:
