@@ -92,7 +92,7 @@ TOOLS = {
                 },
                 "graph_path": {"type": ["string", "null"]},
                 "index_path": {"type": ["string", "null"]},
-                "max_snippet_chars": {"type": "integer"},
+                "max_snippet_chars": {"type": "integer", "description": "Deprecated; accepted for compatibility. Evidence is returned complete without character cropping."},
             },
             "required": ["question"],
         },

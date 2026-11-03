@@ -183,6 +183,7 @@ def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, 
         ApplicationEventType.TOOL_STARTED: {"turn_index", "arguments", "reason"},
         ApplicationEventType.TOOL_FINISHED: {
             "outcome", "duration_ms", "summary", "error", "denied_by", "result_summary",
+            "retrieval",
         },
         ApplicationEventType.RUN_COMPLETED: {
             "stop_reason", "has_result", "trace_complete", "duration_ms",
@@ -258,6 +259,9 @@ def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, 
         for field in ("summary", "result_summary"):
             if field in payload and not isinstance(payload[field], str):
                 raise ValueError(f"Invalid tool {field}.")
+        if "retrieval" in payload and (not isinstance(payload["retrieval"], dict)
+                                      or public_retrieval_summary(payload["retrieval"]) != payload["retrieval"]):
+            raise ValueError("Invalid public retrieval summary.")
     elif event_type == ApplicationEventType.RUN_COMPLETED:
         _require_nonempty_string(payload["stop_reason"], "stop_reason")
         _require_bool(payload["has_result"], "has_result")
@@ -279,6 +283,70 @@ def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, 
         raise ValueError("Application Trace payload is not JSON serializable.") from exc
     if len(encoded) > MAX_PUBLIC_PAYLOAD_BYTES:
         raise ValueError("Application Trace payload exceeds the public size limit.")
+
+
+def public_retrieval_summary(value: Any) -> dict | None:
+    """Bounded, code-free allowlist shared by live and persisted Tool events."""
+    from math import isfinite
+    from uuid import UUID
+
+    if not isinstance(value, dict):
+        return None
+    strategy = value.get("strategy")
+    status = value.get("status")
+    if strategy not in {"general", "explain", "impact", "entry", "onboard", "dependency"} or status not in {"ok", "degraded", "empty", "unavailable"}:
+        return None
+    binding = value.get("binding")
+    if binding is not None:
+        try:
+            binding = {name: str(UUID(binding[name])) for name in ("project_id", "snapshot_id")}
+            commit = value["binding"]["commit_sha"]
+            if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40,64}", commit):
+                return None
+            binding["commit_sha"] = commit
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return None
+    duration, count = value.get("duration_ms"), value.get("evidence_count")
+    if type(duration) not in {int, float} or not isfinite(duration) or duration < 0 or type(count) is not int or count < 0:
+        return None
+    refs = value.get("references")
+    if not isinstance(refs, list):
+        return None
+    references = []
+    for reference in refs[:6]:
+        if not isinstance(reference, dict):
+            return None
+        path = reference.get("path")
+        if (not isinstance(path, str) or len(path) > 500 or "\\" in path or ":" in path
+                or any(part in {"", ".", ".."} for part in path.split("/"))):
+            return None
+        start, end = reference.get("start_line"), reference.get("end_line")
+        if (start is not None or end is not None) and (type(start) is not int or type(end) is not int or not 1 <= start <= end):
+            return None
+        ids = reference.get("chunk_ids", [])
+        if not isinstance(ids, list) or any(not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{64}", key) for key in ids):
+            return None
+        source, coverage = reference.get("source"), reference.get("coverage")
+        if source not in {"exact_path", "exact_symbol", "keyword", "graph", "entry"} or coverage not in {"complete_symbol", "complete_file", "unavailable"}:
+            return None
+        symbol = reference.get("symbol")
+        if symbol is not None and not isinstance(symbol, str):
+            return None
+        omitted = reference.get("chunk_ids_omitted", 0)
+        if type(omitted) is not int or omitted < 0:
+            return None
+        references.append({"path": sanitize_text(path), "symbol": sanitize_text(symbol, max_chars=200) if symbol else None,
+                           "start_line": start, "end_line": end, "chunk_ids": ids[:4],
+                           "chunk_ids_omitted": omitted + max(0, len(ids) - 4), "source": source, "coverage": coverage})
+    omitted = value.get("references_omitted", 0)
+    if type(omitted) is not int or omitted < 0:
+        return None
+    diagnostics = value.get("diagnostics", [])
+    if not isinstance(diagnostics, list) or any(not isinstance(code, str) or not re.fullmatch(r"[a-z_]+", code) for code in diagnostics):
+        return None
+    return {"strategy": strategy, "status": status, "binding": binding, "duration_ms": duration,
+            "evidence_count": count, "diagnostics": diagnostics[:20], "references": references,
+            "references_omitted": omitted + max(0, len(refs) - 6)}
 
 
 def _validate_error(value: Any) -> None:
@@ -681,6 +749,10 @@ class ApplicationTraceNormalizer:
         summary = getattr(tool, "summary", None)
         if summary:
             payload["summary"] = sanitize_text(summary)
+        if str(getattr(tool, "tool", "")) == "retrieve_context":
+            retrieval = public_retrieval_summary(getattr(tool, "retrieval", None))
+            if retrieval is not None:
+                payload["retrieval"] = retrieval
         if outcome != "success":
             category = "policy_denied" if outcome == "denied" else "tool_error"
             payload["error"] = normalize_error(category).to_dict()

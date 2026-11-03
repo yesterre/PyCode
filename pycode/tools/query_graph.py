@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import asdict
 
 from pycode.constants import DEFAULT_ARTIFACT_DIR, DEFAULT_GRAPH_FILE
 from pycode.query import (
@@ -21,16 +22,32 @@ def query_code_graph(
     graph_path: str | Path | None = None,
 ):
     """Query the stage-2 code graph through a stable tool wrapper."""
-    graph_file = graph_path or f"{DEFAULT_ARTIFACT_DIR}/{DEFAULT_GRAPH_FILE}"
-    try:
-        resolved_graph_path = context.resolve_in_project(graph_file)
-    except PermissionError as exc:
-        return failure("query_graph", "Graph read denied.", str(exc))
+    trusted = context.retrieval_context
+    if trusted is not None:
+        if graph_path is not None or trusted.root != context.project_root:
+            return failure("query_graph", "Graph read denied.", "trusted_artifacts_cannot_be_overridden")
+        graph = trusted.graph
+        if graph is None:
+            return failure("query_graph", "Graph file cannot be loaded.", "graph_missing")
+    else:
+        graph_file = graph_path or f"{DEFAULT_ARTIFACT_DIR}/{DEFAULT_GRAPH_FILE}"
+        try:
+            resolved_graph_path = context.resolve_in_project(graph_file)
+        except PermissionError as exc:
+            return failure("query_graph", "Graph read denied.", str(exc))
+        try:
+            graph = load_graph(resolved_graph_path)
+        except (FileNotFoundError, IsADirectoryError) as exc:
+            return failure("query_graph", "Graph file cannot be loaded.", str(exc))
 
-    try:
-        graph = load_graph(resolved_graph_path)
-    except (FileNotFoundError, IsADirectoryError) as exc:
-        return failure("query_graph", "Graph file cannot be loaded.", str(exc))
+    result = _query_graph(graph, query_type, target)
+    if trusted is not None:
+        result.data["binding"] = asdict(trusted.binding) if trusted.binding else None
+        result.data["relation_status"] = "stored_static_resolution_unverified"
+    return result
+
+
+def _query_graph(graph, query_type, target):
 
     if query_type == "imports":
         if target is None:

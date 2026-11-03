@@ -219,6 +219,7 @@ class Analysis:
     answer: str
     intent: str
     evidence: list[str]
+    retrieval: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -227,3 +228,4 @@ class ProjectAnalysis:
     answer: str
     intent: str
     evidence: list[str]
+    retrieval: dict[str, Any] | None = None

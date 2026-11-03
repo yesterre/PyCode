@@ -1,6 +1,9 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from pycode.retrieval_evidence import RetrievalContext
 
 
 @dataclass
@@ -10,6 +13,7 @@ class ToolContext:
     python_executable: str | None = None
     max_output_chars: int = 4000
     state: dict[str, Any] = field(default_factory=dict)
+    retrieval_context: "RetrievalContext | None" = None
 
     @property
     def project_root(self) -> Path:

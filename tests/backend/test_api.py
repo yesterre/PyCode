@@ -120,9 +120,16 @@ def test_index_and_analysis_http_chain(
         response = client.post(project_url + "/" + suffix, json=body)
         assert response.status_code == 200, response.text
         result = response.json()
-        assert set(result) == {"project_id", "answer", "intent", "evidence"}
+        assert set(result) == {"project_id", "answer", "intent", "evidence", "retrieval"}
         assert result["project_id"] == project["id"] and result["intent"] == intent
         assert result["answer"] == "Offline HTTP answer" and "main.py" in result["evidence"]
+        summary = result["retrieval"]
+        assert summary["binding"] == {"project_id": project["id"],
+                                       "snapshot_id": project["current_snapshot_id"], "commit_sha": "a" * 40}
+        assert summary["strategy"] == intent and summary["status"] == "ok"
+        assert summary["evidence_count"] == len(summary["references"]) > 0
+        assert all(reference["chunk_ids"] and reference["coverage"] == "complete_file"
+                   for reference in summary["references"])
     assert len(llm.prompts) == 2
     assert client.get(project_url).json()["status"] == "ready"
 

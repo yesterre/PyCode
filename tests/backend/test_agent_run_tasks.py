@@ -157,7 +157,13 @@ def test_agent_worker_reaches_pycode_engine_run_agent_once(
     assert completed.result == "Offline HTTP answer"
     assert len(calls) == 1
     assert calls[0][0][1] == "analyze the entry point"
-    assert calls[0][1] == {"llm_client": application.state.adapter.llm_client}
+    assert set(calls[0][1]) == {"llm_client", "retrieval_context"}
+    assert calls[0][1]["llm_client"] is application.state.adapter.llm_client
+    retrieval = calls[0][1]["retrieval_context"]
+    assert retrieval.binding.project_id == str(completed.project_id)
+    assert retrieval.binding.snapshot_id == str(completed.snapshot_id)
+    assert retrieval.binding.commit_sha == "a" * 40
+    assert retrieval.chunks.binding == retrieval.binding
 
 
 def test_agent_result_failure_marks_both_records_failed_with_safe_message(

@@ -57,12 +57,43 @@ class ProjectListResponse(BaseModel):
     has_more: bool
 
 
+class EvidenceReferenceResponse(BaseModel):
+    path: str | None
+    symbol: str | None
+    start_line: int | None
+    end_line: int | None
+    chunk_ids: list[str]
+    source: str
+    score: float
+    reason: str
+    role: str
+    coverage: str
+    diagnostics: list[str]
+
+
+class RetrievalBindingResponse(BaseModel):
+    project_id: UUID
+    snapshot_id: UUID
+    commit_sha: str
+
+
+class RetrievalSummaryResponse(BaseModel):
+    strategy: str
+    binding: RetrievalBindingResponse | None
+    status: Literal["ok", "degraded", "empty", "unavailable"]
+    diagnostics: list[str]
+    duration_ms: float
+    evidence_count: int
+    references: list[EvidenceReferenceResponse]
+
+
 class AnalysisResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     project_id: UUID
     answer: str
     intent: str
     evidence: list[str]
+    retrieval: RetrievalSummaryResponse | None = None
 
 
 class AnalysisHistoryItem(BaseModel):

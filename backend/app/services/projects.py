@@ -487,18 +487,21 @@ class ProjectService:
                     project, snapshot,
                 )
                 project_lock.ensure_owned()
+                retrieval_context = self.retrieval_context(root, snapshot, bundle)
                 if impact:
                     target = self._impact_target(root, text)
                     result = self.adapter.impact(
                         root, target, model,
                         index_path=bundle.index_path,
                         graph_path=bundle.graph_path,
+                        retrieval_context=retrieval_context,
                     )
                 else:
                     result = self.adapter.ask(
                         root, text, model,
                         index_path=bundle.index_path,
                         graph_path=bundle.graph_path,
+                        retrieval_context=retrieval_context,
                     )
                 project_lock.ensure_owned()
             except BackendError as exc:
@@ -522,7 +525,12 @@ class ProjectService:
             with self.uow.transaction():
                 project_lock.ensure_owned()
                 self.uow.agent_runs.complete(run.id, result.answer)
-            return ProjectAnalysis(project_id, result.answer, result.intent, result.evidence)
+            return ProjectAnalysis(project_id, result.answer, result.intent, result.evidence, result.retrieval)
+
+    def retrieval_context(self, root, snapshot, bundle):
+        """Prepare immutable evidence inputs inside the existing Snapshot lock."""
+        chunks = self.artifacts.read_chunks(snapshot.project_id, snapshot)
+        return self.adapter.snapshot_retrieval(root, snapshot, bundle, chunks)
 
     def _with_summary(self, project: Project, *, snapshots: dict[UUID, ProjectSnapshot] | None = None) -> Project:
         if project.current_snapshot_id is None:

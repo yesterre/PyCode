@@ -235,8 +235,9 @@ class AgentRunService:
                 result = self.projects.execute_on_snapshot(
                     run.project_id,
                     background_task.snapshot_id,
-                    lambda root, _snapshot, bundle: self._run_agent(
+                    lambda root, snapshot, bundle: self._run_agent(
                         root, bundle, run.task, task_id=task_id, run_id=run.id,
+                        snapshot=snapshot,
                         execution_token=execution_token, ownership=ownership,
                         trace_holder=trace_holder,
                     ),
@@ -363,6 +364,7 @@ class AgentRunService:
         bundle: SnapshotArtifactBundle,
         task_text: str,
         *,
+        snapshot,
         task_id: UUID,
         run_id: UUID,
         execution_token: UUID,
@@ -370,6 +372,7 @@ class AgentRunService:
         trace_holder: list[RealtimeTraceSession],
     ) -> Any:
         self.agent_workspace.prepare(repository, bundle)
+        retrieval_context = self.projects.retrieval_context(repository, snapshot, bundle)
         ownership.ensure_owned()
         with self.unit_of_work.transaction():
             background_task = self.unit_of_work.background_tasks.guard_execution(
@@ -394,6 +397,13 @@ class AgentRunService:
             run_id,
             marked.run.core_started_at,
         )
+        run_agent = self.adapter.run_agent
+        # Preserve compatibility with old injected test/extension adapters. The
+        # production PyCodeAdapter always accepts the trusted context.
+        parameters = signature(run_agent).parameters
+        kwargs = {}
+        if "retrieval_context" in parameters or any(p.kind == p.VAR_KEYWORD for p in parameters.values()):
+            kwargs["retrieval_context"] = retrieval_context
         try:
             trace_session = RealtimeTraceSession(
                 marked.run, ownership, self.trace_publisher,
@@ -401,11 +411,10 @@ class AgentRunService:
             trace_holder.append(trace_session)
         except Exception:
             logger.warning("Realtime Trace activation degraded run_id=%s", run_id, exc_info=True)
-            return self.adapter.run_agent(repository, task_text)
-        run_agent = self.adapter.run_agent
+            return run_agent(repository, task_text, **kwargs)
         if "trace_observer" in signature(run_agent).parameters:
-            return run_agent(repository, task_text, trace_observer=trace_session.observe)
-        return run_agent(repository, task_text)
+            kwargs["trace_observer"] = trace_session.observe
+        return run_agent(repository, task_text, **kwargs)
 
     def _fail(
         self,

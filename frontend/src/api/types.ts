@@ -16,7 +16,16 @@ export type BackgroundTask = {
   snapshot_id: string | null; agent_run_id: string | null; error_code: string | null;
   error_message: string | null; created_at: string; started_at: string | null; finished_at: string | null
 }
-export type Analysis = { project_id: string; answer: string; intent: string; evidence: string[] }
+export type RetrievalSummary = {
+  strategy: string; status: 'ok' | 'degraded' | 'empty' | 'unavailable';
+  binding: {project_id: string; snapshot_id: string; commit_sha: string} | null;
+  diagnostics: string[]; duration_ms: number; evidence_count: number;
+  references: {path: string | null; symbol: string | null; start_line: number | null;
+    end_line: number | null; chunk_ids: string[]; source: string; score: number;
+    reason: string; role: string; coverage: string; diagnostics: string[]}[]
+}
+export type Analysis = { project_id: string; answer: string; intent: string; evidence: string[];
+  retrieval?: RetrievalSummary | null }
 export type AnalysisHistoryMode = 'repository' | 'impact' | 'agent'
 export type AnalysisHistoryItem = {
   id: string; created_at: string; mode: AnalysisHistoryMode; question: string; answer: string

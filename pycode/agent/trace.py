@@ -48,6 +48,7 @@ class ToolTrace:
     error: str | None = None
     denied_by: str | None = None
     result_data: dict[str, Any] = field(default_factory=dict)
+    retrieval: dict[str, Any] | None = None
     _started_counter: float = field(default_factory=perf_counter, repr=False)
 
     def finish(self, result: ToolResult) -> None:
@@ -56,6 +57,10 @@ class ToolTrace:
         self.summary = truncate_string(result.summary, MAX_SUMMARY_CHARS)
         self.error = truncate_string(result.error, MAX_SUMMARY_CHARS) if result.error else None
         self.result_data = summarize_mapping(result.data)
+        if result.tool == "retrieve_context" and isinstance(result.data.get("retrieval"), dict):
+            # Keep the code-free metadata projection intact; generic trace
+            # summaries intentionally truncate nested values and lose bindings.
+            self.retrieval = result.data["retrieval"]
         self.denied_by = result.data.get("denied_by") if result.data.get("denied") else None
         if self.denied_by:
             self.status = "denied"
@@ -85,6 +90,7 @@ class ToolTrace:
             "error": self.error,
             "denied_by": self.denied_by,
             "result_data": self.result_data,
+            "retrieval": self.retrieval,
         }
 
 

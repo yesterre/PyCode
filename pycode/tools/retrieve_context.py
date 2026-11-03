@@ -1,15 +1,10 @@
 from pathlib import Path
 
 from pycode.constants import DEFAULT_ARTIFACT_DIR, DEFAULT_GRAPH_FILE, DEFAULT_INDEX_FILE
-from pycode.retriever import (
-    RetrievalResult,
-    retrieve_explain,
-    retrieve_for_question,
-    retrieve_impact,
-    retrieve_onboard,
-)
+from pycode.retriever import retrieve
+from pycode.retrieval_evidence import Query, RetrievalContext, RetrievalRequest
 from pycode.storage import load_graph, load_index
-from pycode.tools.base import ToolContext, failure, success, truncate_text
+from pycode.tools.base import ToolContext, failure, success
 
 
 def retrieve_context(
@@ -20,9 +15,20 @@ def retrieve_context(
     intent: str | None = None,
     graph_path: str | Path | None = None,
     index_path: str | Path | None = None,
-    max_snippet_chars: int = 1200,
+    max_snippet_chars: int | None = None,
 ):
-    """Reuse stage-3 retrieval to select code context for an Agent task."""
+    """Render the common evidence selection without cropping or selecting again.
+
+    max_snippet_chars is accepted for old callers but no longer crops evidence.
+    Trusted Snapshot inputs cannot be replaced by model-supplied artifact paths.
+    """
+    trusted = context.retrieval_context
+    if trusted is not None:
+        if index_path is not None or graph_path is not None:
+            return failure("retrieve_context", "Artifact path denied.", "trusted_artifacts_cannot_be_overridden")
+        if trusted.root != context.project_root:
+            return failure("retrieve_context", "Artifact path denied.", "trusted_workspace_mismatch")
+        return _retrieve(trusted, question, target, intent, max_snippet_chars)
     try:
         resolved_index_path = context.resolve_in_project(
             index_path or f"{DEFAULT_ARTIFACT_DIR}/{DEFAULT_INDEX_FILE}"
@@ -36,52 +42,29 @@ def retrieve_context(
     try:
         index = load_index(resolved_index_path)
         graph = load_graph(resolved_graph_path)
-    except (FileNotFoundError, IsADirectoryError) as exc:
+    except (OSError, ValueError, UnicodeError, KeyError, TypeError, AttributeError) as exc:
         return failure("retrieve_context", "PyCode artifacts cannot be loaded.", str(exc))
+    try:
+        trusted = RetrievalContext.create(context.project_root, index, graph)
+    except (OSError, ValueError, UnicodeError, KeyError, TypeError, AttributeError) as exc:
+        return failure("retrieve_context", "PyCode artifacts cannot be loaded.", str(exc))
+    return _retrieve(trusted, question, target, intent, max_snippet_chars)
 
-    normalized_intent = (intent or "").lower()
-    if normalized_intent == "impact" and target:
-        retrieval = retrieve_impact(target, context.project_root, index, graph, question)
-    elif normalized_intent == "explain" and target:
-        retrieval = retrieve_explain(target, context.project_root, index, graph, question)
-    elif normalized_intent == "onboard":
-        retrieval = retrieve_onboard(context.project_root, index, graph)
-    elif normalized_intent in {"entry", "dependency"}:
-        retrieval = retrieve_for_question(
-            _intent_question(question, normalized_intent),
-            context.project_root,
-            index,
-            graph,
-        )
-    else:
-        retrieval = retrieve_for_question(question, context.project_root, index, graph)
 
+def _retrieve(trusted, question, target, intent, max_snippet_chars):
+    try:
+        retrieval = retrieve(RetrievalRequest(Query(
+            question, (intent or "").lower() or None, target.replace("\\", "/") if target else None,
+        ), 8 if intent == "impact" else 6), trusted)
+    except ValueError:
+        return failure("retrieve_context", "Invalid retrieval request.", "invalid_retrieval_request")
     return success(
         "retrieve_context",
         f"Selected {len(retrieval.items)} context items.",
         question=question,
         intent=retrieval.intent,
         evidence=retrieval.evidence,
-        items=[_item_data(item, max_snippet_chars) for item in retrieval.items],
+        items=[{**item.to_dict(), "snippet_truncated": False} for item in retrieval.items],
+        retrieval=retrieval.summary(),
+        compatibility_notes=["max_snippet_chars_ignored_to_preserve_evidence"] if max_snippet_chars is not None else [],
     )
-
-
-def _item_data(item, max_snippet_chars: int) -> dict[str, object]:
-    snippet, truncated = truncate_text(item.snippet, max_snippet_chars)
-    return {
-        "title": item.title,
-        "path": item.path,
-        "node_ids": item.node_ids,
-        "edges": item.edges,
-        "reason": item.reason,
-        "snippet": snippet,
-        "snippet_truncated": truncated,
-    }
-
-
-def _intent_question(question: str, intent: str) -> str:
-    if intent == "entry":
-        return f"entry main \u5165\u53e3 {question}"
-    if intent == "dependency":
-        return f"dependency import call \u4f9d\u8d56 {question}"
-    return question

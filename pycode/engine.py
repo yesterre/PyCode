@@ -11,6 +11,7 @@ from pycode.llm_client import LLMClient, OpenAIResponsesClient
 from pycode.models import CodeGraph, GraphEdge, GraphNode, ProjectIndex
 from pycode.parser import parse_python_file
 from pycode.prompt_builder import build_code_qa_prompt
+from pycode.retrieval_evidence import RetrievalContext
 from pycode.query import (
     find_entry_candidates,
     get_file_imported_by,
@@ -26,7 +27,7 @@ from pycode.retriever import (
 )
 from pycode.scanner import scan_python_files
 from pycode.storage import load_graph, load_index, save_graph, save_index
-from pycode.tools import ToolSpec
+from pycode.tools import ToolContext, ToolSpec
 
 
 @dataclass
@@ -126,10 +127,11 @@ class PyCodeEngine:
         model: str | None = None, llm_client: LLMClient | None = None,
         *, index_path: str | Path | None = None,
         graph_path: str | Path | None = None,
+        retrieval_context: RetrievalContext | None = None,
     ) -> AnswerResult:
         root = Path(project_path)
-        index, graph = _load_project_artifacts(root, index_path, graph_path)
-        return _answer(retrieve_for_question(question, root, index, graph), model, llm_client)
+        index, graph = _retrieval_artifacts(root, index_path, graph_path, retrieval_context)
+        return _answer(retrieve_for_question(question, root, index, graph, context=retrieval_context), model, llm_client)
 
     def explain(
         self, project_path: str | Path, file_path: str | Path,
@@ -152,10 +154,11 @@ class PyCodeEngine:
         model: str | None = None, llm_client: LLMClient | None = None,
         *, index_path: str | Path | None = None,
         graph_path: str | Path | None = None,
+        retrieval_context: RetrievalContext | None = None,
     ) -> AnswerResult:
         root = Path(project_path)
-        index, graph = _load_project_artifacts(root, index_path, graph_path)
-        return _answer(retrieve_impact(str(file_path), root, index, graph), model, llm_client)
+        index, graph = _retrieval_artifacts(root, index_path, graph_path, retrieval_context)
+        return _answer(retrieve_impact(str(file_path), root, index, graph, context=retrieval_context), model, llm_client)
 
     def run_agent(
         self, project_path: str | Path, task: str, *,
@@ -165,6 +168,7 @@ class PyCodeEngine:
         max_steps: int = 8, use_llm_planner: bool = True,
         enable_memory: bool = True, enable_memory_extraction: bool = True,
         trace_observer=None,
+        retrieval_context: RetrievalContext | None = None,
     ) -> AgentResult:
         """Run the existing harness with a fresh task and its existing policy.
 
@@ -174,6 +178,8 @@ class PyCodeEngine:
         """
         root = Path(project_path)
         client = llm_client
+        if retrieval_context is not None and root.resolve() != retrieval_context.root:
+            raise ValueError("Retrieval context belongs to another workspace.")
         if client is None and not (plan_only and not use_llm_planner):
             client = OpenAIResponsesClient(model=model)
         return run_agent_task(
@@ -184,7 +190,16 @@ class PyCodeEngine:
             enable_memory=enable_memory,
             enable_memory_extraction=enable_memory_extraction,
             trace_observer=trace_observer,
+            context=ToolContext(root, allow_tests=allow_tests, retrieval_context=retrieval_context),
         )
+
+
+def _retrieval_artifacts(root, index_path, graph_path, context):
+    if context is not None:
+        if root.resolve() != context.root:
+            raise ValueError("Retrieval context belongs to another workspace.")
+        return context.index, context.graph
+    return _load_project_artifacts(root, index_path, graph_path)
 
 
 def _load_project_artifacts(

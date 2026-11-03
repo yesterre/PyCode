@@ -14,6 +14,7 @@ from pycode.llm_client import (
 )
 from pycode.storage import load_graph, load_index
 from pycode.chunks import SnapshotBinding, build_chunk_index, save_chunk_index
+from pycode.retrieval_evidence import RetrievalContext
 
 
 class PyCodeAdapter:
@@ -66,12 +67,15 @@ class PyCodeAdapter:
     def ask(
         self, root: Path, question: str, model: str | None, *,
         index_path: Path | None = None, graph_path: Path | None = None,
+        retrieval_context: RetrievalContext | None = None,
     ) -> Analysis:
-        index_path, graph_path = self._check_artifacts(root, index_path, graph_path)
+        if retrieval_context is None:
+            index_path, graph_path = self._check_artifacts(root, index_path, graph_path)
         try:
             result = self.engine.ask(
                 root, question, model=model, llm_client=self._llm_client(model),
                 index_path=index_path, graph_path=graph_path,
+                **({"retrieval_context": retrieval_context} if retrieval_context is not None else {}),
             )
         except LLMError as exc:
             raise _model_error(exc) from exc
@@ -80,21 +84,38 @@ class PyCodeAdapter:
     def impact(
         self, root: Path, file_path: str, model: str | None, *,
         index_path: Path | None = None, graph_path: Path | None = None,
+        retrieval_context: RetrievalContext | None = None,
     ) -> Analysis:
-        index_path, graph_path = self._check_artifacts(root, index_path, graph_path)
+        if retrieval_context is None:
+            index_path, graph_path = self._check_artifacts(root, index_path, graph_path)
         try:
             result = self.engine.impact(
                 root, file_path, model=model, llm_client=self._llm_client(model),
                 index_path=index_path, graph_path=graph_path,
+                **({"retrieval_context": retrieval_context} if retrieval_context is not None else {}),
             )
         except LLMError as exc:
             raise _model_error(exc) from exc
         return _analysis(result)
 
-    def run_agent(self, root: Path, task: str, *, trace_observer=None) -> AgentResult:
+    def snapshot_retrieval(self, root, snapshot, bundle, chunks) -> RetrievalContext:
+        """Called after Service authorization, exact checkout and Store validation."""
+        try:
+            return RetrievalContext.create(
+                root, load_index(bundle.index_path), load_graph(bundle.graph_path),
+                binding=SnapshotBinding(str(snapshot.project_id), str(snapshot.id), snapshot.commit_sha),
+                chunks=chunks,
+            )
+        except (OSError, ValueError, UnicodeError, KeyError, TypeError, AttributeError) as exc:
+            raise BackendError("artifacts_unavailable", "Snapshot retrieval inputs are unavailable.") from exc
+
+    def run_agent(self, root: Path, task: str, *, trace_observer=None,
+                  retrieval_context: RetrievalContext | None = None) -> AgentResult:
         """Invoke the existing Agent facade without changing its runtime defaults."""
         try:
             kwargs = {"llm_client": self._llm_client(None)}
+            if retrieval_context is not None:
+                kwargs["retrieval_context"] = retrieval_context
             if trace_observer is not None and "trace_observer" in signature(
                 self.engine.run_agent
             ).parameters:
@@ -141,7 +162,8 @@ class PyCodeAdapter:
 
 
 def _analysis(result: AnswerResult) -> Analysis:
-    return Analysis(result.answer, result.retrieval.intent, list(result.evidence))
+    summary = result.retrieval.summary() if hasattr(result.retrieval, "summary") else None
+    return Analysis(result.answer, result.retrieval.intent, list(result.evidence), summary)
 
 
 def _model_error(exc: LLMError) -> BackendError:
