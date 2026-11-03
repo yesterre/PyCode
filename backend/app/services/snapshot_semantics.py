@@ -40,7 +40,7 @@ class SnapshotSemantics:
                 raise VectorUnavailable("vector_configuration")
             return replace(context, retrieval_mode="vector", vector_query=invalid)
         if config.mode == "keyword":
-            return context
+            return replace(context, token_budget=config.token_budget)
         try:
             settings = self._settings()
         except BackendError:
@@ -91,7 +91,9 @@ class SnapshotSemantics:
                     except Exception:
                         pass  # No SDK exception or secret-bearing message is logged.
 
-        return replace(context, retrieval_mode="vector", vector_top_k=config.vector_top_k, vector_query=query)
+        return replace(context, retrieval_mode=config.mode, vector_top_k=config.vector_top_k, vector_query=query,
+                       token_budget=config.token_budget, graph_depth=config.graph_depth, graph_nodes=config.graph_nodes,
+                       graph_edge_checks=config.graph_edge_checks, graph_direction=config.graph_direction)
 
     def _settings(self):
         try:

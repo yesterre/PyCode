@@ -4,10 +4,19 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Callable
+from functools import cached_property
 
 from pycode.chunks import ChunkIndex, SnapshotBinding, validate_chunk_index
 from pycode.models import CodeGraph, ProjectIndex
 from pycode.utils import dedupe_preserve_order, normalize_path, safe_read_text
+
+
+@dataclass(frozen=True)
+class SourceScore:
+    source: str
+    score: float
+    rank: int
+    contribution: float
 
 
 @dataclass(frozen=True)
@@ -34,10 +43,12 @@ class EvidenceItem:
     role: str = "definition"
     coverage: str = "unavailable"
     diagnostics: tuple[str, ...] = ()
+    source_scores: tuple[SourceScore, ...] = ()
+    graph_path: tuple[dict, ...] = ()
 
     def to_dict(self) -> dict:
         value = asdict(self)
-        for name in ("node_ids", "edges", "chunk_ids", "diagnostics"):
+        for name in ("node_ids", "edges", "chunk_ids", "diagnostics", "source_scores", "graph_path"):
             value[name] = list(value[name])
         return value
 
@@ -45,7 +56,7 @@ class EvidenceItem:
         value = self.to_dict()
         return {name: value[name] for name in (
             "path", "symbol", "start_line", "end_line", "chunk_ids", "source",
-            "score", "reason", "role", "coverage", "diagnostics",
+            "score", "reason", "role", "coverage", "diagnostics", "source_scores", "graph_path",
         )}
 
 
@@ -75,6 +86,9 @@ class RetrievalResult:
     status: str = "ok"
     diagnostics: tuple[str, ...] = ()
     duration_ms: float = 0.0
+    mode: str = "keyword"
+    pack: object | None = None
+    graph_stats: dict | None = None
 
     @property
     def evidence(self) -> list[str]:
@@ -92,6 +106,9 @@ class RetrievalResult:
             "duration_ms": self.duration_ms,
             "evidence_count": len(self.items),
             "references": [item.reference() for item in self.items],
+            "mode": self.mode,
+            "pack": self.pack.summary() if self.pack else None,
+            "graph_stats": self.graph_stats,
         }
 
 
@@ -127,6 +144,16 @@ class RetrievalContext:
     vector_query: Callable | None = field(default=None, repr=False, compare=False)
     retrieval_mode: str = "keyword"
     vector_top_k: int = 6
+    token_budget: int = 131072
+    graph_depth: int = 2
+    graph_nodes: int = 32
+    graph_edge_checks: int = 128
+    graph_direction: str = "both"
+
+    @cached_property
+    def graph_view(self):
+        from pycode.query import RetrievalGraph
+        return RetrievalGraph.create(self.graph) if self.graph is not None else None
 
     @classmethod
     def create(cls, root: Path, index: ProjectIndex, graph: CodeGraph | None, *,
@@ -166,7 +193,7 @@ class RetrievalContext:
                    tuple(dedupe_preserve_order(diagnostics)))
 
     def item(self, path: str, *, reason: str, source: str, score: float = 0.0,
-             span=None, role: str = "definition") -> EvidenceItem:
+             span=None, role: str = "definition", include_graph: bool = True) -> EvidenceItem:
         path = safe_relative(path)
         text = dict(self.sources).get(path)
         lines = source_lines(text) if text is not None else []
@@ -174,7 +201,7 @@ class RetrievalContext:
         available = text is not None and 1 <= start <= end <= len(lines)
         chunks = tuple(chunk.id for chunk in (self.chunks.chunks if self.chunks else [])
                        if chunk.path == path and chunk.span.start_line <= end and chunk.span.end_line >= start)
-        graph = self.graph or CodeGraph(str(self.root))
+        graph = (self.graph if include_graph else None) or CodeGraph(str(self.root))
         nodes = tuple(node.id for node in graph.nodes
                       if node.path == path or node.id == f"file:{path}")
         related = {f"file:{path}", *nodes}

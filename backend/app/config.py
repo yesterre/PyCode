@@ -9,16 +9,32 @@ from dotenv import load_dotenv
 class RetrievalSettings:
     mode: str = "keyword"
     vector_top_k: int = 6
+    token_budget: int = 131072
+    graph_depth: int = 2
+    graph_nodes: int = 32
+    graph_edge_checks: int = 128
+    graph_direction: str = "both"
 
     def __post_init__(self):
-        if self.mode not in {"keyword", "vector"} or type(self.vector_top_k) is not int or not 1 <= self.vector_top_k <= 20:
+        if self.mode not in {"keyword", "vector", "hybrid"} or type(self.vector_top_k) is not int or not 1 <= self.vector_top_k <= 20:
             raise ValueError("Retrieval configuration is invalid.")
+        for value, low, high in ((self.token_budget,4096,1048576),(self.graph_depth,0,4),
+                                 (self.graph_nodes,1,256),(self.graph_edge_checks,1,4096)):
+            if type(value) is not int or not low <= value <= high:
+                raise ValueError('Retrieval configuration is invalid.')
+        if self.graph_direction not in {'both','incoming','outgoing'}:
+            raise ValueError('Retrieval configuration is invalid.')
 
     @classmethod
     def from_environment(cls):
         try:
             return cls(os.environ.get("PYCODE_RETRIEVAL_MODE", "keyword"),
-                       int(os.environ.get("PYCODE_RETRIEVAL_VECTOR_TOP_K", "6")))
+                       int(os.environ.get("PYCODE_RETRIEVAL_VECTOR_TOP_K", "6")),
+                       int(os.environ.get('PYCODE_RETRIEVAL_TOKEN_BUDGET','131072')),
+                       int(os.environ.get('PYCODE_RETRIEVAL_GRAPH_DEPTH','2')),
+                       int(os.environ.get('PYCODE_RETRIEVAL_GRAPH_NODES','32')),
+                       int(os.environ.get('PYCODE_RETRIEVAL_GRAPH_EDGE_CHECKS','128')),
+                       os.environ.get('PYCODE_RETRIEVAL_GRAPH_DIRECTION','both'))
         except (ValueError, TypeError):
             raise ValueError("Retrieval configuration is invalid.") from None
 

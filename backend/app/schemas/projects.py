@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import BaseModel, ConfigDict, StringConstraints, Field
 
 from backend.app.core.models import ProjectStatus
 
@@ -57,6 +57,31 @@ class ProjectListResponse(BaseModel):
     has_more: bool
 
 
+class SourceScoreResponse(BaseModel):
+    source: Literal['keyword','vector','graph']
+    score: float
+    rank: int
+    contribution: float
+
+
+class GraphStepResponse(BaseModel):
+    source: str
+    target: str
+    relation: str
+    direction: Literal['incoming','outgoing']
+
+
+class EvidencePackResponse(BaseModel):
+    budget: int
+    estimated_tokens: int
+    estimator: str
+    selected_count: int
+    discarded_count: int
+    discarded: list[dict]
+    discarded_omitted: int
+    reason_counts: dict[str,int]
+
+
 class EvidenceReferenceResponse(BaseModel):
     path: str | None
     symbol: str | None
@@ -69,6 +94,8 @@ class EvidenceReferenceResponse(BaseModel):
     role: str
     coverage: str
     diagnostics: list[str]
+    source_scores: list[SourceScoreResponse] = Field(default_factory=list)
+    graph_path: list[GraphStepResponse] = Field(default_factory=list)
 
 
 class RetrievalBindingResponse(BaseModel):
@@ -85,6 +112,9 @@ class RetrievalSummaryResponse(BaseModel):
     duration_ms: float
     evidence_count: int
     references: list[EvidenceReferenceResponse]
+    mode: Literal['keyword','vector','hybrid'] = 'keyword'
+    pack: EvidencePackResponse | None = None
+    graph_stats: dict | None = None
 
 
 class AnalysisResponse(BaseModel):

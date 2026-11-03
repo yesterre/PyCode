@@ -5,6 +5,7 @@ from pycode.retriever import retrieve
 from pycode.retrieval_evidence import Query, RetrievalContext, RetrievalRequest
 from pycode.storage import load_graph, load_index
 from pycode.tools.base import ToolContext, failure, success
+from pycode.evidence_pack import tool_items
 
 
 def retrieve_context(
@@ -65,7 +66,7 @@ def _retrieve(trusted, question, target, intent, max_snippet_chars):
         question=question,
         intent=retrieval.intent,
         evidence=retrieval.evidence,
-        items=[{**item.to_dict(), "snippet_truncated": False} for item in retrieval.items],
+        items=tool_items(retrieval.items),
         retrieval=retrieval.summary(),
         compatibility_notes=["max_snippet_chars_ignored_to_preserve_evidence"] if max_snippet_chars is not None else [],
     )

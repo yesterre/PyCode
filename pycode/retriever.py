@@ -14,6 +14,8 @@ from pycode.retrieval_evidence import (
 )
 from pycode.utils import dedupe_preserve_order, normalize_path
 from pycode.semantic_search import VectorUnavailable
+from pycode.evidence_pack import build_pack
+from pycode.hybrid_retrieval import fuse
 
 ContextItem = EvidenceItem
 
@@ -24,6 +26,8 @@ def retrieve(request: RetrievalRequest, context: RetrievalContext) -> RetrievalR
     intent = query.intent or _detect_intent(query.text)
     if intent not in {"general", "explain", "impact", "onboard", "entry", "dependency"}:
         raise ValueError("Unsupported retrieval intent.")
+    if context.retrieval_mode == "hybrid":
+        return _hybrid(request, context, intent, started)
     graph = context.graph
     paths = {file.path for file in context.index.files}
     target = query.target or _best_file_match(query.text, context.index)
@@ -85,6 +89,8 @@ def retrieve(request: RetrievalRequest, context: RetrievalContext) -> RetrievalR
         seen.add(key)
         if len(items) >= request.limit:
             diagnostics.append("candidate_limit_reached")
+        if len(items) >= 20:
+            diagnostics.append("candidate_pool_limited")
             break
         items.append(context.item(path, reason=reason, source=source, score=score, span=span, role=role))
     diagnostics.extend(code for item in items for code in item.diagnostics)
@@ -92,8 +98,61 @@ def retrieve(request: RetrievalRequest, context: RetrievalContext) -> RetrievalR
     status = "empty" if not items else "unavailable" if all(i.coverage == "unavailable" for i in items) else "degraded" if diagnostics else "ok"
     if not items and any(code.startswith("vector_") for code in diagnostics):
         status = "degraded"  # Failed channel + empty fallback is not a clean miss.
-    return RetrievalResult(query.text, intent, items, context.binding, status,
-                           tuple(diagnostics), round((perf_counter() - started) * 1000, 3))
+    result = RetrievalResult(query.text, intent, items, context.binding, status,
+                             tuple(diagnostics), mode=context.retrieval_mode)
+    return _pack(result, context, request.limit, started)
+
+
+def _pack(result, context, limit, started):
+    from dataclasses import replace
+    result = build_pack(result, context.token_budget, limit)
+    diagnostics = list(result.diagnostics)
+    if dict(result.pack.reason_counts).get('token_budget'):
+        diagnostics.append('evidence_budget_limited')
+    status = result.status
+    if 'evidence_budget_limited' in diagnostics:
+        status = 'degraded'
+    return replace(result, status=status, diagnostics=tuple(dedupe_preserve_order(diagnostics)),
+                   duration_ms=round((perf_counter() - started) * 1000, 3))
+
+
+def _hybrid(request, context, intent, started):
+    query = request.query
+    diagnostics = list(context.diagnostics)
+    keyword = _lexical_candidates(query.text, context)
+    paths = {f.path for f in context.index.files}
+    if query.target:
+        keyword = [(query.target, 'exact_path', 'explicit_target', 100., None, 'definition')] if query.target in paths else []
+        if query.target not in paths:
+            diagnostics.append('target_not_indexed')
+    if intent in {'entry','onboard'} and context.graph is not None:
+        keyword.extend((n.path, 'entry', 'entry_candidate_not_proven_runtime_entry', 1., None, 'definition')
+                       for n in find_entry_candidates(context.graph) if n.path in paths)
+    vector = []
+    exact = any(s[1] in {'exact_path','exact_symbol'} for s in keyword)
+    if not exact and 'target_not_indexed' not in diagnostics:
+        try:
+            if context.binding is None or context.chunks is None:
+                raise VectorUnavailable('vector_binding_mismatch')
+            if context.vector_query is None:
+                raise VectorUnavailable()
+            response = context.vector_query(query.text, context.vector_top_k)
+            known = {(c.path, c.span) for c in context.chunks.chunks}
+            if response.binding != context.binding or any((h.path, h.span) not in known for h in response.hits):
+                raise VectorUnavailable('vector_binding_mismatch')
+            vector = [(h.path, 'vector', 'cosine_max_over_definition_segments', h.score,
+                       h.span if h.span.symbol_kind != 'module' else None, 'definition') for h in response.hits]
+        except VectorUnavailable as exc:
+            diagnostics.append(exc.code)
+    items, stats = fuse(keyword, vector, context)
+    if stats and stats['limited']:
+        diagnostics.append('graph_expansion_limited')
+    if stats and stats['unknown_relations']:
+        diagnostics.append('graph_relations_unknown')
+    status = 'degraded' if diagnostics else 'ok' if items else 'empty'
+    result = RetrievalResult(query.text, intent, items, context.binding, status, tuple(diagnostics),
+                             mode='hybrid', graph_stats=stats)
+    return _pack(result, context, request.limit, started)
 
 
 def _lexical_candidates(question: str, context: RetrievalContext) -> list:

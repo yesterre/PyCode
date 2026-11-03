@@ -327,7 +327,7 @@ def public_retrieval_summary(value: Any) -> dict | None:
         if not isinstance(ids, list) or any(not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{64}", key) for key in ids):
             return None
         source, coverage = reference.get("source"), reference.get("coverage")
-        if source not in {"exact_path", "exact_symbol", "keyword", "graph", "entry", "vector"} or coverage not in {"complete_symbol", "complete_file", "unavailable"}:
+        if source not in {"exact_path", "exact_symbol", "keyword", "graph", "entry", "vector", "hybrid"} or coverage not in {"complete_symbol", "complete_file", "unavailable"}:
             return None
         symbol = reference.get("symbol")
         if symbol is not None and not isinstance(symbol, str):
@@ -338,15 +338,61 @@ def public_retrieval_summary(value: Any) -> dict | None:
         references.append({"path": sanitize_text(path), "symbol": sanitize_text(symbol, max_chars=200) if symbol else None,
                            "start_line": start, "end_line": end, "chunk_ids": ids[:4],
                            "chunk_ids_omitted": omitted + max(0, len(ids) - 4), "source": source, "coverage": coverage})
+        scores = reference.get('source_scores', [])
+        if not isinstance(scores, list) or len(scores) > 3:
+            return None
+        clean_scores = []
+        for entry in scores:
+            if not isinstance(entry, dict) or entry.get('source') not in {'keyword','vector','graph'}:
+                return None
+            score, rank, contribution = (entry.get(k) for k in ('score','rank','contribution'))
+            if (type(score) not in {int,float} or not isfinite(score) or type(rank) is not int or not 1 <= rank <= 20
+                    or type(contribution) not in {int,float} or not isfinite(contribution) or not 0 <= contribution <= 1):
+                return None
+            clean_scores.append({'source':entry['source'], 'score':score, 'rank':rank, 'contribution':contribution})
+        if clean_scores:
+            references[-1]['source_scores'] = clean_scores
+        distance = len(reference['graph_path']) if isinstance(reference.get('graph_path'), list) else reference.get('graph_distance', 0)
+        if type(distance) is not int or not 0 <= distance <= 4:
+            return None
+        if distance:
+            references[-1].update(graph_distance=distance, relation_confidence='static_unverified')
     omitted = value.get("references_omitted", 0)
     if type(omitted) is not int or omitted < 0:
         return None
     diagnostics = value.get("diagnostics", [])
     if not isinstance(diagnostics, list) or any(not isinstance(code, str) or not re.fullmatch(r"[a-z_]+", code) for code in diagnostics):
         return None
-    return {"strategy": strategy, "status": status, "binding": binding, "duration_ms": duration,
+    result = {"strategy": strategy, "status": status, "binding": binding, "duration_ms": duration,
             "evidence_count": count, "diagnostics": diagnostics[:20], "references": references,
             "references_omitted": omitted + max(0, len(refs) - 6)}
+    if 'mode' in value:
+        if value['mode'] not in {'keyword','vector','hybrid'}:
+            return None
+        result['mode'] = value['mode']
+    pack = value.get('pack')
+    if pack is not None:
+        if not isinstance(pack, dict) or pack.get('estimator') != 'utf8_bytes_upper_bound_v1':
+            return None
+        budget, used, selected, discarded = (pack.get(k) for k in ('budget','estimated_tokens','selected_count','discarded_count'))
+        if (any(type(n) is not int for n in (budget,used,selected,discarded)) or not 4096 <= budget <= 1048576
+                or not 0 <= used <= budget or selected != count or discarded < 0):
+            return None
+        reasons = pack.get('reason_counts')
+        if (not isinstance(reasons, dict) or set(reasons) - {'token_budget','item_limit','overlap','file_diversity'}
+                or any(type(n) is not int or n < 0 for n in reasons.values()) or sum(reasons.values()) != discarded):
+            return None
+        result['pack'] = {'budget':budget, 'estimated_tokens':used, 'estimator':pack['estimator'],
+                          'selected_count':selected, 'discarded_count':discarded, 'reason_counts':reasons}
+    stats = value.get('graph_stats')
+    if stats is not None:
+        fields = {'visited_nodes','edge_checks','depth_reached','unknown_relations','node_limit','edge_limit','depth_limit','indexed_edges'}
+        if (not isinstance(stats, dict) or any(type(stats.get(k)) is not int or stats[k] < 0 for k in fields)
+                or type(stats.get('limited')) is not bool or stats['visited_nodes'] > stats['node_limit']
+                or stats['edge_checks'] > stats['edge_limit'] or stats['depth_reached'] > stats['depth_limit']):
+            return None
+        result['graph_stats'] = {k:stats[k] for k in sorted(fields | {'limited'})}
+    return result
 
 
 def _validate_error(value: Any) -> None:

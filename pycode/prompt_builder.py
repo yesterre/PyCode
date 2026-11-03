@@ -1,4 +1,5 @@
 from pycode.retriever import RetrievalResult
+from pycode.evidence_pack import render_evidence, encoded
 
 
 ANSWER_FORMAT = """回答要求：
@@ -10,29 +11,9 @@ ANSWER_FORMAT = """回答要求：
 
 def build_code_qa_prompt(retrieval: RetrievalResult) -> str:
     """Build a stable prompt from selected code context."""
-    context_blocks = []
-    for index, item in enumerate(retrieval.items, start=1):
-        context_blocks.append(
-            "\n".join(
-                [
-                    f"## 证据 {index}: {item.title}",
-                    f"路径: {item.path or 'N/A'}",
-                    f"选择原因: {item.reason or 'N/A'}",
-                    f"Snapshot: {item.snapshot_id or 'unbound'}; Commit: {item.commit_sha or 'unbound'}",
-                    f"Symbol: {item.symbol or 'unknown'}; Lines: {item.start_line}-{item.end_line}; Coverage: {item.coverage}",
-                    f"Chunk IDs: {', '.join(item.chunk_ids) or 'unavailable'}",
-                    f"Diagnostics: {', '.join(item.diagnostics) or 'none'}",
-                    "节点:",
-                    _format_list(item.node_ids),
-                    "关系:",
-                    _format_list(item.edges),
-                    "代码片段:",
-                    item.snippet or "N/A",
-                ]
-            )
-        )
-
-    evidence = "\n\n".join(context_blocks) or "没有检索到可用证据。"
+    evidence = render_evidence(retrieval.items)
+    if retrieval.pack is not None:
+        evidence += "\n\nEvidence Pack: " + encoded(retrieval.pack.summary())
     return "\n\n".join(
         [
             "你是 PyCode 的代码库理解助手。",
@@ -45,9 +26,3 @@ def build_code_qa_prompt(retrieval: RetrievalResult) -> str:
             evidence,
         ]
     )
-
-
-def _format_list(items: list[str]) -> str:
-    if not items:
-        return "- N/A"
-    return "\n".join(f"- {item}" for item in items)

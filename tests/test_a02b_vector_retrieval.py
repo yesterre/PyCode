@@ -156,7 +156,7 @@ def test_failed_vector_with_empty_keyword_fallback_is_degraded_not_clean_miss(ve
     assert 'vector_artifact_unavailable' in result.diagnostics
 
 
-@pytest.mark.parametrize('mode,k', [('hybrid', 6), ('vector', 0), ('vector', 21), ('vector', True)])
+@pytest.mark.parametrize('mode,k', [('unsupported', 6), ('vector', 0), ('vector', 21), ('vector', True)])
 def test_config_rejects_invalid_values(mode, k):
     with pytest.raises(ValueError):
         RetrievalSettings(mode, k)
