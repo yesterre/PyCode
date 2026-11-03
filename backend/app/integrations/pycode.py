@@ -116,9 +116,9 @@ class PyCodeAdapter:
             kwargs = {"llm_client": self._llm_client(None)}
             if retrieval_context is not None:
                 kwargs["retrieval_context"] = retrieval_context
-            if trace_observer is not None and "trace_observer" in signature(
-                self.engine.run_agent
-            ).parameters:
+            parameters = signature(self.engine.run_agent).parameters
+            accepts_kwargs = any(p.kind == p.VAR_KEYWORD for p in parameters.values())
+            if trace_observer is not None and ("trace_observer" in parameters or accepts_kwargs):
                 kwargs["trace_observer"] = trace_observer
             return self.engine.run_agent(root, task, **kwargs)
         except LLMError as exc:

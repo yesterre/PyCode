@@ -220,3 +220,16 @@ def test_graph_tool_uses_same_trusted_graph_and_rejects_path_replacement(tmp_pat
     assert result.data["relation_status"] == "stored_static_resolution_unverified"
     denied = query_code_graph(tool_context, "entry", graph_path="alternate.json")
     assert not denied.ok and denied.error == "trusted_artifacts_cannot_be_overridden"
+
+
+def test_impact_intent_normalization_preserves_all_selected_evidence(tmp_path):
+    for number in range(7):
+        (tmp_path / f"neighbor{number}.py").write_text("import target\n", encoding="utf-8")
+    context = fixture_context(tmp_path, "VALUE = 1\n", filename="target.py")
+    tool_context = ToolContext(tmp_path, retrieval_context=context)
+    lower = retrieve_context(tool_context, "target.py", target="target.py", intent="impact")
+    upper = retrieve_context(tool_context, "target.py", target="target.py", intent="IMPACT")
+    assert lower.ok and upper.ok
+    assert len(lower.data["items"]) == len(upper.data["items"]) == 8
+    assert upper.data["items"] == lower.data["items"]
+    assert upper.data["evidence"] == lower.data["evidence"]

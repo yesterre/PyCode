@@ -401,8 +401,9 @@ class AgentRunService:
         # Preserve compatibility with old injected test/extension adapters. The
         # production PyCodeAdapter always accepts the trusted context.
         parameters = signature(run_agent).parameters
+        accepts_kwargs = any(p.kind == p.VAR_KEYWORD for p in parameters.values())
         kwargs = {}
-        if "retrieval_context" in parameters or any(p.kind == p.VAR_KEYWORD for p in parameters.values()):
+        if "retrieval_context" in parameters or accepts_kwargs:
             kwargs["retrieval_context"] = retrieval_context
         try:
             trace_session = RealtimeTraceSession(
@@ -412,7 +413,7 @@ class AgentRunService:
         except Exception:
             logger.warning("Realtime Trace activation degraded run_id=%s", run_id, exc_info=True)
             return run_agent(repository, task_text, **kwargs)
-        if "trace_observer" in signature(run_agent).parameters:
+        if "trace_observer" in parameters or accepts_kwargs:
             kwargs["trace_observer"] = trace_session.observe
         return run_agent(repository, task_text, **kwargs)
 

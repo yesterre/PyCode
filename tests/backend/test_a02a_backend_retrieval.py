@@ -186,3 +186,34 @@ def test_realtime_and_final_trace_share_safe_retrieval_projection(late_project, 
                                 SimpleNamespace(ensure_owned=lambda: None), None)
     live.observe("tool_finished", trace)
     assert live.events[-1].payload["retrieval"] == summary
+
+
+@pytest.mark.parametrize("boundary", ["engine", "adapter"])
+def test_kwargs_wrappers_preserve_live_retrieval_trace(
+    late_project, application, client, agent_worker, monkeypatch, boundary,
+):
+    accepted = client.post("/api/v1/agent-runs", json={
+        "project_id": str(late_project.project_id), "task": "serve",
+    })
+    assert accepted.status_code == 202, accepted.text
+    task_id = UUID(accepted.json()["task_id"])
+    observed, published = [], []
+    target = application.state.adapter.engine if boundary == "engine" else application.state.adapter
+    original = target.run_agent
+
+    def wrapped(*args, **kwargs):
+        observed.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(target, "run_agent", wrapped)
+    service = agent_worker.service()
+    service.trace_publisher = SimpleNamespace(publish=lambda run_id, event: published.append(event))
+    completed = service.execute(task_id)
+    assert completed.status == AgentRunStatus.COMPLETED
+    assert len(observed) == 1 and callable(observed[0].get("trace_observer"))
+    context = observed[0]["retrieval_context"]
+    assert context.binding.snapshot_id == str(late_project.snapshot_id)
+    retrieval_events = [event for event in published if event.event_type == ApplicationEventType.TOOL_FINISHED
+                        and event.tool_name == "retrieve_context"]
+    assert retrieval_events
+    assert retrieval_events[0].payload["retrieval"]["binding"]["snapshot_id"] == str(late_project.snapshot_id)

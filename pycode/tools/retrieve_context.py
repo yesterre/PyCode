@@ -53,9 +53,10 @@ def retrieve_context(
 
 def _retrieve(trusted, question, target, intent, max_snippet_chars):
     try:
+        normalized_intent = (intent or "").lower() or None
         retrieval = retrieve(RetrievalRequest(Query(
-            question, (intent or "").lower() or None, target.replace("\\", "/") if target else None,
-        ), 8 if intent == "impact" else 6), trusted)
+            question, normalized_intent, target.replace("\\", "/") if target else None,
+        ), 8 if normalized_intent == "impact" else 6), trusted)
     except ValueError:
         return failure("retrieve_context", "Invalid retrieval request.", "invalid_retrieval_request")
     return success(

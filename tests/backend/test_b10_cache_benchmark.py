@@ -1,5 +1,6 @@
 """Rejected B10 candidate: reproducible measurements, no production cache wiring.
 
+Opt in with PYCODE_RUN_B10_BENCHMARK=1; functional regression and CI skip it by default.
 Run with pytest -s. Timings are evidence, not a flaky pass/fail threshold.
 The count version assumes the existing append-only completed-history state machine.
 """
@@ -100,6 +101,7 @@ class HistoryCacheCandidate:
         return result
 
 
+@pytest.mark.skipif(os.environ.get("PYCODE_RUN_B10_BENCHMARK") != "1", reason="B10 cache benchmark is opt-in; set PYCODE_RUN_B10_BENCHMARK=1 to run explicitly.")
 def test_deep_history_service_cache_measurement(postgresql_engine, application, cache_redis):
     _safe_test_database_url()
     engine = postgresql_engine
