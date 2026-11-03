@@ -13,6 +13,7 @@ from pycode.retrieval_evidence import (
     EvidenceItem, Query, RetrievalContext, RetrievalRequest, RetrievalResult,
 )
 from pycode.utils import dedupe_preserve_order, normalize_path
+from pycode.semantic_search import VectorUnavailable
 
 ContextItem = EvidenceItem
 
@@ -53,6 +54,29 @@ def retrieve(request: RetrievalRequest, context: RetrievalContext) -> RetrievalR
                         specs.append((edge.target[5:], "graph", "entry_direct_import", 1.0, None, "dependency"))
     else:
         specs = _lexical_candidates(query.text, context)
+        # Explicit targets and existing intent strategies keep their semantics.
+        # This batch provides a vector route, not fusion of candidate channels.
+        if context.retrieval_mode == "vector" and not any(
+            spec[1] in {"exact_path", "exact_symbol"} for spec in specs
+        ):
+            try:
+                if context.binding is None or context.chunks is None:
+                    raise VectorUnavailable("vector_binding_mismatch")
+                if context.vector_query is None:
+                    raise VectorUnavailable()
+                result = context.vector_query(query.text, min(request.limit, context.vector_top_k))
+                if result.binding != context.binding:
+                    raise VectorUnavailable("vector_binding_mismatch")
+                # The provider bridge returns only spans from the trusted Chunk
+                # set. Reject forged/mismatched results even in injected callers.
+                known = {(c.path, c.span) for c in context.chunks.chunks}
+                if any((hit.path, hit.span) not in known for hit in result.hits):
+                    raise VectorUnavailable("vector_binding_mismatch")
+                specs = [(hit.path, "vector", "cosine_max_over_definition_segments", hit.score,
+                          hit.span if hit.span.symbol_kind != "module" else None,
+                          "definition") for hit in result.hits]
+            except VectorUnavailable as exc:
+                diagnostics.append(exc.code)
     items, seen = [], set()
     for path, source, reason, score, span, role in specs:
         key = (path, span.symbol_key if span else None)
@@ -66,6 +90,8 @@ def retrieve(request: RetrievalRequest, context: RetrievalContext) -> RetrievalR
     diagnostics.extend(code for item in items for code in item.diagnostics)
     diagnostics = dedupe_preserve_order(diagnostics)
     status = "empty" if not items else "unavailable" if all(i.coverage == "unavailable" for i in items) else "degraded" if diagnostics else "ok"
+    if not items and any(code.startswith("vector_") for code in diagnostics):
+        status = "degraded"  # Failed channel + empty fallback is not a clean miss.
     return RetrievalResult(query.text, intent, items, context.binding, status,
                            tuple(diagnostics), round((perf_counter() - started) * 1000, 3))
 

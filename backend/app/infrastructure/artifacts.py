@@ -329,6 +329,16 @@ class SnapshotArtifactStore:
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             raise BackendError('artifacts_unavailable', 'Semantic artifacts are unavailable.') from None
 
+    def read_vector_index(self, target, chunks):
+        """Query-only reader. Never recover, create or publish semantic data."""
+        from pycode.semantic_search import ReadOnlyVectorIndex
+        directory = self.semantic_directory(target) / 'ready'
+        try:
+            self._check_tree(directory, self._project_root(UUID(target.binding.project_id)))
+            return ReadOnlyVectorIndex.load(directory, target, chunks)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            raise BackendError('vector_artifact_unavailable', 'Vector query artifacts are unavailable.') from None
+
     def publish_semantic(self, staging: Path, target, chunks, *, before_publish) -> dict:
         from pycode.semantic_index import read_artifact
         parent = self.semantic_directory(target, create=True)

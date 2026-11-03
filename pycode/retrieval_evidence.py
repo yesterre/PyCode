@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
+from typing import Callable
 
 from pycode.chunks import ChunkIndex, SnapshotBinding, validate_chunk_index
 from pycode.models import CodeGraph, ProjectIndex
@@ -123,6 +124,9 @@ class RetrievalContext:
     chunks: ChunkIndex | None
     sources: tuple[tuple[str, str], ...]
     diagnostics: tuple[str, ...]
+    vector_query: Callable | None = field(default=None, repr=False, compare=False)
+    retrieval_mode: str = "keyword"
+    vector_top_k: int = 6
 
     @classmethod
     def create(cls, root: Path, index: ProjectIndex, graph: CodeGraph | None, *,

@@ -530,7 +530,8 @@ class ProjectService:
     def retrieval_context(self, root, snapshot, bundle):
         """Prepare immutable evidence inputs inside the existing Snapshot lock."""
         chunks = self.artifacts.read_chunks(snapshot.project_id, snapshot)
-        return self.adapter.snapshot_retrieval(root, snapshot, bundle, chunks)
+        context = self.adapter.snapshot_retrieval(root, snapshot, bundle, chunks)
+        return self.semantics.retrieval(context, snapshot)
 
     def _with_summary(self, project: Project, *, snapshots: dict[UUID, ProjectSnapshot] | None = None) -> Project:
         if project.current_snapshot_id is None:

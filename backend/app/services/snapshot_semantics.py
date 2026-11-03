@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from uuid import UUID
 
-from backend.app.config import EmbeddingSettings
+from backend.app.config import EmbeddingSettings, RetrievalSettings
 from backend.app.core.errors import BackendError
 from backend.app.integrations.embedding import TencentEmbeddingProvider, MODEL_DIMENSIONS
 from backend.app.integrations.semantic_index import (
     SemanticIndexBuilder, EmbeddingError, identity, SnapshotBinding, SemanticIdentity, file_hash,
+    VectorUnavailable, validate_result,
 )
 
 SEMANTIC_TASK_TYPE = 'snapshot_embedding'
@@ -18,10 +20,78 @@ logger = logging.getLogger('pycode.backend.tasks')
 
 class SnapshotSemantics:
     def __init__(self, uow, artifacts, *, settings_factory=EmbeddingSettings.from_environment,
-                 provider_factory=TencentEmbeddingProvider, dispatcher=None, admission=None):
+                 provider_factory=TencentEmbeddingProvider, dispatcher=None, admission=None,
+                 retrieval_settings_factory=RetrievalSettings.from_environment):
         self.uow, self.artifacts = uow, artifacts
         self.settings_factory, self.provider_factory = settings_factory, provider_factory
         self.dispatcher, self.admission = dispatcher, admission
+        self.retrieval_settings_factory = retrieval_settings_factory
+
+    def retrieval(self, context, snapshot):
+        """Bind a lazy query capability, after Service authorization/checkout.
+
+        It captures configuration for this execution; Artifact IO and Provider
+        creation occur only if the unified Retriever actually selects Vector.
+        """
+        try:
+            config = self.retrieval_settings_factory()
+        except (ValueError, TypeError, RuntimeError):
+            def invalid(*args):
+                raise VectorUnavailable("vector_configuration")
+            return replace(context, retrieval_mode="vector", vector_query=invalid)
+        if config.mode == "keyword":
+            return context
+        try:
+            settings = self._settings()
+        except BackendError:
+            settings = None
+
+        def query(text, limit):
+            if settings is None:
+                raise VectorUnavailable("vector_configuration")
+            if not settings.enabled:
+                raise VectorUnavailable("vector_disabled")
+            if not isinstance(text, str) or not text.strip() or len(text) > settings.max_input_chars:
+                raise VectorUnavailable("vector_query_too_long")
+            if context.binding != SnapshotBinding(str(snapshot.project_id), str(snapshot.id), snapshot.commit_sha):
+                raise VectorUnavailable("vector_binding_mismatch")
+            try:
+                target, chunks = self.target(snapshot, settings)
+                if chunks != context.chunks or target.binding != context.binding:
+                    raise VectorUnavailable("vector_binding_mismatch")
+                index = self.artifacts.read_vector_index(target, chunks)
+            except BackendError:
+                raise VectorUnavailable("vector_artifact_unavailable") from None
+            # This check also catches accidental SQLAlchemy autobegin outside
+            # an explicit UoW block; no rollback/commit is performed to hide it.
+            session = getattr(self.uow, "session", None)
+            if session is not None and session.in_transaction():
+                raise VectorUnavailable("vector_unavailable")
+            provider = None
+            try:
+                provider = self.provider_factory(settings)
+                if (provider.provider, provider.model, provider.dimension) != (target.provider, target.model, target.dimension):
+                    raise VectorUnavailable("vector_configuration")
+                response = provider.embed_query(text)
+                validate_result(response, 1, target.provider, target.model, target.dimension)
+                return index.search(response, limit)
+            except VectorUnavailable:
+                raise
+            except EmbeddingError as exc:
+                code = "vector_invalid_response" if exc.code == "embedding_invalid_response" else "vector_provider_failed"
+                raise VectorUnavailable(code) from None
+            except (ValueError, TypeError, AttributeError, OverflowError):
+                raise VectorUnavailable("vector_invalid_response") from None
+            except Exception:
+                raise VectorUnavailable("vector_provider_failed") from None
+            finally:
+                if provider is not None and callable(close := getattr(provider, "close", None)):
+                    try:
+                        close()
+                    except Exception:
+                        pass  # No SDK exception or secret-bearing message is logged.
+
+        return replace(context, retrieval_mode="vector", vector_top_k=config.vector_top_k, vector_query=query)
 
     def _settings(self):
         try:

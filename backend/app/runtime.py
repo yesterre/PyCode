@@ -57,6 +57,7 @@ def build_project_service(
     operations: ProjectOperationLocks,
     admission: AdmissionControl | None = None,
     embedding_settings_factory=None, embedding_provider_factory=None, dispatcher=None,
+    retrieval_settings_factory=None,
 ) -> ProjectService:
     from backend.app.services.snapshot_semantics import SnapshotSemantics
     options = {}
@@ -64,6 +65,8 @@ def build_project_service(
         options['settings_factory'] = embedding_settings_factory
     if embedding_provider_factory is not None:
         options['provider_factory'] = embedding_provider_factory
+    if retrieval_settings_factory is not None:
+        options['retrieval_settings_factory'] = retrieval_settings_factory
     semantics = SnapshotSemantics(unit_of_work, artifacts, dispatcher=dispatcher,
                                   admission=admission, **options)
     return ProjectService(

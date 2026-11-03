@@ -327,7 +327,7 @@ def public_retrieval_summary(value: Any) -> dict | None:
         if not isinstance(ids, list) or any(not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{64}", key) for key in ids):
             return None
         source, coverage = reference.get("source"), reference.get("coverage")
-        if source not in {"exact_path", "exact_symbol", "keyword", "graph", "entry"} or coverage not in {"complete_symbol", "complete_file", "unavailable"}:
+        if source not in {"exact_path", "exact_symbol", "keyword", "graph", "entry", "vector"} or coverage not in {"complete_symbol", "complete_file", "unavailable"}:
             return None
         symbol = reference.get("symbol")
         if symbol is not None and not isinstance(symbol, str):

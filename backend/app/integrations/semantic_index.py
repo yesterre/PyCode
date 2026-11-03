@@ -9,6 +9,7 @@ from pycode.embedding import EmbeddingError, EmbeddingProvider, identity, prepar
 from pycode.semantic_index import (
     SemanticIdentity, file_hash, read_checkpoint, write_checkpoint, seal_artifact,
 )
+from pycode.semantic_search import VectorUnavailable
 
 
 class SemanticIndexBuilder:

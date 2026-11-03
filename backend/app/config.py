@@ -6,6 +6,24 @@ from dotenv import load_dotenv
 
 
 @dataclass(frozen=True)
+class RetrievalSettings:
+    mode: str = "keyword"
+    vector_top_k: int = 6
+
+    def __post_init__(self):
+        if self.mode not in {"keyword", "vector"} or type(self.vector_top_k) is not int or not 1 <= self.vector_top_k <= 20:
+            raise ValueError("Retrieval configuration is invalid.")
+
+    @classmethod
+    def from_environment(cls):
+        try:
+            return cls(os.environ.get("PYCODE_RETRIEVAL_MODE", "keyword"),
+                       int(os.environ.get("PYCODE_RETRIEVAL_VECTOR_TOP_K", "6")))
+        except (ValueError, TypeError):
+            raise ValueError("Retrieval configuration is invalid.") from None
+
+
+@dataclass(frozen=True)
 class EmbeddingSettings:
     enabled: bool = False
     provider: str = "tencent_tokenhub"
@@ -364,6 +382,7 @@ def validate_deployment_configuration(role: str) -> None:
         return
     checked("Redis", redis_settings)
     checked("admission", AdmissionSettings.from_environment)
+    checked("retrieval", RetrievalSettings.from_environment)
     checked("queued reconciliation", QueuedReconciliationSettings.from_environment)
     lease = checked("execution lease", ExecutionLeaseSettings.from_environment)
     stale = checked("stale reconciliation", StaleReconciliationSettings.from_environment)

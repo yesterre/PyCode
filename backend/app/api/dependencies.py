@@ -86,6 +86,7 @@ def get_project_service(
         dispatcher=request.app.state.task_dispatcher,
         embedding_settings_factory=request.app.state.embedding_settings_factory,
         embedding_provider_factory=request.app.state.embedding_provider_factory,
+        retrieval_settings_factory=request.app.state.retrieval_settings_factory,
     )
 
 
@@ -127,6 +128,9 @@ def get_agent_run_service(
         workspace=request.app.state.workspace,
         operations=request.app.state.project_operations,
         artifacts=request.app.state.artifacts,
+        embedding_settings_factory=request.app.state.embedding_settings_factory,
+        embedding_provider_factory=request.app.state.embedding_provider_factory,
+        retrieval_settings_factory=request.app.state.retrieval_settings_factory,
     )
     return build_agent_run_service(
         unit_of_work,

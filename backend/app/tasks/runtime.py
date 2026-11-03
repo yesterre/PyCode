@@ -7,6 +7,7 @@ from backend.app.db.session import DatabaseSessionManager
 from backend.app.config import (
     ExecutionLeaseSettings, QueuedReconciliationSettings,
     StaleReconciliationSettings, AdmissionSettings,
+    EmbeddingSettings, RetrievalSettings,
 )
 from backend.app.infrastructure.celery import CeleryTaskDispatcher
 from backend.app.infrastructure.artifacts import SnapshotArtifactStore
@@ -15,6 +16,7 @@ from backend.app.infrastructure.execution import ExecutionOwnership
 from backend.app.infrastructure.realtime_trace import RedisStreamPublisher
 from backend.app.infrastructure.redis import RedisRateLimiter
 from backend.app.integrations.pycode import PyCodeAdapter
+from backend.app.integrations.embedding import TencentEmbeddingProvider
 from backend.app.integrations.llm import backend_llm_client_factory_from_environment
 from backend.app.repositories import SqlAlchemyUnitOfWork
 from backend.app.runtime import (
@@ -45,6 +47,9 @@ _stale_settings = StaleReconciliationSettings.from_environment()
 _dispatcher = CeleryTaskDispatcher()
 _trace_publisher = RedisStreamPublisher()
 _admission = AdmissionControl(AdmissionSettings.from_environment(), RedisRateLimiter())
+_embedding_settings_factory = EmbeddingSettings.from_environment
+_embedding_provider_factory = TencentEmbeddingProvider
+_retrieval_settings_factory = RetrievalSettings.from_environment
 
 if _lease_settings.ttl_seconds <= (
     _project_operations.ttl_ms / 1000
@@ -93,6 +98,9 @@ def worker_repository_index_services(
                 artifacts=_artifacts, operations=_project_operations,
                 dispatcher=_dispatcher,
                 admission=_admission,
+                embedding_settings_factory=_embedding_settings_factory,
+                embedding_provider_factory=_embedding_provider_factory,
+                retrieval_settings_factory=_retrieval_settings_factory,
             ),
         )
     finally:
@@ -115,6 +123,9 @@ def worker_agent_run_service() -> Iterator[AgentRunService]:
             operations=_project_operations,
             dispatcher=_dispatcher,
             admission=_admission,
+            embedding_settings_factory=_embedding_settings_factory,
+            embedding_provider_factory=_embedding_provider_factory,
+            retrieval_settings_factory=_retrieval_settings_factory,
         )
         yield build_agent_run_service(
             unit_of_work,
