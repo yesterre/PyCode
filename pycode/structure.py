@@ -1,8 +1,7 @@
 """Compact lexical facts from an ALREADY parsed AST; never executes source.
 
-Bindings deliberately over-approximate writes. Resolution is limited to unique
-same-module declarations; imports, receivers, aliases and opaque scopes remain
-unresolved. No AST/source object is retained in these transient facts.
+Bindings deliberately over-approximate writes. The resolver consumes these facts;
+no AST/source object is retained in them and no repository code is executed.
 """
 import ast
 from collections import Counter, defaultdict
@@ -126,7 +125,8 @@ class _Collector(ast.NodeVisitor):
                                  col_offset=node.col_offset, end_col_offset=node.end_col_offset,
                                  conditional=bool(self.conditional)))
         for alias in node.names:
-            self.bind(alias.asname or (alias.name.split('.')[0] if isinstance(node, ast.Import) else alias.name), 'import')
+            self.bind(alias.asname or (alias.name.split('.')[0] if isinstance(node, ast.Import) else alias.name),
+                      'import', self.imports[-1]['id'])
             if alias.name == '*':
                 self.current['dynamic'] = True
 
@@ -216,39 +216,3 @@ class _Collector(ast.NodeVisitor):
                     dynamic=any(s['dynamic'] for s in self.scopes),
                     blocked_names=sorted({name for s in self.scopes for name, values in s['bindings'].items()
                                           if any(b['kind'] in {'global_or_nonlocal','type_parameter'} for b in values)}))
-
-
-def resolve_direct(site, facts, scopes=None, definitions=None):
-    scopes = scopes if scopes is not None else {s['key']:s for s in facts['scopes']}
-    definitions = definitions if definitions is not None else {d['key']:d for d in facts['definitions']}
-    scope = scopes[site['scope']]
-    if facts['dynamic'] or site['name'] in facts['blocked_names']:
-        return 'unknown', 'dynamic_or_nonlocal_namespace', []
-    if site['name'] is None:
-        return 'unknown', 'receiver_or_dynamic_expression_deferred', []
-    if scope['kind'] == 'opaque':
-        return 'unknown', 'opaque_scope', []
-    origin = scope
-    while scope is not None:
-        if scope['dynamic']:
-            return 'unknown', 'dynamic_namespace', []
-        bindings = scope['bindings'].get(site['name'], [])
-        if bindings:
-            targets = [definitions[b['definition']] for b in bindings if b['kind'] == 'definition']
-            if len(targets) > 1:
-                return 'ambiguous', 'multiple_lexical_definitions', [d['id'] for d in targets]
-            if len(bindings) != 1 or not targets:
-                return 'unknown', 'binding_not_a_unique_definition', [d['id'] for d in targets]
-            target = targets[0]
-            if target['conditional'] or target['decorated']:
-                return 'unknown', 'conditional_or_decorated_definition', [target['id']]
-            if target['dynamic_class']:
-                return 'unknown', 'class_binding_deferred', [target['id']]
-            if target['start_line'] >= site['start_line'] and (scope is origin or scope['kind'] != 'module'):
-                return 'unknown', 'definition_not_available_at_site', [target['id']]
-            return 'static', 'unique_same_module_lexical_definition', [target['id']]
-        scope = scopes.get(scope['parent'])
-        # A method does not close over its class namespace (Python LEGB).
-        while scope is not None and scope['kind'] == 'class':
-            scope = scopes.get(scope['parent'])
-    return 'unknown', 'name_not_bound_in_module', []

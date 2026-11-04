@@ -92,3 +92,4 @@ class CodeGraph:
     call_sites: list[dict] = field(default_factory=list)
     import_declarations: list[dict] = field(default_factory=list)
     producer: str | None = None
+    binding_facts: list[dict] = field(default_factory=list)

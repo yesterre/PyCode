@@ -60,4 +60,5 @@ export type GraphEdge = { source: string; target: string; type: string; resoluti
 export type GraphResult = { snapshot_id: string; nodes: GraphNode[]; edges: GraphEdge[]; truncated: boolean;
   graph_schema_version?: number; graph_capabilities?: string[]; graph_warnings?: string[];
   call_sites?: {id: string; path: string; caller_id: string; start_line: number; end_line: number;
-    resolution: string; basis: string; target_id: string | null; candidate_count: number}[]; call_sites_omitted?: number }
+    resolution: string; basis: string; target_id: string | null; candidate_count: number;
+    binding_declarations?: string[]; binding_chain_omitted?: number}[]; call_sites_omitted?: number }

@@ -105,13 +105,13 @@ TOOLS = {
         "query_graph",
         query_code_graph,
         read_only=True,
-        description="Query the saved code graph for imports, imported-by, calls, or entry candidates.",
+        description="Query static graph imports, definitions, callers, callees, calls, or entry candidates; unresolved calls are explicit.",
         input_schema={
             "type": "object",
             "properties": {
                 "query_type": {
                     "type": "string",
-                    "enum": ["imports", "imported-by", "calls", "entry"],
+                    "enum": ["imports", "imported-by", "calls", "entry", "definitions", "callers", "callees"],
                 },
                 "target": {
                     "type": ["string", "null"],

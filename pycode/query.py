@@ -41,7 +41,16 @@ def find_definitions(graph: CodeGraph, selector: str) -> list[GraphNode]:
     exact=[n for n in graph.nodes if n.id==selector]
     if exact or graph.schema_version==1:
         return exact
-    return [n for n in graph.nodes if n.type in {'function','class','method'} and n.id.startswith(selector+'@')]
+    return sorted((n for n in graph.nodes if n.type in {'function','class','method'} and
+                   (n.id.startswith(selector+'@') or n.name==selector or
+                    (n.path is not None and n.path+':'+n.name==selector))),key=lambda n:n.id)
+
+
+def get_function_callers(graph: CodeGraph, function_id: str) -> list[GraphEdge]:
+    matches=find_definitions(graph,function_id)
+    if len(matches)!=1:
+        return []
+    return [e for e in graph.edges if e.target==matches[0].id and e.type=='calls']
 
 
 def find_entry_candidates(graph: CodeGraph) -> list[GraphNode]:
@@ -148,10 +157,10 @@ class RetrievalGraph:
                 checks += 1
                 if direction != 'both' and direction != way:
                     continue
-                if edge.type not in {'imports','calls','contains'}:
+                if edge.type not in {'imports','calls','contains','references'}:
                     unknown += 1
                     continue
-                if self.graph.schema_version==2 and edge.type=='calls' and edge.resolution!='static':
+                if self.graph.schema_version in {2,3} and edge.type in {'calls','references'} and edge.resolution!='static':
                     unknown += 1
                     continue
                 node = self.nodes.get(other)
@@ -165,7 +174,7 @@ class RetrievalGraph:
                     break
                 visited.add(other)
                 step = {'source': edge.source, 'target': edge.target, 'relation': edge.type, 'direction': way}
-                if self.graph.schema_version==2:
+                if self.graph.schema_version in {2,3}:
                     step.update({k:getattr(edge,k) for k in ('resolution','basis','site_id','path','start_line','end_line')
                                  if getattr(edge,k) is not None})
                 new_path = (*path, step)

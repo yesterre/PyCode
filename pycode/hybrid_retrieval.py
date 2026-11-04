@@ -24,7 +24,7 @@ def fuse(keyword, vector, context):
         for spec in [*keyword[:4], *vector[:4]]:
             path, _, _, _, span, _ = spec
             path = normalize_path(path)
-            key = span.symbol_key if span and context.graph.schema_version==2 else span.qualified_name if span else None
+            key = span.symbol_key if span and context.graph.schema_version in {2,3} else span.qualified_name if span else None
             nodes = view.symbols.get((path, key), ()) if span else ()
             seeds.extend(nodes[:1] or ([f'file:{path}'] if f'file:{path}' in view.nodes else []))
         hits, stats = view.expand(seeds, depth=context.graph_depth, node_limit=context.graph_nodes,
@@ -39,7 +39,7 @@ def fuse(keyword, vector, context):
             if node.path not in known_paths:
                 continue
             choices = spans.get((node.path, node.name), {})
-            span = (exact_spans.get((node.path,node.symbol_key)) if context.graph.schema_version==2
+            span = (exact_spans.get((node.path,node.symbol_key)) if context.graph.schema_version in {2,3}
                     else next(iter(choices.values())) if len(choices) == 1 else None)
             role = 'call_hint' if relation_path[-1]['relation'] == 'calls' else 'dependency'
             spec = (node.path, 'graph', 'stored_static_relation_unverified', 1 / len(relation_path), span, role)

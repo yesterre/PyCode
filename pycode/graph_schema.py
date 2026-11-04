@@ -37,7 +37,7 @@ def _range(value, files, *, empty_module=False):
 
 
 def validate_graph(graph, binding=None, chunks=None):
-    _require(type(graph.schema_version) is int and graph.schema_version in {1,2}, 'Unsupported Graph schema version')
+    _require(type(graph.schema_version) is int and graph.schema_version in {1,2,3}, 'Unsupported Graph schema version')
     if graph.schema_version==1:
         return  # Legacy facts retain their original limitations, never invented metadata.
     _require(_text(graph.project_path) and _text(graph.producer))
@@ -105,6 +105,8 @@ def validate_graph(graph, binding=None, chunks=None):
     sites = {}
     call_fields={'id','path','scope_id','caller_id','start_line','end_line','col_offset','end_col_offset',
                  'expression','resolution','basis','target_id','candidate_ids','candidate_count'}
+    if graph.schema_version==3:
+        call_fields.add('binding_chain')
     for c in graph.call_sites:
         _require(isinstance(c,dict) and set(c)==call_fields and _text(c['id']) and c['id'] not in sites)
         _range(c,files)
@@ -132,18 +134,19 @@ def validate_graph(graph, binding=None, chunks=None):
         candidates=c['candidate_ids']
         _require(isinstance(candidates,list) and len(candidates)<=8 and len(set(candidates))==len(candidates)
                  and _integer(c['candidate_count'],len(candidates)))
-        _require(all(t in nodes and nodes[t].path==c['path'] and nodes[t].type in {'function','class','method'} for t in candidates))
+        _require(all(t in nodes and (graph.schema_version==3 or nodes[t].path==c['path']) and nodes[t].type in {'function','class','method'} for t in candidates))
         if c['resolution']=='static':
             _require(c['candidate_count']==1 and candidates==[c['target_id']])
-            from unicodedata import normalize
-            name=normalize('NFKC',c['expression'])
-            _require(name.isidentifier() and nodes[c['target_id']].name.rsplit('.',1)[-1]==name)
-            lexical=set();current=scopes[c['scope_id']]
-            while current is not None:
-                lexical.add(current['id']);current=scopes.get(current['parent_id'])
-                while current is not None and current['kind']=='class':
-                    current=scopes.get(current['parent_id'])
-            _require(nodes[c['target_id']].parent_id in lexical)
+            if graph.schema_version==2:
+                from unicodedata import normalize
+                name=normalize('NFKC',c['expression'])
+                _require(name.isidentifier() and nodes[c['target_id']].name.rsplit('.',1)[-1]==name)
+                lexical=set();current=scopes[c['scope_id']]
+                while current is not None:
+                    lexical.add(current['id']);current=scopes.get(current['parent_id'])
+                    while current is not None and current['kind']=='class':
+                        current=scopes.get(current['parent_id'])
+                _require(nodes[c['target_id']].parent_id in lexical)
         else:
             _require(c['target_id'] is None)
             if c['resolution']=='ambiguous':
@@ -162,7 +165,17 @@ def validate_graph(graph, binding=None, chunks=None):
         _require(all(isinstance(a,dict) and set(a)=={'name','asname'} and _text(a['name']) and
                      (a['asname'] is None or _text(a['asname'])) for a in d['names']))
         declarations[d['id']]=d
-    keys=set(); linked=set(); containment=set()
+    if graph.schema_version==3:
+        from pycode.symbol_resolver import validate_binding_facts
+        resolver=validate_binding_facts(graph,nodes,scopes,declarations)
+        for c in sites.values():
+            chain=c['binding_chain']
+            _require(isinstance(chain,list) and len(chain)<=128 and all(isinstance(s,dict) and
+                     set(s)=={'declaration_id','local_name'} and s['declaration_id'] in declarations and
+                     _text(s['local_name']) for s in chain))
+            expected=resolver.resolve(c)
+            _require(all(c[k]==v for k,v in expected.items()),'Call binding proof mismatch')
+    keys=set(); linked=set(); containment=set(); references=set(); imports=set()
     for e in graph.edges:
         _require(e.source in nodes and e.target in nodes)
         key=(e.source,e.target,e.type,e.site_id)
@@ -175,6 +188,13 @@ def validate_graph(graph, binding=None, chunks=None):
             _require(d is not None and e.source=='file:'+d['path'] and e.resolution=='declaration')
             _require((e.path,e.start_line,e.end_line)==(d['path'],d['start_line'],d['end_line']))
             _require(nodes[e.target].type in {'file','external'})
+            imports.add((e.source,e.target,e.site_id))
+        elif e.type=='references' and graph.schema_version==3:
+            c=sites.get(e.site_id)
+            _require(c is not None and c['resolution']=='static' and bool(c['binding_chain']))
+            _require((e.source,e.target,e.path,e.start_line,e.end_line,e.resolution,e.basis)==
+                     (c['caller_id'],c['target_id'],c['path'],c['start_line'],c['end_line'],c['resolution'],c['basis']))
+            references.add(c['id'])
         elif e.type in {'calls','unresolved_call'}:
             c=sites.get(e.site_id)
             _require(c is not None and e.site_id not in linked);linked.add(e.site_id)
@@ -188,6 +208,16 @@ def validate_graph(graph, binding=None, chunks=None):
             raise ValueError('Unsupported Graph relation')
     _require(linked==set(sites))
     _require(containment=={n.id for n in graph.nodes if n.type in {'function','class','method'}})
+    if graph.schema_version==3:
+        _require(references=={c['id'] for c in sites.values() if c['resolution']=='static' and c['binding_chain']})
+        expected=set()
+        for d in declarations.values():
+            module='.'*d['level']+(d['module'] or '')
+            for alias in d['names']:
+                name=module+('' if module.endswith('.') else '.')+alias['name'] if module else alias['name']
+                path=resolver.declaration_target(d,alias)
+                expected.add(('file:'+d['path'],'file:'+path if path else 'external:'+name,d['id']))
+        _require(imports==expected,'Import declaration targets differ')
 
 
 def node_data(node, *, details=False):
@@ -206,14 +236,20 @@ def edge_data(edge, *, details=False):
 
 def graph_info(graph):
     return dict(graph_schema_version=graph.schema_version,
-                graph_capabilities=list(graph.capabilities) if graph.schema_version==2 else ['legacy_structure'],
-                graph_warnings=[] if graph.schema_version==2 else ['legacy_graph_unverified'])
+                graph_capabilities=list(graph.capabilities) if graph.schema_version in {2,3} else ['legacy_structure'],
+                graph_warnings=[] if graph.schema_version in {2,3} else ['legacy_graph_unverified'])
 
 
 def public_sites(graph, caller_ids, limit=20):
     values=[s for s in graph.call_sites if s['caller_id'] in caller_ids]
-    return ([{k:s[k] for k in ('id','path','caller_id','start_line','end_line','resolution','basis','target_id','candidate_count')}
-             for s in values[:limit]], max(0,len(values)-limit))
+    result=[]
+    for s in values[:limit]:
+        item={k:s[k] for k in ('id','path','caller_id','start_line','end_line','resolution','basis','target_id','candidate_count')}
+        if graph.schema_version==3:
+            item.update(binding_declarations=[step['declaration_id'] for step in s['binding_chain'][:8]],
+                        binding_chain_omitted=max(0,len(s['binding_chain'])-8))
+        result.append(item)
+    return result,max(0,len(values)-limit)
 
 
 def graph_to_dict(graph):
@@ -221,7 +257,11 @@ def graph_to_dict(graph):
     if graph.schema_version==1:
         return dict(project_path=graph.project_path,nodes=[node_data(n) for n in graph.nodes],
                     edges=[edge_data(e) for e in graph.edges])
-    return asdict(graph)
+    data=asdict(graph)
+    data['capabilities']=list(graph.capabilities)
+    if graph.schema_version==2:
+        data.pop('binding_facts')
+    return data
 
 
 def graph_from_dict(data):
@@ -234,11 +274,12 @@ def graph_from_dict(data):
 def _graph_from_dict(data):
     _require(isinstance(data,dict))
     version=data.get('schema_version',1)
-    _require(type(version) is int and version in {1,2}, 'Unsupported Graph schema version')
+    _require(type(version) is int and version in {1,2,3}, 'Unsupported Graph schema version')
     if version==1:
         return CodeGraph(data['project_path'],[GraphNode(**{k:n[k] for k in ('id','type','name')},path=n.get('path')) for n in data.get('nodes',[])],
                          [GraphEdge(**{k:e[k] for k in ('source','target','type')}) for e in data.get('edges',[])])
-    _require(set(data)=={f.name for f in fields(CodeGraph)})
+    expected={f.name for f in fields(CodeGraph)}-({'binding_facts'} if version==2 else set())
+    _require(set(data)==expected)
     _require(isinstance(data['capabilities'],list))
     graph=CodeGraph(**{**data,'nodes':[GraphNode(**n) for n in data['nodes']],
                       'edges':[GraphEdge(**e) for e in data['edges']], 'capabilities':tuple(data['capabilities'])})

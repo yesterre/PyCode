@@ -63,7 +63,7 @@ class ToolTrace:
             # summaries intentionally truncate nested values and lose bindings.
             self.retrieval = result.data["retrieval"]
         if (result.tool == 'query_graph' and isinstance(result.data.get('graph'),dict)
-                and result.data['graph'].get('graph_schema_version')==2):
+                and result.data['graph'].get('graph_schema_version') in {2,3}):
             self.graph = result.data['graph']
         self.denied_by = result.data.get("denied_by") if result.data.get("denied") else None
         if self.denied_by:

@@ -111,8 +111,8 @@ def retrieve(request: RetrievalRequest, context: RetrievalContext) -> RetrievalR
 
 def _pack(result, context, limit, started):
     from dataclasses import replace
-    if context.graph is not None and context.graph.schema_version==2:
-        result = replace(result, graph_schema_version=2)
+    if context.graph is not None and context.graph.schema_version in {2,3}:
+        result = replace(result, graph_schema_version=context.graph.schema_version)
     result = build_pack(result, context.token_budget, limit)
     diagnostics = list(result.diagnostics)
     if dict(result.pack.reason_counts).get('token_budget'):

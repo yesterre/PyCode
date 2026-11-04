@@ -46,7 +46,7 @@ def test_v2_graph_uses_existing_manifest_and_failed_publish_rolls_back(tmp_path,
     bundle=publish(store,adapter,pid,sid,'a'*40,repo)
     snapshot=_snapshot(pid,sid,'a'*40,bundle)
     graph=load_graph(bundle.graph_path)
-    assert graph.schema_version==2 and graph.binding['snapshot_id']==str(sid)
+    assert graph.schema_version==3 and graph.binding['snapshot_id']==str(sid)
     assert json.loads((bundle.index_path.parent/'manifest.json').read_text())['version']==2
     before={p.name:p.read_bytes() for p in bundle.index_path.parent.iterdir()}
     original=store._read_bundle;armed=[];failed=[]
@@ -85,7 +85,7 @@ def test_recovery_restores_v2_graph_from_valid_backup(tmp_path):
     broken=json.loads(bundle.graph_path.read_text());broken['schema_version']=999
     bundle.graph_path.write_text(json.dumps(broken),encoding='utf-8')
     recovered=store.recover_published(pid,sid,'a'*40)
-    assert recovered.graph_path.read_bytes()==original and load_graph(recovered.graph_path).schema_version==2
+    assert recovered.graph_path.read_bytes()==original and load_graph(recovered.graph_path).schema_version==3
 
 
 def test_old_graph_read_and_chunk_backfill_preserve_original_base_bytes(tmp_path):
@@ -115,7 +115,7 @@ def test_worker_new_graph_single_parse_api_metadata_and_redelivery(resources,wor
     workers.index(accepted.json()['task_id'])
     snapshot=current(r);bundle=state.artifacts.read_ready(r.own,snapshot)
     graph=load_graph(bundle.graph_path)
-    assert graph.schema_version==2 and graph.binding['project_id']==str(r.own)
+    assert graph.schema_version==3 and graph.binding['project_id']==str(r.own)
     assert graph.binding['snapshot_id']==str(snapshot.id)
     assert counter and all(v==1 for v in counter.values())
     initial=counter.copy()
@@ -123,7 +123,7 @@ def test_worker_new_graph_single_parse_api_metadata_and_redelivery(resources,wor
     assert counter==initial
     response=r.context.client.get(f'/api/v1/projects/{r.own}/snapshots/{snapshot.id}/graph',headers=r.headers,params={'file_path':'main.py'})
     assert response.status_code==200,response.text
-    body=response.json();assert body['graph_schema_version']==2 and 'call_sites' in body
+    body=response.json();assert body['graph_schema_version']==3 and 'call_sites' in body
     assert all('expression' not in c for c in body['call_sites'])
     assert any(n.get('symbol_key') for n in body['nodes'])
     def forbidden(*a,**kw):pytest.fail('Denied request must not read Graph')
@@ -173,7 +173,7 @@ def test_worker_recovers_published_v2_after_crash_without_reparse(resources,work
     monkeypatch.setattr(state.workspace,'synchronize',forbidden)
     workers.index(str(tid))
     snapshot=current(r)
-    assert load_graph(state.artifacts.read_ready(r.own,snapshot).graph_path).schema_version==2
+    assert load_graph(state.artifacts.read_ready(r.own,snapshot).graph_path).schema_version==3
 
 
 def test_graph_tool_trace_is_bounded_code_free_and_projection_idempotent(resources,workers):
@@ -186,7 +186,7 @@ def test_graph_tool_trace_is_bounded_code_free_and_projection_idempotent(resourc
     assert result.ok and result.data['graph']['binding']['snapshot_id']==str(snapshot.id)
     trace=ToolTrace(1,'query_graph',datetime.now(timezone.utc));trace.finish(result)
     safe=public_graph_summary({**trace.graph,'api_key':'SECRET','expression':'PRIVATE_CODE'})
-    assert safe and safe['graph_schema_version']==2 and public_graph_summary(safe)==safe
+    assert safe and safe['graph_schema_version']==3 and public_graph_summary(safe)==safe
     assert 'SECRET' not in json.dumps(safe) and 'PRIVATE_CODE' not in json.dumps(safe)
     _,_,_,payload=ApplicationTraceNormalizer._tool_finished(trace)
     assert payload['graph']==safe and 'call_sites' not in safe
@@ -221,7 +221,7 @@ def test_agent_worker_keeps_original_v2_graph_after_snapshot_switch_and_redelive
     observed=[];original=state.adapter.engine.run_agent
     def inspect(*args,**kwargs):
         context=kwargs['retrieval_context']
-        assert context.graph.schema_version==2
+        assert context.graph.schema_version==3
         assert context.graph.binding['snapshot_id']==str(original_snapshot.id)
         assert context.graph.binding['commit_sha']==original_snapshot.commit_sha
         assert context.binding.snapshot_id==str(original_snapshot.id)
@@ -236,4 +236,4 @@ def test_agent_worker_keeps_original_v2_graph_after_snapshot_switch_and_redelive
         run=uow.agent_runs.get(run_id)
         assert run.status=='completed' and run.snapshot_id==original_snapshot.id
     summaries=[e.payload['retrieval'] for rid,e in workers.published if rid==run_id and 'retrieval' in e.payload]
-    assert summaries and all(s['graph_schema_version']==2 and s['binding']['snapshot_id']==str(original_snapshot.id) for s in summaries)
+    assert summaries and all(s['graph_schema_version']==3 and s['binding']['snapshot_id']==str(original_snapshot.id) for s in summaries)

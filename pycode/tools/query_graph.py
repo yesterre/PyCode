@@ -7,6 +7,8 @@ from pycode.query import (
     get_file_imported_by,
     get_file_imports,
     get_function_calls,
+    get_function_callers,
+    find_definitions,
     get_source_nodes,
     get_target_nodes,
 )
@@ -49,9 +51,9 @@ def query_code_graph(
     sites, omitted = public_sites(graph,ids)
     result.data.update(call_sites=sites,call_sites_omitted=omitted)
     metadata = {'graph_schema_version':graph.schema_version,
-                'graph_capabilities':list(graph.capabilities) if graph.schema_version==2 else ['legacy_structure'],
+                'graph_capabilities':list(graph.capabilities) if graph.schema_version in {2,3} else ['legacy_structure'],
                 'binding':asdict(trusted.binding) if trusted is not None and trusted.binding else graph.binding}
-    if graph.schema_version==2:
+    if graph.schema_version in {2,3}:
         metadata.update(call_sites_count=len(graph.call_sites),
                         unknown_count=sum(s['resolution']=='unknown' for s in graph.call_sites),
                         ambiguous_count=sum(s['resolution']=='ambiguous' for s in graph.call_sites))
@@ -80,18 +82,20 @@ def _query_graph(graph, query_type, target):
         edges = get_file_imported_by(graph, target)
         nodes = get_source_nodes(graph, edges)
         return _edge_result("imported-by", target, edges, nodes)
-    if query_type == "calls":
+    if query_type in {"calls","callees","callers","definitions"}:
         if target is None:
-            return failure("query_graph", "Missing query target.", "calls requires target")
-        from pycode.query import find_definitions
+            return failure("query_graph", "Missing query target.", f"{query_type} requires target")
         matches=find_definitions(graph,target)
         if len(matches)>1:
             return success('query_graph','Symbol address is ambiguous.',query_type=query_type,target=target,
                            nodes=[_node_data(n) for n in matches[:8]],edges=[],resolution='ambiguous',
                            candidate_count=len(matches),candidates_omitted=max(0,len(matches)-8))
-        edges = get_function_calls(graph, target)
-        nodes = get_target_nodes(graph, edges)
-        return _edge_result("calls", target, edges, nodes)
+        if query_type=='definitions':
+            return success('query_graph',f'Found {len(matches)} definitions.',query_type=query_type,target=target,
+                           nodes=[_node_data(n) for n in matches],edges=[],resolution='static' if matches else 'unknown')
+        edges = get_function_callers(graph,target) if query_type=='callers' else get_function_calls(graph, target)
+        nodes = get_source_nodes(graph,edges) if query_type=='callers' else get_target_nodes(graph, edges)
+        return _edge_result(query_type, target, edges, nodes)
     if query_type == "entry":
         nodes = find_entry_candidates(graph)
         return success(

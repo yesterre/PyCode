@@ -5,6 +5,14 @@ import type { GraphResult } from '../api/types'
 
 afterEach(cleanup)
 
+it('distinguishes v2 structural capability from v3 import binding', () => {
+  const {rerender} = render(<GraphKnowledgeSummary graph={{snapshot_id: 'v2', nodes: [], edges: [], truncated: false, graph_schema_version: 2}} />)
+  expect(screen.getByText(/尚无跨模块绑定能力/)).toBeTruthy()
+  rerender(<GraphKnowledgeSummary graph={{snapshot_id: 'v3', nodes: [], edges: [], truncated: false, graph_schema_version: 3, graph_capabilities: ['import_bindings']}} />)
+  expect(screen.getByText(/导入声明和实际符号引用分别记录/)).toBeTruthy()
+  expect(screen.queryByText(/尚无跨模块绑定能力/)).toBeNull()
+})
+
 it('keeps legacy capability limits explicit without claiming an upgrade', () => {
   render(<GraphKnowledgeSummary graph={{snapshot_id: 'old', nodes: [{id: 'f', type: 'file', name: 'a.py', path: 'a.py'}], edges: [], truncated: false}} />)
   expect(screen.getByRole('status').textContent).toContain('不会自动原地升级')

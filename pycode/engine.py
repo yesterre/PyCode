@@ -18,6 +18,8 @@ from pycode.query import (
     get_file_imported_by,
     get_file_imports,
     get_function_calls,
+    get_function_callers,
+    find_definitions,
 )
 from pycode.retriever import (
     RetrievalResult,
@@ -132,6 +134,9 @@ class PyCodeEngine:
             "imports": get_file_imports,
             "imported-by": get_file_imported_by,
             "calls": get_function_calls,
+            "callees": get_function_calls,
+            "callers": get_function_callers,
+            "definitions": find_definitions,
         }
         if query_type in queries:
             if target is None:

@@ -740,7 +740,7 @@ def _add_query_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
     query_parser.add_argument(
         "query_type",
-        choices=["imports", "imported-by", "calls", "entry"],
+        choices=["imports", "imported-by", "calls", "entry", "definitions", "callers", "callees"],
         help="Graph query to run.",
     )
     query_parser.add_argument(

@@ -68,7 +68,7 @@ def test_scopes_duplicate_identity_scan_order_and_chunk_contract(tmp_path,monkey
     ('def helper():\n    pass\ndef helper():\n    pass\ndef run():\n    helper()\n','ambiguous','multiple_lexical_definitions'),
     ('def helper():\n    pass\ndef run():\n    helper = factory\n    helper()\n','unknown','binding_not_a_unique_definition'),
     ('def helper():\n    pass\nclass Client:\n    def helper(self):\n        pass\n    def run(self):\n        self.helper()\n','unknown','receiver_or_dynamic_expression_deferred'),
-    ('from other import helper as alias\ndef run():\n    alias()\n','unknown','binding_not_a_unique_definition'),
+    ('from other import helper as alias\ndef run():\n    alias()\n','static','import_binding_chain'),
     ('if flag:\n    def helper():\n        pass\ndef run():\n    helper()\n','unknown','conditional_or_decorated_definition'),
     ('@wrap\ndef helper():\n    pass\ndef run():\n    helper()\n','unknown','conditional_or_decorated_definition'),
     ('def helper():\n    pass\ndef mutate():\n    global helper\n    helper = factory\ndef run():\n    helper()\n','unknown','dynamic_or_nonlocal_namespace'),
@@ -84,13 +84,14 @@ def test_only_reliable_lexical_calls_connect_to_definitions(tmp_path,source,stat
     site=next(s for s in reversed(graph.call_sites) if s['expression'] in {'helper','self.helper','alias'})
     assert (site['resolution'],site['basis'])==(status,basis)
     edges=[e for e in graph.edges if e.site_id==site['id']]
-    assert len(edges)==1
+    assert len(edges)==(2 if site['expression']=='alias' else 1)
     if status=='static':
-        assert edges[0].type=='calls' and edges[0].target=='func:a.py:helper'
+        assert any(e.type=='calls' for e in edges) and edges[0].target==('func:other.py:helper' if site['expression']=='alias' else 'func:a.py:helper')
     else:
         assert edges[0].type=='unresolved_call' and site['target_id'] is None
         assert not any(e.type=='calls' and e.site_id==site['id'] for e in graph.edges)
-    assert not any(e.type=='calls' and e.target=='func:other.py:helper' for e in graph.edges)
+    if site['expression']!='alias':
+        assert not any(e.type=='calls' and e.target=='func:other.py:helper' for e in graph.edges)
 
 
 def test_call_sites_not_deduplicated_and_import_declarations_are_lossless(tmp_path):
@@ -162,14 +163,14 @@ def test_query_tool_hybrid_exact_symbol_mapping_and_unknown_expansion(tmp_path):
     context=RetrievalContext.create(tmp_path/'repo',index,graph,binding=bound,chunks=build_chunk_index(index,bound))
     tool=query_code_graph(ToolContext(context.root,retrieval_context=context),'calls','func:a.py:helper')
     assert tool.ok and tool.data['resolution']=='ambiguous' and not tool.data['edges']
-    assert tool.data['graph']['graph_schema_version']==2 and tool.data['graph']['ambiguous_count']==1
+    assert tool.data['graph']['graph_schema_version']==3 and tool.data['graph']['ambiguous_count']==1
     calls=query_code_graph(ToolContext(context.root,retrieval_context=context),'calls','func:a.py:run')
     assert calls.ok and all(e['type']=='unresolved_call' for e in calls.data['edges'])
     assert all('expression' not in s for s in calls.data['call_sites'])
     hits,stats=RetrievalGraph.create(graph).expand(['func:a.py:run'],depth=1,node_limit=32,edge_limit=128,direction='outgoing')
     assert hits==[] and stats['unknown_relations']==2
     result=retrieve(RetrievalRequest(Query('helper','general')),replace(context,retrieval_mode='hybrid'))
-    assert result.graph_schema_version==2 and result.pack
+    assert result.graph_schema_version==3 and result.pack
     assert {i.start_line for i in result.items if i.symbol=='helper'}=={1,3}
 
 

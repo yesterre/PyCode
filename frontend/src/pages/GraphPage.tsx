@@ -17,7 +17,9 @@ export function graphElements(graph: GraphResult): cytoscape.ElementDefinition[]
 
 export function GraphKnowledgeSummary({graph}: {graph?: GraphResult}) {
   return <><p className="text-sm text-slate-400">图中关系来自静态分析，不保证实际运行时调用。虚线调用表示目标尚未确认。</p>
-    {graph && (graph.graph_schema_version === 1 || (graph.graph_schema_version == null && graph.nodes.length > 0)) && <p role="status">旧版 Graph：保持可读，尚未获得新版作用域和调用点解析能力；不会自动原地升级。</p>}</>
+    {graph && (graph.graph_schema_version === 1 || (graph.graph_schema_version == null && graph.nodes.length > 0)) && <p role="status">旧版 Graph：保持可读，尚未获得新版作用域和调用点解析能力；不会自动原地升级。</p>}
+    {graph?.graph_schema_version === 2 && <p>此快照保留作用域和调用点信息，尚无跨模块绑定能力；不会自动原地升级。</p>}
+    {graph?.graph_capabilities?.includes('import_bindings') && <p>跨模块关系沿快照内的导入声明解析；导入声明和实际符号引用分别记录，仍不保证运行时调用。</p>}</>
 }
 
 function GraphCanvas({result}: {result: GraphResult}) {
