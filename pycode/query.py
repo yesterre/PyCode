@@ -160,7 +160,7 @@ class RetrievalGraph:
                 if edge.type not in {'imports','calls','contains','references'}:
                     unknown += 1
                     continue
-                if self.graph.schema_version in {2,3} and edge.type in {'calls','references'} and edge.resolution!='static':
+                if self.graph.schema_version in {2,3,4} and edge.type in {'calls','references'} and edge.resolution!='static':
                     unknown += 1
                     continue
                 node = self.nodes.get(other)
@@ -174,7 +174,7 @@ class RetrievalGraph:
                     break
                 visited.add(other)
                 step = {'source': edge.source, 'target': edge.target, 'relation': edge.type, 'direction': way}
-                if self.graph.schema_version in {2,3}:
+                if self.graph.schema_version in {2,3,4}:
                     step.update({k:getattr(edge,k) for k in ('resolution','basis','site_id','path','start_line','end_line')
                                  if getattr(edge,k) is not None})
                 new_path = (*path, step)

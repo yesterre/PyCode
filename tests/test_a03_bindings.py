@@ -43,7 +43,7 @@ def test_import_reexport_calls_are_stable_and_shared_by_graph_tool_and_hybrid(tm
     before=len(calls)
     assert graph_to_dict(graph)==graph_to_dict(build_code_graph(replace(index,files=index.files[::-1]),binding=context.binding))
     assert graph_from_dict(graph_to_dict(graph))==graph and len(calls)==before
-    assert graph.schema_version==3 and 'import_bindings' in graph.capabilities
+    assert graph.schema_version==4 and 'import_bindings' in graph.capabilities
     sites={s['expression']:s for s in graph.call_sites if s['caller_id']=='func:client.py:run'}
     assert {k:s['target_id'] for k,s in sites.items()}=={
         'pkg.public_serve':'func:pkg/api.py:serve','api.serve':'func:pkg/api.py:serve',
@@ -62,7 +62,7 @@ def test_import_reexport_calls_are_stable_and_shared_by_graph_tool_and_hybrid(tm
         assert result.ok and result.data['nodes'] and result.data['graph']['binding']==graph.binding
         assert 'binding_facts' not in result.data and all('expression' not in s for s in result.data['call_sites'])
     hybrid=retrieve(RetrievalRequest(Query('run','general')),replace(context,retrieval_mode='hybrid'))
-    assert hybrid.graph_schema_version==3
+    assert hybrid.graph_schema_version==4
     assert any(i.path=='pkg/api.py' and i.symbol=='serve' and any(score.source=='graph' for score in i.source_scores) for i in hybrid.items)
     assert any(step['basis']=='import_binding_chain' for i in hybrid.items for step in i.graph_path)
     assert len(calls)==before
@@ -121,7 +121,7 @@ def test_local_import_does_not_bind_another_scope_and_instance_alias_is_deferred
         'other.py':'def helper():\n    pass\nclass Service:\n    def method(self):\n        pass\n'})
     assert next(s for s in graph.call_sites if s['caller_id']=='func:main.py:one')['target_id']=='func:other.py:helper'
     assert next(s for s in graph.call_sites if s['caller_id']=='func:main.py:two')['resolution']=='unknown'
-    assert next(s for s in graph.call_sites if s['expression']=='obj.method')['resolution']=='unknown'
+    assert next(s for s in graph.call_sites if s['expression']=='obj.method')['target_id']=='method:other.py:Service.method'
 
 
 @pytest.mark.parametrize('mode',['collision','cycle','budget','dynamic_export','duplicate_export','src_root'])
@@ -160,16 +160,16 @@ def test_schema3_rejects_forged_binding_proof_and_relations(tmp_path,damage):
     elif damage=='missing_scope':data['binding_facts'][0]['scopes']=[]
     elif damage=='references':data['edges']=[e for e in data['edges'] if not(e['type']=='references' and e['site_id']==site['id'])]
     elif damage=='import_edge':next(e for e in data['edges'] if e['type']=='imports')['target']='file:pkg/lib.py'
-    else:data['schema_version']=4
+    else:data['schema_version']=99
     with pytest.raises(ValueError):graph_from_dict(data)
 
 
 def test_schema2_shape_remains_readable_and_cannot_claim_cross_module_bindings(tmp_path):
     _,graph,context=build(tmp_path,{'main.py':'def helper():\n    pass\ndef run():\n    helper()\n',
                                     'other.py':'def helper():\n    pass\n'})
-    data=graph_to_dict(graph);data['schema_version']=2;data.pop('binding_facts')
+    data=graph_to_dict(graph);data['schema_version']=2;data.pop('binding_facts');data.pop('flow_facts')
     data['capabilities']=['lexical_scopes','call_sites','import_declarations','same_module_direct_calls']
-    for site in data['call_sites']:site.pop('binding_chain')
+    for site in data['call_sites']:site.pop('binding_chain');site.pop('flow_chain')
     old=graph_from_dict(data)
     assert graph_to_dict(old)==data and old.schema_version==2
     validate_graph(old,context.binding,context.chunks)

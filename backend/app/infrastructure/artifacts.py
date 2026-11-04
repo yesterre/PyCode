@@ -453,7 +453,7 @@ class SnapshotArtifactStore:
             graph = load_graph(graph_path)
             from pycode.graph_schema import validate_graph
             validate_graph(graph,binding,chunks)
-            if graph.schema_version in {2,3} and {f['path'] for f in graph.files}!={normalize_path(f.path) for f in index.files}:
+            if graph.schema_version in {2,3,4} and {f['path'] for f in graph.files}!={normalize_path(f.path) for f in index.files}:
                 raise ValueError('Graph and Index file sets differ')
         except (OSError, ValueError, UnicodeError, KeyError, TypeError, AttributeError) as exc:
             raise BackendError(

@@ -29,9 +29,9 @@ FIXTURE=Path(__file__).parents[1]/'fixtures/a03/imports'
 
 
 def schema2(graph):
-    data=graph_to_dict(graph);data['schema_version']=2;data.pop('binding_facts')
+    data=graph_to_dict(graph);data['schema_version']=2;data.pop('binding_facts');data.pop('flow_facts')
     data['producer']='pycode-a03a-v1';data['capabilities']=data['capabilities'][:4]
-    for site in data['call_sites']:site.pop('binding_chain')
+    for site in data['call_sites']:site.pop('binding_chain');site.pop('flow_chain')
     return graph_from_dict(data)
 
 
@@ -43,7 +43,7 @@ def test_published_import_calls_reach_fast_path_agent_and_safe_trace(resources,w
     monkeypatch.setenv('PYCODE_RETRIEVAL_MODE','hybrid')
     ready(r,workers);snapshot=current(r)
     bundle=state.artifacts.read_ready(r.own,snapshot);before=bundle.graph_path.read_bytes()
-    assert load_graph(bundle.graph_path).schema_version==3
+    assert load_graph(bundle.graph_path).schema_version==4
     observed=[];ask=state.adapter.engine.ask
     def inspect_ask(*args,**kwargs):
         result=ask(*args,**kwargs);observed.append((kwargs['retrieval_context'],result));return result
@@ -57,17 +57,17 @@ def test_published_import_calls_reach_fast_path_agent_and_safe_trace(resources,w
     assert any(i.path=='pkg/api.py' and i.symbol=='serve' and any(score.source=='graph' for score in i.source_scores) for i in answer.retrieval.items)
     assert any(s['basis']=='import_binding_chain' for i in answer.retrieval.items for s in i.graph_path)
     graph_response=r.context.client.get(f'/api/v1/projects/{r.own}/snapshots/{snapshot.id}/graph',headers=r.headers,params={'q':'run'})
-    body=graph_response.json();assert graph_response.status_code==200 and body['graph_schema_version']==3
+    body=graph_response.json();assert graph_response.status_code==200 and body['graph_schema_version']==4
     assert any(e['type']=='references' for e in body['edges'])
     assert any(s['binding_declarations'] for s in body['call_sites'])
     assert 'binding_facts' not in body and all('expression' not in s and 'binding_chain' not in s for s in body['call_sites'])
     graph_tool=query_code_graph(ToolContext(context.root,retrieval_context=context),'callees','func:client.py:run')
     trace=ToolTrace(1,'query_graph',datetime.now(timezone.utc));trace.finish(graph_tool)
     _,_,_,payload=ApplicationTraceNormalizer._tool_finished(trace)
-    assert payload['graph']['graph_schema_version']==3 and 'import_bindings' in payload['graph']['graph_capabilities']
+    assert payload['graph']['graph_schema_version']==4 and 'import_bindings' in payload['graph']['graph_capabilities']
     assert public_graph_summary(payload['graph'])==payload['graph'] and 'binding_facts' not in payload['graph']
     summary=public_retrieval_summary(answer.retrieval.summary())
-    assert summary and summary['graph_schema_version']==3
+    assert summary and summary['graph_schema_version']==4
     assert any(ref.get('relation_resolution')=='static' for ref in summary['references'])
     accepted=r.context.client.post('/api/v1/agent-runs',headers=r.headers,json={'project_id':str(r.own),'task':'run'})
     assert accepted.status_code==202,accepted.text
@@ -82,7 +82,7 @@ def test_published_import_calls_reach_fast_path_agent_and_safe_trace(resources,w
             uow.projects.set_current_snapshot(r.own,newer.id)
     seen=[];run=state.adapter.engine.run_agent
     def inspect_run(*args,**kwargs):
-        fixed=kwargs['retrieval_context'];assert fixed.graph.schema_version==3
+        fixed=kwargs['retrieval_context'];assert fixed.graph.schema_version==4
         assert fixed.graph.binding['snapshot_id']==str(snapshot.id) and fixed.binding.commit_sha==snapshot.commit_sha
         assert 'return 999' not in dict(fixed.sources)['pkg/lib.py']
         result=query_code_graph(ToolContext(fixed.root,retrieval_context=fixed),'callees','func:client.py:run')
@@ -95,7 +95,7 @@ def test_published_import_calls_reach_fast_path_agent_and_safe_trace(resources,w
     with r.context.uow_factory() as uow,uow.transaction():
         record=uow.agent_runs.get(run_id);assert record.status=='completed' and record.snapshot_id==snapshot.id
     summaries=[e.payload['retrieval'] for rid,e in workers.published if rid==run_id and 'retrieval' in e.payload]
-    assert summaries and all(s['graph_schema_version']==3 and s['binding']['snapshot_id']==str(snapshot.id) for s in summaries)
+    assert summaries and all(s['graph_schema_version']==4 and s['binding']['snapshot_id']==str(snapshot.id) for s in summaries)
     def forbidden(*args,**kwargs):pytest.fail('Unauthorized request reached Graph Artifact')
     monkeypatch.setattr(state.artifacts,'read_ready',forbidden)
     denied=r.context.client.get(f'/api/v1/projects/{r.own}/snapshots/{snapshot.id}/graph',headers=r.other_headers,params={'q':'run'})

@@ -1,7 +1,7 @@
 """Project-root static import bindings, shared by Graph construction/validation.
 
-Only recorded lexical facts are consulted. Never imports source or infers a
-receiver type. Every lookup has independent deterministic depth/work bounds.
+Only recorded lexical and closed nominal receiver facts are consulted. Never
+imports source or performs general type inference. Every lookup is bounded.
 """
 from dataclasses import dataclass
 from unicodedata import normalize
@@ -9,6 +9,7 @@ from unicodedata import normalize
 MAX_DEPTH = 16
 MAX_CHECKS = 128
 CAPABILITIES = ('import_bindings', 'cross_module_calls', 'symbol_references')
+FLOW_CAPABILITIES = ('local_receiver_bindings',)
 
 
 def module_name(path):
@@ -32,6 +33,14 @@ def binding_facts(facts, scope_ids):
                     for b in values] for name, values in sorted(s['bindings'].items())}) for s in facts['scopes']],
                 definitions=[{k:d[k] for k in ('id','conditional','decorated','dynamic_class')}
                              for d in facts['definitions']])
+
+
+def flow_facts(facts,scope_ids):
+    def scoped(value):
+        return {**{k:v for k,v in value.items() if k!='scope'},'scope_id':scope_ids[value['scope']]}
+    return dict(path=facts['path'],assignments=[scoped(a) for a in facts['assignments']],
+                mutations=[scoped(m) for m in facts['mutations']],escapes=[scoped(e) for e in facts['escapes']],
+                methods=[dict(id=scope_ids[m['key']],**{k:v for k,v in m.items() if k!='key'}) for m in facts['methods']])
 
 
 class Modules:
@@ -82,6 +91,7 @@ class Ref:
     kind: str
     target: str
     chain: tuple = ()
+    flow: tuple = ()
 
 
 class Uncertain(Exception):
@@ -100,7 +110,7 @@ class Lookup:
 
 
 class SymbolResolver:
-    def __init__(self, nodes, scopes, declarations, facts):
+    def __init__(self, nodes, scopes, declarations, facts, flows=None):
         self.nodes={n.id:n for n in nodes}
         self.scopes={s['id']:s for s in scopes}
         self.declarations={d['id']:d for d in declarations}
@@ -108,6 +118,39 @@ class SymbolResolver:
         self.bindings={s['id']:s['bindings'] for f in facts for s in f['scopes']}
         self.flags={d['id']:d for f in facts for d in f['definitions']}
         self.modules=Modules(self.files)
+        self.has_flow=flows is not None
+        self.assignments={};self.scope_assignments={};self.methods={};self.mutations={};self.escaped={}
+        aliases={}
+        def owner(scope_id,name):
+            scope=self.scopes[scope_id]
+            for _ in range(MAX_CHECKS):
+                if self.bindings[scope['id']].get(name):return (scope['id'],name)
+                scope=self.scopes.get(scope['parent_id'])
+                while scope is not None and scope['kind']=='class':scope=self.scopes.get(scope['parent_id'])
+                if scope is None:break
+            return None
+        for f in flows or ():
+            self.methods.update({m['id']:m for m in f['methods']})
+            for a in f['assignments']:
+                self.assignments.setdefault((a['scope_id'],tuple(a['target'])),[]).append(a)
+                self.scope_assignments.setdefault(a['scope_id'],[]).append(a)
+                if len(a['target'])==1 and a['value']['kind']=='name':
+                    source=owner(a['scope_id'],a['value']['parts'][0])
+                    if source:aliases.setdefault((a['scope_id'],a['target'][0]),set()).add(source)
+            for m in f['mutations']:
+                self.mutations.setdefault(m['attribute'],[]).append(m)
+            for e in f['escapes']:
+                for name in e['names']:
+                    bound=owner(e['scope_id'],name)
+                    if bound:self.escaped.setdefault(bound[0],set()).add(bound[1])
+        # A visible alias passed to unknown code invalidates its source too.
+        # A visited worklist makes cyclic aliases linear, without following calls.
+        pending=[(s,n) for s,names in self.escaped.items() for n in names];visited=set(pending)
+        while pending:
+            for source in aliases.get(pending.pop(),()):
+                if source not in visited:
+                    visited.add(source);pending.append(source)
+                    self.escaped.setdefault(source[0],set()).add(source[1])
 
     def _namespace(self, scope, name):
         facts=self.files[scope['path']]
@@ -127,11 +170,17 @@ class SymbolResolver:
                 targets=[v['target'] for v in values if v['kind']=='definition']
                 if len(targets)>1:
                     raise Uncertain('multiple_lexical_definitions', sorted(targets))
+                if self.has_flow and len(values)==1 and values[0]['kind']=='write':
+                    return self._assignment_ref(scope,origin,name,lookup,trail,site)
+                if self.has_flow and len(values)==1 and values[0]['kind']=='parameter':
+                    return self._receiver(scope,origin,name,lookup)
                 if len(values)!=1 or values[0]['kind'] not in {'definition','import'}:
                     raise Uncertain('binding_not_a_unique_definition',targets)
                 value=values[0]
                 if value['kind']=='definition':
                     target=self.nodes[value['target']]; flags=self.flags[target.id]
+                    if self.has_flow and target.type=='class' and name in self.escaped.get(scope['id'],()):
+                        raise Uncertain('class_escaped')
                     if flags['conditional'] or flags['decorated']:
                         raise Uncertain('conditional_or_decorated_definition',(target.id,))
                     if flags['dynamic_class']:
@@ -149,7 +198,10 @@ class SymbolResolver:
                 if token in trail:
                     raise Uncertain('cyclic_import_binding')
                 ref=self._import(declaration,name,lookup,(*trail,token))
-                return Ref(ref.kind,ref.target,(token,*ref.chain))
+                if self.has_flow and name in self.escaped.get(scope['id'],()) and (
+                        ref.kind=='module' or ref.kind=='definition' and self.nodes[ref.target].type=='class'):
+                    raise Uncertain('class_or_module_escaped')
+                return Ref(ref.kind,ref.target,(token,*ref.chain),ref.flow)
             if export:
                 return None
             scope=self.scopes.get(scope['parent_id'])
@@ -206,7 +258,7 @@ class SymbolResolver:
         return self._member(module,alias['name'],lookup,trail)
 
     def resolve(self, site):
-        lookup=Lookup();parts=dotted(site['expression']);chain=()
+        lookup=Lookup();parts=dotted(site['expression']);chain=();flow=()
         try:
             if not parts:
                 raise Uncertain('receiver_or_dynamic_expression_deferred')
@@ -219,24 +271,148 @@ class SymbolResolver:
                     raise Uncertain('receiver_or_dynamic_expression_deferred') from exc
                 raise
             chain=ref.chain
+            flow=ref.flow
             for part in parts[1:]:
-                if ref.kind!='module':
+                if ref.kind!='module' and not self.has_flow:
                     raise Uncertain('receiver_or_dynamic_expression_deferred')
-                member=self._member(ref.target,part,lookup,())
-                chain=(*chain,*member.chain);ref=member
+                member=self._member(ref.target,part,lookup,()) if ref.kind=='module' else self._object_member(ref,part,lookup,())
+                chain=(*chain,*member.chain);flow=(*flow,*member.flow);ref=member
             if ref.kind!='definition':
                 raise Uncertain('module_is_not_a_callable_definition')
-            return self._result('static','import_binding_chain' if chain else
-                                'unique_same_module_lexical_definition',[ref.target],chain)
+            return self._result('static','nominal_receiver_or_alias_binding' if flow else 'import_binding_chain' if chain else
+                                'unique_same_module_lexical_definition',[ref.target],chain,flow)
         except Uncertain as exc:
             return self._result('ambiguous' if len(exc.candidates)>1 else 'unknown',
                                 exc.basis,list(exc.candidates),())
 
-    @staticmethod
-    def _result(status,basis,candidates,chain):
-        return dict(resolution=status,basis=basis,target_id=candidates[0] if status=='static' else None,
+    def _result(self,status,basis,candidates,chain,flow=()):
+        result=dict(resolution=status,basis=basis,target_id=candidates[0] if status=='static' else None,
                     candidate_ids=candidates[:8],candidate_count=len(candidates),
                     binding_chain=[dict(declaration_id=d,local_name=n) for d,n in chain])
+        if self.has_flow:
+            result['flow_chain']=list(dict.fromkeys(flow))
+        return result
+
+    def _descriptor(self,method,lookup):
+        metadata=self.methods.get(method.id)
+        if metadata is None or metadata['descriptor']=='unknown' or self.flags[method.id]['conditional']:
+            raise Uncertain('method_descriptor_unknown')
+        role=metadata['descriptor']
+        if role in {'classmethod','staticmethod'}:
+            scope=self.scopes[method.parent_id]
+            while scope is not None:
+                lookup.tick();self._namespace(scope,role)
+                if self.bindings[scope['id']].get(role):raise Uncertain('builtin_descriptor_shadowed')
+                scope=self.scopes.get(scope['parent_id'])
+        if role!='staticmethod' and metadata['receiver'] is None:
+            raise Uncertain('method_receiver_missing')
+        return metadata
+
+    def _mutation_owner(self,mutation):
+        method=self.methods.get(mutation['scope_id'])
+        if method and method['descriptor']=='instance' and mutation['receiver']==[method['receiver']]:
+            return self.nodes[method['id']].parent_id
+        return None
+
+    def _writes(self,class_id,name):
+        return [m for m in self.mutations.get(name,()) if self._mutation_owner(m) in {None,class_id}]
+
+    def _class_ok(self,class_id,lookup):
+        lookup.tick();node=self.nodes[class_id];flags=self.flags[class_id]
+        if node.name.rsplit('.',1)[-1] in self.escaped.get(node.parent_id,()):
+            raise Uncertain('class_escaped')
+        self._namespace(self.scopes[class_id],node.name.rsplit('.',1)[-1])
+        if flags['dynamic_class'] or flags['decorated'] or flags['conditional']:
+            raise Uncertain('class_binding_deferred')
+        namespace=self.bindings[class_id]
+        if any(name in namespace for name in ('__new__','__getattribute__','__getattr__','__setattr__','__delattr__')):
+            raise Uncertain('dynamic_instance_hooks')
+        if any(self._writes(class_id,name) for name in ('__class__','__bases__','__dict__','__mro__')):
+            raise Uncertain('dynamic_class_mutation')
+
+    def _initializer(self,class_id,lookup,trail=()):
+        token=('initializer',class_id);lookup.tick(len(trail))
+        if token in trail:raise Uncertain('cyclic_initializer')
+        entries=self.bindings[class_id].get('__init__',[])
+        if not entries:return None
+        if len(entries)!=1 or entries[0]['kind']!='definition':raise Uncertain('initializer_not_simple')
+        method=self.nodes[entries[0]['target']];meta=self._descriptor(method,lookup)
+        if meta['descriptor']!='instance' or not meta['simple_init'] or meta['receiver'] in self.escaped.get(method.id,()):
+            raise Uncertain('initializer_not_simple')
+        for event in self.scope_assignments.get(method.id,()):
+            lookup.tick(len(trail));target=event['target']
+            if len(target)==2 and target[-1] in self.bindings[class_id]:raise Uncertain('dynamic_data_descriptor')
+            if event['value']['kind']=='call':
+                self._expression_ref(event['value'],method.id,event,lookup,(*trail,token))
+        return meta
+
+    def _receiver(self,scope,origin,name,lookup):
+        meta=self.methods.get(scope['id'])
+        if scope is not origin or not meta or meta['receiver']!=name or meta['descriptor']=='staticmethod':
+            raise Uncertain('binding_not_a_unique_definition')
+        method=self.nodes[meta['id']];self._descriptor(method,lookup)
+        if name in self.escaped.get(scope['id'],()):raise Uncertain('receiver_escaped')
+        class_id=method.parent_id;self._class_ok(class_id,lookup)
+        return Ref('definition' if meta['descriptor']=='classmethod' else 'instance',class_id,flow=(method.id,))
+
+    def _expression_ref(self,value,scope_id,site,lookup,trail):
+        parts=value['parts']
+        if not parts or value['kind']=='unknown':raise Uncertain('unsupported_flow_expression')
+        ref=self._lookup(scope_id,parts[0],lookup,trail,site=site)
+        chain=ref.chain;flow=ref.flow
+        for part in parts[1:]:
+            member=self._member(ref.target,part,lookup,trail) if ref.kind=='module' else self._object_member(ref,part,lookup,trail)
+            chain=(*chain,*member.chain);flow=(*flow,*member.flow);ref=member
+        if value['kind']=='call':
+            if ref.kind!='definition' or self.nodes[ref.target].type!='class':raise Uncertain('factory_result_deferred')
+            self._class_ok(ref.target,lookup);self._initializer(ref.target,lookup,trail)
+            return Ref('instance',ref.target,chain,flow)
+        return Ref(ref.kind,ref.target,chain,flow)
+
+    def _assignment_ref(self,scope,origin,name,lookup,trail,site):
+        events=self.assignments.get((scope['id'],(name,)),())
+        if len(events)!=1:raise Uncertain('binding_not_a_unique_definition')
+        event=events[0];token=('flow',event['id']);lookup.tick(len(trail))
+        if token in trail:raise Uncertain('cyclic_flow_binding')
+        if event['conditional'] or event['operation']!='assign':raise Uncertain('conditional_or_invalidated_flow')
+        if scope is not origin and scope['kind']!='module':raise Uncertain('nonlocal_flow_deferred')
+        if scope['kind']=='class':raise Uncertain('class_scope_flow_deferred')
+        if site and (scope is origin or scope['kind']!='module') and (
+                event['end_line'],event['end_col_offset'])>(site['start_line'],site['col_offset']):
+            raise Uncertain('assignment_not_available_at_site')
+        try:ref=self._expression_ref(event['value'],scope['id'],event,lookup,(*trail,token))
+        except Uncertain as exc:
+            if exc.basis=='name_not_bound_in_module':raise Uncertain('binding_not_a_unique_definition') from exc
+            raise
+        if name in self.escaped.get(scope['id'],()):raise Uncertain('receiver_escaped')
+        return Ref(ref.kind,ref.target,ref.chain,(*ref.flow,event['id']))
+
+    def _object_member(self,ref,name,lookup,trail):
+        lookup.tick(len(trail))
+        if ref.kind=='instance':class_id=ref.target
+        elif ref.kind=='definition' and self.nodes[ref.target].type=='class':class_id=ref.target
+        else:raise Uncertain('receiver_or_dynamic_expression_deferred')
+        self._class_ok(class_id,lookup)
+        entries=self.bindings[class_id].get(name,())
+        writes=self._writes(class_id,name)
+        if entries:
+            if len(entries)!=1 or entries[0]['kind']!='definition' or writes:raise Uncertain('attribute_write_conflict')
+            method=self.nodes[entries[0]['target']]
+            if method.type!='method':raise Uncertain('method_descriptor_unknown')
+            self._descriptor(method,lookup)
+            return Ref('definition',method.id,flow=(method.id,))
+        if ref.kind!='instance':raise Uncertain('class_attribute_not_bound')
+        init=self._initializer(class_id,lookup,trail)
+        if not init:raise Uncertain('instance_attribute_not_bound')
+        events=self.assignments.get((init['id'],(init['receiver'],name)),())
+        if len(events)!=1 or len(writes)!=1 or writes[0]['id']!=events[0]['mutation_id']:
+            raise Uncertain('attribute_write_conflict')
+        event=events[0];token=('field',event['id'])
+        if event['conditional'] or event['operation']!='assign' or event['value']['kind']!='call':
+            raise Uncertain('initialization_not_a_constructor')
+        if token in trail:raise Uncertain('cyclic_flow_binding')
+        value=self._expression_ref(event['value'],init['id'],event,lookup,(*trail,token))
+        return Ref(value.kind,value.target,value.chain,(*value.flow,init['id'],event['id']))
 
     def declaration_target(self, declaration, alias):
         """File dependency only, deliberately separate from symbol binding."""
@@ -320,5 +496,70 @@ def validate_binding_facts(graph,nodes,scopes,declarations):
                     if b['kind']=='definition':
                         require(b['conditional']==flags_by_id[b['target']]['conditional'])
     from pycode.structure import CAPABILITIES as BASE
-    require(set(graph.capabilities)==set(BASE+CAPABILITIES))
-    return SymbolResolver(graph.nodes,graph.scopes,graph.import_declarations,graph.binding_facts)
+    require(set(graph.capabilities)==set(BASE+CAPABILITIES+(FLOW_CAPABILITIES if graph.schema_version==4 else ())))
+    if graph.schema_version==4:
+        validate_flow_facts(graph,nodes,scopes)
+    return SymbolResolver(graph.nodes,graph.scopes,graph.import_declarations,graph.binding_facts,
+                          graph.flow_facts if graph.schema_version==4 else None)
+
+
+def validate_flow_facts(graph,nodes,scopes):
+    """Closed, source-located flow IR. Unsupported writes never become types."""
+    from collections import Counter
+    from pycode.structure import identity
+    def require(value):
+        if not value:raise ValueError('Invalid Graph flow facts')
+    files={f['path']:f for f in graph.files};sites={c['id']:c for c in graph.call_sites}
+    bindings={s['id']:s['bindings'] for f in graph.binding_facts for s in f['scopes']}
+    flags={d['id']:d for f in graph.binding_facts for d in f['definitions']}
+    require(isinstance(graph.flow_facts,list))
+    seen=set();methods=set();ids=set();write_counts=Counter()
+    def path(value,empty=False):
+        return isinstance(value,list) and (empty or bool(value)) and len(value)<=32 and all(isinstance(p,str) and p.isidentifier() for p in value)
+    def location(item,file):
+        sid=item['scope_id'];require(sid in scopes and scopes[sid]['path']==file)
+        require(all(type(item[k]) is int for k in ('start_line','end_line','col_offset','end_col_offset')))
+        require(scopes[sid]['start_line']<=item['start_line']<=item['end_line']<=scopes[sid]['end_line'])
+        require(1<=item['start_line'] and item['end_line']<=files[file]['line_count'] and item['col_offset']>=0 and item['end_col_offset']>=0)
+        require(item['start_line']<item['end_line'] or item['col_offset']<item['end_col_offset'])
+    for facts in graph.flow_facts:
+        require(isinstance(facts,dict) and set(facts)=={'path','methods','assignments','mutations','escapes'})
+        file=facts['path'];require(file in files and file not in seen);seen.add(file)
+        require(all(isinstance(facts[k],list) for k in ('methods','assignments','mutations','escapes')))
+        for m in facts['methods']:
+            require(isinstance(m,dict) and set(m)=={'id','receiver','descriptor','simple_init'})
+            node=nodes.get(m['id']);require(node is not None and node.type=='method' and node.path==file and node.id not in methods)
+            methods.add(node.id)
+            require(type(m['simple_init']) is bool and m['descriptor'] in {'instance','staticmethod','classmethod','unknown'})
+            require(m['receiver'] is None or isinstance(m['receiver'],str) and m['receiver'].isidentifier() and
+                    any(v['kind']=='parameter' for v in bindings[node.id].get(m['receiver'],())))
+            require(flags[node.id]['decorated']==(m['descriptor']!='instance'))
+        mutations={}
+        for m in facts['mutations']:
+            require(isinstance(m,dict) and set(m)=={'id','scope_id','attribute','receiver','start_line','end_line','col_offset','end_col_offset'})
+            location(m,file);require(isinstance(m['attribute'],str) and m['attribute'].isidentifier() and path(m['receiver'],True))
+            require(m['id']==identity('mutation',file,scopes[m['scope_id']]['key'],m['start_line'],m['col_offset'],m['end_line'],m['end_col_offset'],m['attribute']) and m['id'] not in ids)
+            ids.add(m['id']);mutations[m['id']]=m
+        for a in facts['assignments']:
+            require(isinstance(a,dict) and set(a)=={'id','scope_id','start_line','end_line','col_offset','end_col_offset','target','value','conditional','operation','statement','mutation_id'})
+            location(a,file);require(path(a['target']) and len(a['target'])<=2 and type(a['conditional']) is bool)
+            require(a['operation'] in {'assign','invalidate'} and a['statement'] in {'Assign','AnnAssign','AugAssign','Delete'})
+            require((a['operation']=='assign')==(a['statement'] in {'Assign','AnnAssign'}))
+            require(a['id']==identity('flow',file,scopes[a['scope_id']]['key'],a['statement'],a['start_line'],a['col_offset'],a['target']) and a['id'] not in ids)
+            ids.add(a['id']);v=a['value']
+            require(isinstance(v,dict) and set(v)=={'kind','parts'} and v['kind'] in {'name','call','unknown'} and path(v['parts'],v['kind']=='unknown'))
+            require(v['kind']!='unknown' or not v['parts'])
+            if len(a['target'])==1:
+                require(a['mutation_id'] is None)
+                write_counts[a['scope_id'],a['target'][0],a['conditional']]+=1
+            else:
+                m=mutations.get(a['mutation_id'])
+                require(m is not None and m['scope_id']==a['scope_id'] and m['receiver']==a['target'][:-1] and m['attribute']==a['target'][-1])
+                require(a['start_line']<=m['start_line']<=m['end_line']<=a['end_line'])
+        for e in facts['escapes']:
+            require(isinstance(e,dict) and set(e)=={'call_id','scope_id','names'} and e['call_id'] in sites)
+            require(sites[e['call_id']]['scope_id']==e['scope_id'] and scopes[e['scope_id']]['path']==file)
+            require(isinstance(e['names'],list) and bool(e['names']) and all(isinstance(n,str) and n.isidentifier() for n in e['names']) and len(set(e['names']))==len(e['names']))
+    require(seen==set(files) and methods=={n.id for n in nodes.values() if n.type=='method'})
+    available=Counter((sid,name,b['conditional']) for sid,values in bindings.items() for name,items in values.items() for b in items if b['kind']=='write')
+    require(not (write_counts-available))

@@ -55,8 +55,8 @@ def local_graph(graph: CodeGraph, snapshot_id: UUID, *, q: str | None,
     sites, omitted = public_sites(graph,selected,min(200,edge_limit))
     return {
         "snapshot_id": snapshot_id,
-        "nodes": [node_data(node,details=graph.schema_version in {2,3}) for node in ordered_nodes],
-        "edges": [edge_data(edge,details=graph.schema_version in {2,3}) for edge in relevant[:edge_limit]],
+        "nodes": [node_data(node,details=graph.schema_version in {2,3,4}) for node in ordered_nodes],
+        "edges": [edge_data(edge,details=graph.schema_version in {2,3,4}) for edge in relevant[:edge_limit]],
         "truncated": truncated,
         **graph_info(graph), 'call_sites':sites, 'call_sites_omitted':omitted,
     }

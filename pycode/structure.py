@@ -29,6 +29,7 @@ class _Collector(ast.NodeVisitor):
     def __init__(self, source, path):
         self.source, self.path = source, path
         self.scopes, self.definitions, self.calls, self.imports = [], [], [], []
+        self.assignments, self.mutations, self.methods, self.escapes = [], [], [], []
         self.by_key = {}
         self.counts = defaultdict(Counter)
         self.current = self.scope('<module>', None, 'module', '<module>', 1,
@@ -82,6 +83,16 @@ class _Collector(ast.NodeVisitor):
             for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs,
                         *([args.vararg] if args.vararg else []), *([args.kwarg] if args.kwarg else [])]:
                 self.bind(arg.arg, 'parameter')
+            if kind=='method':
+                positional=[*args.posonlyargs,*args.args]
+                receiver=positional[0].arg if positional else None
+                descriptor='instance' if not node.decorator_list else (
+                    node.decorator_list[0].id if len(node.decorator_list)==1 and
+                    isinstance(node.decorator_list[0],ast.Name) and
+                    node.decorator_list[0].id in {'staticmethod','classmethod'} else 'unknown')
+                parameters={a.arg for a in [*args.posonlyargs,*args.args,*args.kwonlyargs]}
+                self.methods.append(dict(key=key,receiver=receiver,descriptor=descriptor,
+                                         simple_init=_simple_init(node.body,receiver,parameters)))
         for statement in node.body:
             self.visit(statement)
         self.current, self.conditional = parent, conditional
@@ -103,6 +114,10 @@ class _Collector(ast.NodeVisitor):
                     end_col_offset=node.end_col_offset, expression=expression,
                     name=node.func.id if isinstance(node.func, ast.Name) else None)
         self.calls.append(site)
+        names=sorted({n.id for value in [*node.args,*(k.value for k in node.keywords)]
+                      for n in ast.walk(value) if isinstance(n,ast.Name) and isinstance(n.ctx,ast.Load)})
+        if names:
+            self.escapes.append(dict(call_id=site['id'],scope=self.current['key'],names=names))
         if isinstance(node.func, ast.Name) and node.func.id in {'exec','eval','globals','locals','setattr','delattr'}:
             self.current['dynamic'] = True
         self.generic_visit(node)
@@ -110,6 +125,34 @@ class _Collector(ast.NodeVisitor):
     def visit_Name(self, node):
         if isinstance(node.ctx, (ast.Store, ast.Del)):
             self.bind(node.id, 'write')
+
+    def assignment(self,node,targets,operation='assign'):
+        for target in targets:
+            parts=_expression_path(target)
+            if not parts or len(parts)>2:
+                continue
+            value=getattr(node,'value',None)
+            expr=value.func if isinstance(value,ast.Call) else value
+            # Chained targets share one object; this closed IR does not model
+            # that alias group, so do not treat them as independent constructors.
+            path=_expression_path(expr) if len(targets)==1 else []
+            self.assignments.append(dict(
+                id=identity('flow',self.path,self.current['key'],type(node).__name__,node.lineno,node.col_offset,parts),
+                scope=self.current['key'],start_line=node.lineno,end_line=node.end_lineno,
+                col_offset=node.col_offset,end_col_offset=node.end_col_offset,target=parts,
+                value=dict(kind=('call' if isinstance(value,ast.Call) else 'name') if path and operation=='assign' else 'unknown',parts=path if operation=='assign' else []),
+                conditional=bool(self.conditional),operation=operation,
+                statement=type(node).__name__,
+                mutation_id=self.mutation_id(target) if isinstance(target,ast.Attribute) else None))
+        self.generic_visit(node)
+
+    def visit_Assign(self,node):self.assignment(node,node.targets)
+    def visit_AnnAssign(self,node):self.assignment(node,[node.target])
+    def visit_AugAssign(self,node):self.assignment(node,[node.target],'invalidate')
+    def visit_Delete(self,node):self.assignment(node,node.targets,'invalidate')
+
+    def mutation_id(self,node):
+        return identity('mutation',self.path,self.current['key'],node.lineno,node.col_offset,node.end_lineno,node.end_col_offset,node.attr)
 
     def visit_Import(self, node):
         self.import_declaration(node, None, 0)
@@ -167,6 +210,10 @@ class _Collector(ast.NodeVisitor):
     visit_Nonlocal = visit_Global
 
     def visit_Attribute(self, node):
+        if isinstance(node.ctx,(ast.Store,ast.Del)):
+            self.mutations.append(dict(id=self.mutation_id(node),scope=self.current['key'],attribute=node.attr,
+                receiver=_expression_path(node.value),start_line=node.lineno,end_line=node.end_lineno,
+                col_offset=node.col_offset,end_col_offset=node.end_col_offset))
         if node.attr in {'__globals__','__dict__'} or (isinstance(node.ctx,(ast.Store,ast.Del)) and
             node.attr in {'__code__','__defaults__','__kwdefaults__','__call__'}):
             self.current['dynamic'] = True
@@ -213,6 +260,40 @@ class _Collector(ast.NodeVisitor):
         return dict(path=self.path, source_sha256=hashlib.sha256(self.source.encode('utf-8')).hexdigest(),
                     line_count=self.scopes[0]['end_line'], scopes=self.scopes,
                     definitions=self.definitions, calls=self.calls, imports=self.imports,
+                    assignments=self.assignments,mutations=self.mutations,methods=self.methods,escapes=self.escapes,
                     dynamic=any(s['dynamic'] for s in self.scopes),
                     blocked_names=sorted({name for s in self.scopes for name, values in s['bindings'].items()
                                           if any(b['kind'] in {'global_or_nonlocal','type_parameter'} for b in values)}))
+
+
+def _expression_path(node):
+    if isinstance(node,ast.Name):return [node.id]
+    if isinstance(node,ast.Attribute):
+        parent=_expression_path(node.value)
+        return [*parent,node.attr] if parent and len(parent)<32 else []
+    return []
+
+
+def _simple_init(body,receiver,parameters):
+    """Closed initializer grammar, not an execution or general flow analysis."""
+    for statement in body:
+        if isinstance(statement,ast.Pass) or (isinstance(statement,ast.Expr) and
+                isinstance(statement.value,ast.Constant) and isinstance(statement.value.value,str)):
+            continue
+        if not isinstance(statement,(ast.Assign,ast.AnnAssign)):
+            return False
+        targets=statement.targets if isinstance(statement,ast.Assign) else [statement.target]
+        if len(targets)!=1:
+            return False
+        target=_expression_path(targets[0])
+        if not target or not (len(target)==1 or (len(target)==2 and target[0]==receiver)):
+            return False
+        value=statement.value
+        if isinstance(value,ast.Call):
+            if not _expression_path(value.func):return False
+            for arg in [*value.args,*(k.value for k in value.keywords)]:
+                if not (isinstance(arg,ast.Constant) or isinstance(arg,ast.Name) and arg.id in parameters-{receiver}):
+                    return False
+        elif value is not None and not isinstance(value,(ast.Constant,ast.Name,ast.Attribute)):
+            return False
+    return True

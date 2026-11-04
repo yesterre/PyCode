@@ -290,10 +290,10 @@ def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, 
 def public_graph_summary(value: Any) -> dict | None:
     """Code-free Graph Tool metadata, shared by live/final/replayed events."""
     from uuid import UUID
-    if not isinstance(value,dict) or type(value.get('graph_schema_version')) is not int or value['graph_schema_version'] not in {1,2,3}:
+    if not isinstance(value,dict) or type(value.get('graph_schema_version')) is not int or value['graph_schema_version'] not in {1,2,3,4}:
         return None
     capabilities=value.get('graph_capabilities')
-    allowed={'legacy_structure','lexical_scopes','call_sites','import_declarations','same_module_direct_calls','import_bindings','cross_module_calls','symbol_references'}
+    allowed={'legacy_structure','lexical_scopes','call_sites','import_declarations','same_module_direct_calls','import_bindings','cross_module_calls','symbol_references','local_receiver_bindings'}
     if not isinstance(capabilities,list) or len(capabilities)>8 or any(not isinstance(c,str) or c not in allowed for c in capabilities):
         return None
     binding=value.get('binding')
@@ -306,7 +306,7 @@ def public_graph_summary(value: Any) -> dict | None:
         except (KeyError,TypeError,ValueError,AttributeError):
             return None
     result={'graph_schema_version':value['graph_schema_version'],'graph_capabilities':capabilities,'binding':binding}
-    if value['graph_schema_version'] in {2,3}:
+    if value['graph_schema_version'] in {2,3,4}:
         counts={k:value.get(k) for k in ('call_sites_count','unknown_count','ambiguous_count')}
         if any(type(v) is not int or v<0 for v in counts.values()) or counts['unknown_count']+counts['ambiguous_count']>counts['call_sites_count']:
             return None
@@ -386,7 +386,7 @@ def public_retrieval_summary(value: Any) -> dict | None:
             return None
         if distance:
             references[-1].update(graph_distance=distance, relation_confidence='static_unverified')
-            if value.get('graph_schema_version') in {2,3} or 'relation_resolution' in reference:
+            if value.get('graph_schema_version') in {2,3,4} or 'relation_resolution' in reference:
                 steps=reference.get('graph_path')
                 resolution=reference.get('relation_resolution')
                 if isinstance(steps,list):
@@ -409,7 +409,7 @@ def public_retrieval_summary(value: Any) -> dict | None:
             "evidence_count": count, "diagnostics": diagnostics[:20], "references": references,
             "references_omitted": omitted + max(0, len(refs) - 6)}
     if value.get('graph_schema_version') is not None:
-        if type(value['graph_schema_version']) is not int or value['graph_schema_version'] not in {1,2,3}:
+        if type(value['graph_schema_version']) is not int or value['graph_schema_version'] not in {1,2,3,4}:
             return None
         result['graph_schema_version']=value['graph_schema_version']
     if 'mode' in value:

@@ -93,3 +93,4 @@ class CodeGraph:
     import_declarations: list[dict] = field(default_factory=list)
     producer: str | None = None
     binding_facts: list[dict] = field(default_factory=list)
+    flow_facts: list[dict] = field(default_factory=list)

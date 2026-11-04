@@ -41,8 +41,8 @@ class _CodeGraphBuilder:
 
     def _structured(self):
         from pycode.structure import CAPABILITIES, identity
-        from pycode.symbol_resolver import CAPABILITIES as BINDING_CAPABILITIES, SymbolResolver, binding_facts, dotted
-        files, scopes, calls, declarations, bindings = [], [], [], [], []
+        from pycode.symbol_resolver import CAPABILITIES as BINDING_CAPABILITIES, FLOW_CAPABILITIES, SymbolResolver, binding_facts, flow_facts, dotted
+        files, scopes, calls, declarations, bindings, flows = [], [], [], [], [], []
         for file in sorted(self.index.files, key=lambda f: normalize_path(f.path)):
             facts = file.structure
             if facts is None:
@@ -66,6 +66,7 @@ class _CodeGraphBuilder:
                                          d['key'], parent_id, d['start_line'], d['end_line']))
                 self._add_edge(parent_id, d['id'], 'contains', resolution='static', basis='lexical_containment')
             bindings.append(binding_facts(facts,scope_ids))
+            flows.append(flow_facts(facts,scope_ids))
             for declaration in facts['imports']:
                 value = {k:v for k,v in declaration.items() if k!='scope'}
                 value['scope_id'] = scope_ids[declaration['scope']]
@@ -80,7 +81,7 @@ class _CodeGraphBuilder:
                 value = {k:v for k,v in site.items() if k not in {'scope','name'}}
                 value.update(scope_id=scope_ids[site['scope']], caller_id=caller_id)
                 calls.append(value)
-        resolver=SymbolResolver(list(self.nodes.values()),scopes,declarations,bindings)
+        resolver=SymbolResolver(list(self.nodes.values()),scopes,declarations,bindings,flows)
         for declaration in declarations:
             module='.'*declaration['level']+(declaration['module'] or '')
             for alias in declaration['names']:
@@ -101,13 +102,13 @@ class _CodeGraphBuilder:
                 self._add_node(GraphNode(target,'external',parts[0] if len(parts)==1 else '<dynamic call>'))
             self._add_edge(site['caller_id'],target,'calls' if site['resolution']=='static' else 'unresolved_call',
                            site_id=site['id'],**metadata)
-            if site['resolution']=='static' and site['binding_chain']:
+            if site['resolution']=='static' and (site['binding_chain'] or site['flow_chain']):
                 self._add_edge(site['caller_id'],target,'references',site_id=site['id'],**metadata)
         graph = CodeGraph(self.index.project_path, sorted(self.nodes.values(), key=lambda n:n.id),
                           sorted(self.edges, key=lambda e:(e.source,e.target,e.type,e.site_id or '')),
-                          schema_version=3, binding=asdict(self.binding) if self.binding is not None else None,
-                          capabilities=(*CAPABILITIES,*BINDING_CAPABILITIES), files=files, scopes=scopes, call_sites=calls,
-                          import_declarations=declarations, producer='pycode-a03b-v1',binding_facts=bindings)
+                          schema_version=4, binding=asdict(self.binding) if self.binding is not None else None,
+                          capabilities=(*CAPABILITIES,*BINDING_CAPABILITIES,*FLOW_CAPABILITIES), files=files, scopes=scopes, call_sites=calls,
+                          import_declarations=declarations, producer='pycode-a03c-v1',binding_facts=bindings,flow_facts=flows)
         from pycode.graph_schema import validate_graph
         validate_graph(graph)
         return graph

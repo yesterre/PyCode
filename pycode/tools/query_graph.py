@@ -51,9 +51,9 @@ def query_code_graph(
     sites, omitted = public_sites(graph,ids)
     result.data.update(call_sites=sites,call_sites_omitted=omitted)
     metadata = {'graph_schema_version':graph.schema_version,
-                'graph_capabilities':list(graph.capabilities) if graph.schema_version in {2,3} else ['legacy_structure'],
+                'graph_capabilities':list(graph.capabilities) if graph.schema_version in {2,3,4} else ['legacy_structure'],
                 'binding':asdict(trusted.binding) if trusted is not None and trusted.binding else graph.binding}
-    if graph.schema_version in {2,3}:
+    if graph.schema_version in {2,3,4}:
         metadata.update(call_sites_count=len(graph.call_sites),
                         unknown_count=sum(s['resolution']=='unknown' for s in graph.call_sites),
                         ambiguous_count=sum(s['resolution']=='ambiguous' for s in graph.call_sites))

@@ -5,6 +5,14 @@ import type { GraphResult } from '../api/types'
 
 afterEach(cleanup)
 
+it('keeps schema3 instance limitations distinct from controlled schema4 bindings', () => {
+  const {rerender} = render(<GraphKnowledgeSummary graph={{snapshot_id: 'v3', nodes: [], edges: [], truncated: false, graph_schema_version: 3, graph_capabilities: ['import_bindings']}} />)
+  expect(screen.getByText(/尚无局部实例绑定能力/)).toBeTruthy()
+  rerender(<GraphKnowledgeSummary graph={{snapshot_id: 'v4', nodes: [], edges: [], truncated: false, graph_schema_version: 4, graph_capabilities: ['import_bindings', 'local_receiver_bindings']}} />)
+  expect(screen.getByText(/实例和方法关系来自受控静态绑定/)).toBeTruthy()
+  expect(screen.queryByText(/尚无局部实例绑定能力/)).toBeNull()
+})
+
 it('distinguishes v2 structural capability from v3 import binding', () => {
   const {rerender} = render(<GraphKnowledgeSummary graph={{snapshot_id: 'v2', nodes: [], edges: [], truncated: false, graph_schema_version: 2}} />)
   expect(screen.getByText(/尚无跨模块绑定能力/)).toBeTruthy()
