@@ -32,6 +32,7 @@ class SnapshotArtifactBundle:
     graph_artifact_path: str
     summary: IndexSummary
     chunks_path: Path | None = None
+    binding: dict | None = None
 
 
 class SnapshotArtifactStore:
@@ -186,7 +187,13 @@ class SnapshotArtifactStore:
             self._check_tree(directory, self._project_root(project_id))
             manifest = json.loads((directory / MANIFEST_FILE).read_text(encoding="utf-8"))
             index_path, graph_path = directory / INDEX_FILE, directory / GRAPH_FILE
-            summary = self._verify_artifacts(index_path, graph_path)
+            version = manifest.get('version')
+            if type(version) is not int or version not in {1,2}:
+                raise ValueError('Unsupported Snapshot manifest version')
+            chunks_path = directory / CHUNKS_FILE if version==2 else None
+            chunks = self._verify_chunks(chunks_path, project_id, snapshot_id, commit_sha, index_path) if chunks_path else None
+            binding = SnapshotBinding(str(project_id),str(snapshot_id),commit_sha)
+            summary = self._verify_artifacts(index_path, graph_path, binding=binding, chunks=chunks)
             expected = {
                 "version": 1,
                 "project_id": str(project_id),
@@ -198,13 +205,7 @@ class SnapshotArtifactStore:
                 "index_sha256": self._sha256(index_path),
                 "graph_sha256": self._sha256(graph_path),
             }
-            version = manifest.get("version")
-            chunks_path = None
-            if type(version) is not int or version not in {1, 2}:
-                raise ValueError("Unsupported Snapshot manifest version")
             if version == 2:
-                chunks_path = directory / CHUNKS_FILE
-                chunks = self._verify_chunks(chunks_path, project_id, snapshot_id, commit_sha, index_path)
                 expected.update(version=2, chunks_schema_version=chunks.schema_version,
                                 chunks_sha256=self._sha256(chunks_path), chunk_count=len(chunks.chunks))
             if manifest != expected:
@@ -218,6 +219,7 @@ class SnapshotArtifactStore:
         index_relative, graph_relative = self.relative_paths(snapshot_id)
         return SnapshotArtifactBundle(
             index_path, graph_path, index_relative, graph_relative, summary, chunks_path,
+            binding=dict(project_id=str(project_id),snapshot_id=str(snapshot_id),commit_sha=commit_sha),
         )
 
     def read_chunks(self, project_id: UUID, snapshot: ProjectSnapshot) -> ChunkIndex | None:
@@ -246,6 +248,9 @@ class SnapshotArtifactStore:
         self, directory: Path, project_id: UUID, snapshot_id: UUID,
         commit_sha: str, summary: IndexSummary,
     ) -> None:
+        binding = SnapshotBinding(str(project_id),str(snapshot_id),commit_sha)
+        chunks = self._verify_chunks(directory / CHUNKS_FILE,project_id,snapshot_id,commit_sha,directory / INDEX_FILE) if (directory / CHUNKS_FILE).exists() else None
+        self._verify_artifacts(directory / INDEX_FILE,directory / GRAPH_FILE,binding=binding,chunks=chunks)
         manifest = {
             "version": 1,
             "project_id": str(project_id),
@@ -442,10 +447,14 @@ class SnapshotArtifactStore:
         return project_root
 
     @staticmethod
-    def _verify_artifacts(index_path: Path, graph_path: Path) -> IndexSummary:
+    def _verify_artifacts(index_path: Path, graph_path: Path, *, binding=None, chunks=None) -> IndexSummary:
         try:
             index = load_index(index_path)
             graph = load_graph(graph_path)
+            from pycode.graph_schema import validate_graph
+            validate_graph(graph,binding,chunks)
+            if graph.schema_version==2 and {f['path'] for f in graph.files}!={normalize_path(f.path) for f in index.files}:
+                raise ValueError('Graph and Index file sets differ')
         except (OSError, ValueError, UnicodeError, KeyError, TypeError, AttributeError) as exc:
             raise BackendError(
                 "artifacts_unavailable", "Snapshot artifacts are unavailable.",

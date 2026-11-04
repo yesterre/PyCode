@@ -26,11 +26,22 @@ def get_file_imported_by(graph: CodeGraph, file_path: str) -> list[GraphEdge]:
 
 def get_function_calls(graph: CodeGraph, function_id: str) -> list[GraphEdge]:
     """Return calls edges from the given function or method node."""
+    matches = find_definitions(graph,function_id)
+    if len(matches)==1:
+        function_id=matches[0].id
     return [
         edge
         for edge in graph.edges
-        if edge.source == function_id and edge.type == "calls"
+        if edge.source == function_id and edge.type in {"calls", "unresolved_call"}
     ]
+
+
+def find_definitions(graph: CodeGraph, selector: str) -> list[GraphNode]:
+    """Resolve an address exactly, or return ALL versioned duplicate addresses."""
+    exact=[n for n in graph.nodes if n.id==selector]
+    if exact or graph.schema_version==1:
+        return exact
+    return [n for n in graph.nodes if n.type in {'function','class','method'} and n.id.startswith(selector+'@')]
 
 
 def find_entry_candidates(graph: CodeGraph) -> list[GraphNode]:
@@ -110,7 +121,9 @@ class RetrievalGraph:
         adjacency, symbols = {}, {}
         for n in nodes.values():
             symbols.setdefault((n.path, n.name), []).append(n.id)
-        for e in sorted(graph.edges, key=lambda e: (e.source, e.target, e.type)):
+            if n.symbol_key is not None:
+                symbols.setdefault((n.path, n.symbol_key), []).append(n.id)
+        for e in sorted(graph.edges, key=lambda e: (e.source, e.target, e.type, e.site_id or '')):
             for current, other, direction in ((e.source, e.target, 'outgoing'), (e.target, e.source, 'incoming')):
                 adjacency.setdefault(current, []).append((other, e, direction))
         return cls(graph, nodes, adjacency, symbols)
@@ -138,6 +151,9 @@ class RetrievalGraph:
                 if edge.type not in {'imports','calls','contains'}:
                     unknown += 1
                     continue
+                if self.graph.schema_version==2 and edge.type=='calls' and edge.resolution!='static':
+                    unknown += 1
+                    continue
                 node = self.nodes.get(other)
                 if node is None or node.path is None:
                     unknown += 1
@@ -149,6 +165,9 @@ class RetrievalGraph:
                     break
                 visited.add(other)
                 step = {'source': edge.source, 'target': edge.target, 'relation': edge.type, 'direction': way}
+                if self.graph.schema_version==2:
+                    step.update({k:getattr(edge,k) for k in ('resolution','basis','site_id','path','start_line','end_line')
+                                 if getattr(edge,k) is not None})
                 new_path = (*path, step)
                 max_depth = max(max_depth, len(new_path))
                 hits.append((node, new_path))

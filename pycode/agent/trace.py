@@ -49,6 +49,7 @@ class ToolTrace:
     denied_by: str | None = None
     result_data: dict[str, Any] = field(default_factory=dict)
     retrieval: dict[str, Any] | None = None
+    graph: dict[str, Any] | None = None
     _started_counter: float = field(default_factory=perf_counter, repr=False)
 
     def finish(self, result: ToolResult) -> None:
@@ -61,6 +62,9 @@ class ToolTrace:
             # Keep the code-free metadata projection intact; generic trace
             # summaries intentionally truncate nested values and lose bindings.
             self.retrieval = result.data["retrieval"]
+        if (result.tool == 'query_graph' and isinstance(result.data.get('graph'),dict)
+                and result.data['graph'].get('graph_schema_version')==2):
+            self.graph = result.data['graph']
         self.denied_by = result.data.get("denied_by") if result.data.get("denied") else None
         if self.denied_by:
             self.status = "denied"
@@ -78,7 +82,7 @@ class ToolTrace:
         self.error = truncate_string(error, MAX_SUMMARY_CHARS) if error else None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        value = {
             "turn_index": self.turn_index,
             "tool": self.tool,
             "started_at": format_timestamp(self.started_at),
@@ -92,6 +96,9 @@ class ToolTrace:
             "result_data": self.result_data,
             "retrieval": self.retrieval,
         }
+        if self.graph is not None:
+            value['graph'] = self.graph
+        return value
 
 
 @dataclass

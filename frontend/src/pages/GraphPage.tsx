@@ -10,8 +10,14 @@ import { Badge, Button, Card, EmptyState, ErrorState, Field, inputClass, Section
 export function graphElements(graph: GraphResult): cytoscape.ElementDefinition[] {
   return [
     ...graph.nodes.map(node => ({data: {id: node.id, label: node.name, type: node.type, path: node.path}})),
-    ...graph.edges.map((edge, index) => ({data: {id: `edge-${index}`, source: edge.source, target: edge.target, type: edge.type}})),
+    ...graph.edges.map((edge, index) => ({data: {id: `edge-${index}`, source: edge.source, target: edge.target, type: edge.type,
+      resolution: edge.resolution ?? 'legacy', basis: edge.basis ?? 'legacy_graph_unverified'}})),
   ]
+}
+
+export function GraphKnowledgeSummary({graph}: {graph?: GraphResult}) {
+  return <><p className="text-sm text-slate-400">图中关系来自静态分析，不保证实际运行时调用。虚线调用表示目标尚未确认。</p>
+    {graph && (graph.graph_schema_version === 1 || (graph.graph_schema_version == null && graph.nodes.length > 0)) && <p role="status">旧版 Graph：保持可读，尚未获得新版作用域和调用点解析能力；不会自动原地升级。</p>}</>
 }
 
 function GraphCanvas({result}: {result: GraphResult}) {
@@ -29,6 +35,7 @@ function GraphCanvas({result}: {result: GraphResult}) {
         {selector: 'node[type = "external"]', style: {'background-color': '#fbbf24'}},
         {selector: 'edge', style: {width: 1.5, 'line-color': '#64748b', 'target-arrow-color': '#64748b',
           'target-arrow-shape': 'triangle', 'curve-style': 'bezier'}},
+        {selector: 'edge[type = "unresolved_call"]', style: {'line-style': 'dashed', 'line-color': '#fbbf24'}},
         {selector: ':selected', style: {'border-width': 3, 'border-color': '#ffffff'}},
       ]})
     graph.on('tap', 'node', event => {
@@ -37,7 +44,7 @@ function GraphCanvas({result}: {result: GraphResult}) {
     })
     return () => {graph.destroy()}
   }, [result])
-  return <div className="grid gap-4 lg:grid-cols-[1fr_240px]"><div ref={container} aria-label="代码图谱" className="h-[520px] rounded-lg border border-slate-700 bg-slate-950" /><aside className="rounded-lg border border-slate-700 bg-slate-950/70 p-4 text-sm"><h3 className="mb-4 font-semibold">已选节点</h3>{selected ? <div className="space-y-3 break-words"><Badge>{selected.type}</Badge><p className="font-medium">{selected.name}</p><p className="text-slate-400">{selected.path ?? '外部节点 / 无仓库路径'}</p><p className="font-mono text-xs text-slate-500">{selected.id}</p></div> : <p className="text-slate-400">选择节点后可查看详情。</p>}</aside></div>
+  return <div className="grid gap-4 lg:grid-cols-[1fr_240px]"><div ref={container} aria-label="代码图谱" className="h-[520px] rounded-lg border border-slate-700 bg-slate-950" /><aside className="rounded-lg border border-slate-700 bg-slate-950/70 p-4 text-sm"><h3 className="mb-4 font-semibold">已选节点</h3>{selected ? <div className="space-y-3 break-words"><Badge>{selected.type}</Badge><p className="font-medium">{selected.name}</p><p className="text-slate-400">{selected.path ?? '外部节点 / 无仓库路径'}</p>{selected.start_line != null && <p>定义行 {selected.start_line}–{selected.end_line}</p>}<p className="font-mono text-xs text-slate-500">{selected.id}</p></div> : <p className="text-slate-400">选择节点后可查看详情。</p>}</aside></div>
 }
 
 export function GraphPage() {
@@ -58,6 +65,7 @@ export function GraphPage() {
   }
   return <main className="space-y-6"><Link to={`/projects/${projectId}`} className="text-sm text-cyan-300">← 返回项目</Link>
     <SectionHeading title="代码图谱" subtitle="搜索符号或文件，查看有限范围内的局部关系图。" />
+    <GraphKnowledgeSummary graph={graph.data} />
     {project.isLoading && <Spinner label="正在加载项目…" />}{project.error && <ErrorState error={project.error} />}
     {project.data && !snapshotId && <EmptyState title="暂无代码图谱" detail="请先构建仓库索引并生成当前快照。" />}
     {snapshotId && <><Card><form onSubmit={submit} className="grid gap-4 sm:grid-cols-[160px_1fr_170px_auto] sm:items-end">

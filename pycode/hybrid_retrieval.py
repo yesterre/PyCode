@@ -4,11 +4,12 @@ import math
 
 from pycode.query import RetrievalGraph
 from pycode.retrieval_evidence import SourceScore
+from pycode.utils import normalize_path
 
 
 def identity(spec):
     path, _, _, _, span, _ = spec
-    return (path, span.symbol_start_line if span else 0,
+    return (normalize_path(path), span.symbol_start_line if span else 0,
             span.symbol_end_line if span else 0, span.symbol_key if span else '')
 
 
@@ -22,19 +23,24 @@ def fuse(keyword, vector, context):
             view = RetrievalGraph.create(context.graph)
         for spec in [*keyword[:4], *vector[:4]]:
             path, _, _, _, span, _ = spec
-            nodes = view.symbols.get((path, span.qualified_name), ()) if span else ()
+            path = normalize_path(path)
+            key = span.symbol_key if span and context.graph.schema_version==2 else span.qualified_name if span else None
+            nodes = view.symbols.get((path, key), ()) if span else ()
             seeds.extend(nodes[:1] or ([f'file:{path}'] if f'file:{path}' in view.nodes else []))
         hits, stats = view.expand(seeds, depth=context.graph_depth, node_limit=context.graph_nodes,
                                   edge_limit=context.graph_edge_checks, direction=context.graph_direction)
         spans = {}
+        exact_spans = {}
         for c in context.chunks.chunks if context.chunks else ():
             spans.setdefault((c.path, c.span.qualified_name), {})[c.span.symbol_key] = c.span
-        known_paths = {f.path for f in context.index.files}
+            exact_spans.setdefault((c.path,c.span.symbol_key), c.span)
+        known_paths = {normalize_path(f.path) for f in context.index.files}
         for node, relation_path in hits:
             if node.path not in known_paths:
                 continue
             choices = spans.get((node.path, node.name), {})
-            span = next(iter(choices.values())) if len(choices) == 1 else None
+            span = (exact_spans.get((node.path,node.symbol_key)) if context.graph.schema_version==2
+                    else next(iter(choices.values())) if len(choices) == 1 else None)
             role = 'call_hint' if relation_path[-1]['relation'] == 'calls' else 'dependency'
             spec = (node.path, 'graph', 'stored_static_relation_unverified', 1 / len(relation_path), span, role)
             key = identity(spec)

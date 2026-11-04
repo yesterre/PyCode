@@ -69,6 +69,12 @@ class GraphStepResponse(BaseModel):
     target: str
     relation: str
     direction: Literal['incoming','outgoing']
+    resolution: str | None = None
+    basis: str | None = None
+    site_id: str | None = None
+    path: str | None = None
+    start_line: int | None = None
+    end_line: int | None = None
 
 
 class EvidencePackResponse(BaseModel):
@@ -115,6 +121,7 @@ class RetrievalSummaryResponse(BaseModel):
     mode: Literal['keyword','vector','hybrid'] = 'keyword'
     pack: EvidencePackResponse | None = None
     graph_stats: dict | None = None
+    graph_schema_version: int | None = None
 
 
 class AnalysisResponse(BaseModel):

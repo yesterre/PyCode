@@ -44,12 +44,14 @@ class FileInfo:
     # Build-only data, deliberately excluded from the legacy Index JSON.
     source_text: str | None = field(default=None, compare=False, repr=False)
     chunk_spans: list[ChunkSpan] = field(default_factory=list, compare=False, repr=False)
+    structure: dict | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass
 class ProjectIndex:
     project_path: str
     files: list[FileInfo] = field(default_factory=list)
+    structure_version: int | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass
@@ -58,6 +60,10 @@ class GraphNode:
     type: str
     name: str
     path: str | None = None
+    symbol_key: str | None = None
+    parent_id: str | None = None
+    start_line: int | None = None
+    end_line: int | None = None
 
 
 @dataclass
@@ -65,6 +71,12 @@ class GraphEdge:
     source: str
     target: str
     type: str
+    site_id: str | None = None
+    path: str | None = None
+    start_line: int | None = None
+    end_line: int | None = None
+    resolution: str | None = None
+    basis: str | None = None
 
 
 @dataclass
@@ -72,3 +84,11 @@ class CodeGraph:
     project_path: str
     nodes: list[GraphNode] = field(default_factory=list)
     edges: list[GraphEdge] = field(default_factory=list)
+    schema_version: int = 1
+    binding: dict | None = None
+    capabilities: tuple[str, ...] = ()
+    files: list[dict] = field(default_factory=list)
+    scopes: list[dict] = field(default_factory=list)
+    call_sites: list[dict] = field(default_factory=list)
+    import_declarations: list[dict] = field(default_factory=list)
+    producer: str | None = None

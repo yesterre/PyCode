@@ -27,7 +27,7 @@ def retrieve(request: RetrievalRequest, context: RetrievalContext) -> RetrievalR
     if intent not in {"general", "explain", "impact", "onboard", "entry", "dependency"}:
         raise ValueError("Unsupported retrieval intent.")
     graph = context.graph
-    paths = {file.path for file in context.index.files}
+    paths = {normalize_path(file.path) for file in context.index.files}
     target = query.target or _best_file_match(query.text, context.index)
     structured_intent = intent in {"entry", "onboard"} or (
         intent in {"impact", "dependency", "explain"}
@@ -111,6 +111,8 @@ def retrieve(request: RetrievalRequest, context: RetrievalContext) -> RetrievalR
 
 def _pack(result, context, limit, started):
     from dataclasses import replace
+    if context.graph is not None and context.graph.schema_version==2:
+        result = replace(result, graph_schema_version=2)
     result = build_pack(result, context.token_budget, limit)
     diagnostics = list(result.diagnostics)
     if dict(result.pack.reason_counts).get('token_budget'):
@@ -126,7 +128,7 @@ def _hybrid(request, context, intent, started):
     query = request.query
     diagnostics = list(context.diagnostics)
     keyword = _lexical_candidates(query.text, context)
-    paths = {f.path for f in context.index.files}
+    paths = {normalize_path(f.path) for f in context.index.files}
     if query.target:
         keyword = [(query.target, 'exact_path', 'explicit_target', 100., None, 'definition')] if query.target in paths else []
         if query.target not in paths:
@@ -161,8 +163,8 @@ def _hybrid(request, context, intent, started):
 def _lexical_candidates(question: str, context: RetrievalContext) -> list:
     tokens = _tokens(question)
     sources = dict(context.sources)
-    exact_paths = [file.path for file in context.index.files
-                   if _mentions(normalize_path(question), file.path)]
+    exact_paths = [normalize_path(file.path) for file in context.index.files
+                   if _mentions(normalize_path(question), normalize_path(file.path))]
     symbols = {}
     for chunk in context.chunks.chunks if context.chunks else []:
         if chunk.span.symbol_kind != "module":
@@ -178,19 +180,20 @@ def _lexical_candidates(question: str, context: RetrievalContext) -> list:
         return [(path, "exact_path", "exact_path_match", 100.0, None, "definition") for path in sorted(exact_paths)]
     scored = []
     for file in context.index.files:
-        metadata = " ".join([file.path, *file.imports, *file.functions,
+        path = normalize_path(file.path)
+        metadata = " ".join([path, *file.imports, *file.functions,
                              *(c.name for c in file.classes), *(m for c in file.classes for m in c.methods)]).lower()
-        text = sources.get(file.path, "").lower()
+        text = sources.get(path, "").lower()
         file_score = sum(token in metadata for token in tokens)
         file_symbols = [(span, sum(token in "\n".join(
             text.split("\n")[span.symbol_start_line - 1:span.symbol_end_line]) for token in tokens))
-            for (path, _), span in symbols.items() if path == file.path]
+            for (symbol_path, _), span in symbols.items() if symbol_path == path]
         matches = [(span, score) for span, score in file_symbols if score]
         if matches:
             for span, score in matches:
-                scored.append((file_score + score, file.path, span))
+                scored.append((file_score + score, path, span))
         elif file_score or any(token in text for token in tokens):
-            scored.append((file_score + sum(token in text for token in tokens), file.path, None))
+            scored.append((file_score + sum(token in text for token in tokens), path, None))
     return [(path, "keyword", "lexical_metadata_or_code_match", float(score), span, "definition")
             for score, path, span in sorted(scored, key=lambda v: (-v[0], v[1], v[2].symbol_start_line if v[2] else 0))]
 
@@ -212,10 +215,11 @@ def _detect_intent(question: str) -> str:
 
 def _best_file_match(question: str, index: ProjectIndex) -> str | None:
     question = normalize_path(question)
-    matches = [file.path for file in index.files if _mentions(question, file.path)]
+    paths = [normalize_path(file.path) for file in index.files]
+    matches = [path for path in paths if _mentions(question, path)]
     if len(matches) == 1:
         return matches[0]
-    names = [file.path for file in index.files if _mentions(question, file.path.rsplit("/", 1)[-1])]
+    names = [path for path in paths if _mentions(question, path.rsplit("/", 1)[-1])]
     return names[0] if len(names) == 1 else None
 
 

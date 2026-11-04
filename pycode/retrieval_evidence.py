@@ -89,6 +89,7 @@ class RetrievalResult:
     mode: str = "keyword"
     pack: object | None = None
     graph_stats: dict | None = None
+    graph_schema_version: int | None = None
 
     @property
     def evidence(self) -> list[str]:
@@ -98,7 +99,7 @@ class RetrievalResult:
         )
 
     def summary(self) -> dict:
-        return {
+        value = {
             "strategy": self.intent,
             "binding": asdict(self.binding) if self.binding else None,
             "status": self.status,
@@ -110,6 +111,9 @@ class RetrievalResult:
             "pack": self.pack.summary() if self.pack else None,
             "graph_stats": self.graph_stats,
         }
+        if self.graph_schema_version is not None:
+            value['graph_schema_version'] = self.graph_schema_version
+        return value
 
 
 def safe_relative(path: str) -> str:
@@ -189,6 +193,9 @@ class RetrievalContext:
                     sources.append((path, safe_read_text(source)))
                 except (OSError, UnicodeError):
                     diagnostics.append("source_unavailable")
+        if graph is not None:
+            from pycode.graph_schema import validate_graph
+            validate_graph(graph, binding, chunks)
         return cls(root, index, graph, binding, chunks, tuple(sources),
                    tuple(dedupe_preserve_order(diagnostics)))
 

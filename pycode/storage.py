@@ -52,10 +52,11 @@ def load_index(index_path: Path) -> ProjectIndex:
 
 def save_graph(graph: CodeGraph, output_path: Path) -> None:
     """Save a code graph as a readable JSON file."""
+    from pycode.graph_schema import graph_to_dict
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps(asdict(graph), ensure_ascii=False, indent=2),
+        json.dumps(graph_to_dict(graph), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
@@ -111,25 +112,5 @@ def _call_info_from_dict(data: dict[str, Any]) -> CallInfo:
 
 
 def _code_graph_from_dict(data: dict[str, Any]) -> CodeGraph:
-    return CodeGraph(
-        project_path=data["project_path"],
-        nodes=[_graph_node_from_dict(node_data) for node_data in data.get("nodes", [])],
-        edges=[_graph_edge_from_dict(edge_data) for edge_data in data.get("edges", [])],
-    )
-
-
-def _graph_node_from_dict(data: dict[str, Any]) -> GraphNode:
-    return GraphNode(
-        id=data["id"],
-        type=data["type"],
-        name=data["name"],
-        path=data.get("path"),
-    )
-
-
-def _graph_edge_from_dict(data: dict[str, Any]) -> GraphEdge:
-    return GraphEdge(
-        source=data["source"],
-        target=data["target"],
-        type=data["type"],
-    )
+    from pycode.graph_schema import graph_from_dict
+    return graph_from_dict(data)

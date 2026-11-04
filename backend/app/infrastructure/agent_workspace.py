@@ -39,6 +39,12 @@ class AgentSnapshotWorkspace:
             shutil.copyfile(bundle.graph_path, temporary_graph)
             index = load_index(temporary_index)
             graph = load_graph(temporary_graph)
+            if graph.schema_version==2:
+                from pycode.chunks import SnapshotBinding
+                from pycode.graph_schema import validate_graph
+                if bundle.binding is None:
+                    raise ValueError('Missing trusted Graph bundle identity')
+                validate_graph(graph,SnapshotBinding(**bundle.binding))
             if (
                 len(index.files) != bundle.summary.file_count
                 or len(graph.nodes) != bundle.summary.node_count

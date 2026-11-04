@@ -8,6 +8,7 @@ from pycode.chunks import collect_chunk_spans
 def parse_python_file(
     file_path: Path, project_path: Path | None = None, *,
     include_chunk_metadata: bool = False,
+    include_graph_metadata: bool = False,
 ) -> FileInfo:
     """Parse a Python file and return its basic structure information."""
     path = Path(file_path)
@@ -57,7 +58,13 @@ def parse_python_file(
         has_main_guard=has_main_guard,
         source_text=source if include_chunk_metadata else None,
         chunk_spans=collect_chunk_spans(tree, source) if include_chunk_metadata else [],
+        structure=_structure(tree, source, display_path) if include_graph_metadata else None,
     )
+
+
+def _structure(tree, source, path):
+    from pycode.structure import collect_structure
+    return collect_structure(tree, source, path)
 
 
 def _parse_class(node: ast.ClassDef) -> ClassInfo:

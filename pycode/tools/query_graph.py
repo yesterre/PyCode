@@ -11,6 +11,7 @@ from pycode.query import (
     get_target_nodes,
 )
 from pycode.storage import load_graph
+from pycode.graph_schema import graph_info, public_sites, node_data, edge_data
 from pycode.tools.base import ToolContext, failure, success
 
 
@@ -41,6 +42,20 @@ def query_code_graph(
             return failure("query_graph", "Graph file cannot be loaded.", str(exc))
 
     result = _query_graph(graph, query_type, target)
+    result.data.update(graph_info(graph))
+    ids = {n['id'] for n in result.data.get('nodes',[])}
+    if target:
+        ids.add(target)
+    sites, omitted = public_sites(graph,ids)
+    result.data.update(call_sites=sites,call_sites_omitted=omitted)
+    metadata = {'graph_schema_version':graph.schema_version,
+                'graph_capabilities':list(graph.capabilities) if graph.schema_version==2 else ['legacy_structure'],
+                'binding':asdict(trusted.binding) if trusted is not None and trusted.binding else graph.binding}
+    if graph.schema_version==2:
+        metadata.update(call_sites_count=len(graph.call_sites),
+                        unknown_count=sum(s['resolution']=='unknown' for s in graph.call_sites),
+                        ambiguous_count=sum(s['resolution']=='ambiguous' for s in graph.call_sites))
+    result.data['graph'] = metadata
     if trusted is not None:
         result.data["binding"] = asdict(trusted.binding) if trusted.binding else None
         result.data["relation_status"] = "stored_static_resolution_unverified"
@@ -68,6 +83,12 @@ def _query_graph(graph, query_type, target):
     if query_type == "calls":
         if target is None:
             return failure("query_graph", "Missing query target.", "calls requires target")
+        from pycode.query import find_definitions
+        matches=find_definitions(graph,target)
+        if len(matches)>1:
+            return success('query_graph','Symbol address is ambiguous.',query_type=query_type,target=target,
+                           nodes=[_node_data(n) for n in matches[:8]],edges=[],resolution='ambiguous',
+                           candidate_count=len(matches),candidates_omitted=max(0,len(matches)-8))
         edges = get_function_calls(graph, target)
         nodes = get_target_nodes(graph, edges)
         return _edge_result("calls", target, edges, nodes)
@@ -90,9 +111,13 @@ def _query_graph(graph, query_type, target):
 
 
 def _edge_result(query_type, target, edges, nodes):
+    unresolved=sum(edge.type=='unresolved_call' for edge in edges)
+    summary=f"Found {len(edges)} {query_type} edges."
+    if unresolved:
+        summary+=f' {unresolved} call targets remain unknown or ambiguous.'
     return success(
         "query_graph",
-        f"Found {len(edges)} {query_type} edges.",
+        summary,
         query_type=query_type,
         target=target,
         edges=[_edge_data(edge) for edge in edges],
@@ -101,8 +126,8 @@ def _edge_result(query_type, target, edges, nodes):
 
 
 def _edge_data(edge):
-    return {"source": edge.source, "target": edge.target, "type": edge.type}
+    return edge_data(edge,details=edge.resolution is not None)
 
 
 def _node_data(node):
-    return {"id": node.id, "type": node.type, "name": node.name, "path": node.path}
+    return node_data(node,details=node.symbol_key is not None)

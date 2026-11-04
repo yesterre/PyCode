@@ -1,6 +1,7 @@
 """Synchronous Python entry point, independent of CLI and presentation layers."""
 
 from dataclasses import dataclass
+from inspect import Parameter, signature
 from pathlib import Path
 
 from pycode.agent import AgentResult, run_agent_task
@@ -52,13 +53,16 @@ class PyCodeEngine:
 
     def build_index(
         self, project_path: str | Path, *, include_chunk_metadata: bool = False,
+        include_graph_metadata: bool = False,
     ) -> ProjectIndex:
         """Scan and parse without writing files."""
         root = Path(project_path)
         return ProjectIndex(
             project_path=str(root),
-            files=[parse_python_file(path, root, include_chunk_metadata=include_chunk_metadata)
+            files=[parse_python_file(path, root, include_chunk_metadata=include_chunk_metadata,
+                                     include_graph_metadata=include_graph_metadata)
                    for path in scan_python_files(root)],
+            structure_version=2 if include_graph_metadata else None,
         )
 
     def index(
@@ -71,33 +75,48 @@ class PyCodeEngine:
         if (chunk_output_path is None) != (binding is None):
             raise ValueError("Chunk output and Snapshot binding must be supplied together.")
         root = Path(project_path)
-        result = self.build_index(root, include_chunk_metadata=chunk_output_path is not None)
+        result = self.build_index(root, include_chunk_metadata=chunk_output_path is not None,
+                                  **self._graph_metadata_kwargs(graph_output_path is not None and binding is not None))
         destination = (
             Path(output_path) if output_path is not None
             else root / DEFAULT_ARTIFACT_DIR / DEFAULT_INDEX_FILE
         )
         save_index(result, destination)
         if graph_output_path is not None:
-            self.graph(root, output_path=graph_output_path, index=result)
+            self.graph(root, output_path=graph_output_path, index=result, binding=binding)
         if chunk_output_path is not None:
             save_chunk_index(build_chunk_index(result, binding), Path(chunk_output_path))
         return result
 
     def graph(
         self, project_path: str | Path, output_path: str | Path | None = None,
-        *, index: ProjectIndex | None = None,
+        *, index: ProjectIndex | None = None, binding: SnapshotBinding | None = None,
+        include_graph_metadata: bool = False,
     ) -> CodeGraph:
         """Scan current sources and save only the graph, without requiring an index file."""
         root = Path(project_path)
         if index is not None and Path(index.project_path).resolve() != root.resolve():
             raise ValueError("Graph Index belongs to another project root.")
-        result = build_code_graph(index if index is not None else self.build_index(root))
+        result = build_code_graph(index if index is not None else self.build_index(root, **self._graph_metadata_kwargs(include_graph_metadata or binding is not None)),
+                                  binding=binding)
         destination = (
             Path(output_path) if output_path is not None
             else root / DEFAULT_ARTIFACT_DIR / DEFAULT_GRAPH_FILE
         )
         save_graph(result, destination)
         return result
+
+    def _graph_metadata_kwargs(self, requested: bool) -> dict:
+        """Legacy build_index overrides keep their explicit legacy capability.
+
+        Never retry a failed parse or rebuild sources to emulate missing facts.
+        """
+        if not requested:
+            return {}
+        parameters = signature(self.build_index).parameters
+        accepts = 'include_graph_metadata' in parameters or any(
+            p.kind == Parameter.VAR_KEYWORD for p in parameters.values())
+        return {'include_graph_metadata': True} if accepts else {}
 
     def query(
         self, project_path: str | Path, query_type: str,

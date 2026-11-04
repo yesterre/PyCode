@@ -85,7 +85,7 @@ def get_snapshot(project_id: UUID, snapshot_id: UUID, user: CurrentUser, service
                                   semantic_index=service.semantics.describe(snapshot))
 
 
-@router.get("/{project_id}/snapshots/{snapshot_id}/graph", response_model=GraphResponse)
+@router.get("/{project_id}/snapshots/{snapshot_id}/graph", response_model=GraphResponse, response_model_exclude_unset=True)
 def get_graph(project_id: UUID, snapshot_id: UUID, user: CurrentUser, service: Service,
               q: Annotated[str | None, Query(max_length=200)] = None,
               file_path: Annotated[str | None, Query(max_length=512)] = None,

@@ -5,6 +5,7 @@ from uuid import UUID
 from backend.app.core.errors import BackendError
 from pycode.models import CodeGraph
 from pycode.storage import load_graph
+from pycode.graph_schema import graph_info, node_data, edge_data, public_sites
 
 
 def _safe_path(path: str | None) -> bool:
@@ -34,6 +35,8 @@ def local_graph(graph: CodeGraph, snapshot_id: UUID, *, q: str | None,
     selected = {node.id for node in seeds[:min(10, limit)]}
     truncated = len(seeds) > min(10, limit)
     if not selected:
+        # Preserve the exact established empty-query response. No graph facts
+        # were selected, so absence of metadata must not imply any capability.
         return {"snapshot_id": snapshot_id, "nodes": [], "edges": [], "truncated": False}
     neighbors = sorted({edge.target if edge.source in selected else edge.source
                         for edge in graph.edges
@@ -49,11 +52,11 @@ def local_graph(graph: CodeGraph, snapshot_id: UUID, *, q: str | None,
                       key=lambda edge: (edge.source, edge.target, edge.type))
     edge_limit = limit * 2
     truncated = truncated or len(relevant) > edge_limit
+    sites, omitted = public_sites(graph,selected,min(200,edge_limit))
     return {
         "snapshot_id": snapshot_id,
-        "nodes": [{"id": node.id, "type": node.type, "name": node.name,
-                   "path": node.path} for node in ordered_nodes],
-        "edges": [{"source": edge.source, "target": edge.target,
-                   "type": edge.type} for edge in relevant[:edge_limit]],
+        "nodes": [node_data(node,details=graph.schema_version==2) for node in ordered_nodes],
+        "edges": [edge_data(edge,details=graph.schema_version==2) for edge in relevant[:edge_limit]],
         "truncated": truncated,
+        **graph_info(graph), 'call_sites':sites, 'call_sites_omitted':omitted,
     }

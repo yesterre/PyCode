@@ -28,8 +28,11 @@ export type RetrievalSummary = {
   references: {path: string | null; symbol: string | null; start_line: number | null;
     end_line: number | null; chunk_ids: string[]; source: RetrievalSource; score: number;
     reason: string; role: string; coverage: string; diagnostics: string[]; source_scores?: SourceScore[];
-    graph_path?: {source: string; target: string; relation: string; direction: 'incoming' | 'outgoing'}[]}[];
-  mode?: 'keyword' | 'vector' | 'hybrid'; pack?: EvidencePack | null; graph_stats?: Record<string, number | boolean> | null
+    graph_path?: {source: string; target: string; relation: string; direction: 'incoming' | 'outgoing';
+      resolution?: string | null; basis?: string | null; site_id?: string | null; path?: string | null;
+      start_line?: number | null; end_line?: number | null}[]}[];
+  mode?: 'keyword' | 'vector' | 'hybrid'; pack?: EvidencePack | null; graph_stats?: Record<string, number | boolean> | null;
+  graph_schema_version?: number | null
 }
 export type Analysis = { project_id: string; answer: string; intent: string; evidence: string[];
   retrieval?: RetrievalSummary | null }
@@ -50,6 +53,11 @@ export type TraceEvent = {
   tool_name: string | null; payload: Record<string, unknown>
 }
 export type TraceHistory = { run_id: string; events: TraceEvent[] }
-export type GraphNode = { id: string; type: string; name: string; path: string | null }
-export type GraphEdge = { source: string; target: string; type: string }
-export type GraphResult = { snapshot_id: string; nodes: GraphNode[]; edges: GraphEdge[]; truncated: boolean }
+export type GraphNode = { id: string; type: string; name: string; path: string | null;
+  symbol_key?: string | null; parent_id?: string | null; start_line?: number | null; end_line?: number | null }
+export type GraphEdge = { source: string; target: string; type: string; resolution?: string | null;
+  basis?: string | null; site_id?: string | null; path?: string | null; start_line?: number | null; end_line?: number | null }
+export type GraphResult = { snapshot_id: string; nodes: GraphNode[]; edges: GraphEdge[]; truncated: boolean;
+  graph_schema_version?: number; graph_capabilities?: string[]; graph_warnings?: string[];
+  call_sites?: {id: string; path: string; caller_id: string; start_line: number; end_line: number;
+    resolution: string; basis: string; target_id: string | null; candidate_count: number}[]; call_sites_omitted?: number }

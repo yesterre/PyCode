@@ -183,7 +183,7 @@ def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, 
         ApplicationEventType.TOOL_STARTED: {"turn_index", "arguments", "reason"},
         ApplicationEventType.TOOL_FINISHED: {
             "outcome", "duration_ms", "summary", "error", "denied_by", "result_summary",
-            "retrieval",
+            "retrieval", "graph",
         },
         ApplicationEventType.RUN_COMPLETED: {
             "stop_reason", "has_result", "trace_complete", "duration_ms",
@@ -262,6 +262,8 @@ def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, 
         if "retrieval" in payload and (not isinstance(payload["retrieval"], dict)
                                       or public_retrieval_summary(payload["retrieval"]) != payload["retrieval"]):
             raise ValueError("Invalid public retrieval summary.")
+        if 'graph' in payload and (not isinstance(payload['graph'],dict) or public_graph_summary(payload['graph']) != payload['graph']):
+            raise ValueError('Invalid public Graph summary.')
     elif event_type == ApplicationEventType.RUN_COMPLETED:
         _require_nonempty_string(payload["stop_reason"], "stop_reason")
         _require_bool(payload["has_result"], "has_result")
@@ -283,6 +285,33 @@ def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, 
         raise ValueError("Application Trace payload is not JSON serializable.") from exc
     if len(encoded) > MAX_PUBLIC_PAYLOAD_BYTES:
         raise ValueError("Application Trace payload exceeds the public size limit.")
+
+
+def public_graph_summary(value: Any) -> dict | None:
+    """Code-free Graph Tool metadata, shared by live/final/replayed events."""
+    from uuid import UUID
+    if not isinstance(value,dict) or type(value.get('graph_schema_version')) is not int or value['graph_schema_version'] not in {1,2}:
+        return None
+    capabilities=value.get('graph_capabilities')
+    allowed={'legacy_structure','lexical_scopes','call_sites','import_declarations','same_module_direct_calls'}
+    if not isinstance(capabilities,list) or len(capabilities)>8 or any(not isinstance(c,str) or c not in allowed for c in capabilities):
+        return None
+    binding=value.get('binding')
+    if binding is not None:
+        try:
+            commit=binding['commit_sha']
+            if not isinstance(commit,str) or re.fullmatch('[0-9a-f]{40,64}',commit) is None:
+                return None
+            binding={k:str(UUID(binding[k])) for k in ('project_id','snapshot_id')} | {'commit_sha':commit}
+        except (KeyError,TypeError,ValueError,AttributeError):
+            return None
+    result={'graph_schema_version':value['graph_schema_version'],'graph_capabilities':capabilities,'binding':binding}
+    if value['graph_schema_version']==2:
+        counts={k:value.get(k) for k in ('call_sites_count','unknown_count','ambiguous_count')}
+        if any(type(v) is not int or v<0 for v in counts.values()) or counts['unknown_count']+counts['ambiguous_count']>counts['call_sites_count']:
+            return None
+        result.update(counts)
+    return result
 
 
 def public_retrieval_summary(value: Any) -> dict | None:
@@ -357,6 +386,19 @@ def public_retrieval_summary(value: Any) -> dict | None:
             return None
         if distance:
             references[-1].update(graph_distance=distance, relation_confidence='static_unverified')
+            if value.get('graph_schema_version')==2 or 'relation_resolution' in reference:
+                steps=reference.get('graph_path')
+                resolution=reference.get('relation_resolution')
+                if isinstance(steps,list):
+                    if any(not isinstance(s,dict) or s.get('resolution','legacy') not in ('legacy','static','declaration') for s in steps):
+                        return None
+                    states={s.get('resolution','legacy') for s in steps}
+                    if not states.issubset({'legacy','static','declaration'}):
+                        return None
+                    resolution='legacy' if 'legacy' in states else 'declaration' if 'declaration' in states else 'static'
+                if resolution not in {'legacy','static','declaration'}:
+                    return None
+                references[-1]['relation_resolution']=resolution
     omitted = value.get("references_omitted", 0)
     if type(omitted) is not int or omitted < 0:
         return None
@@ -366,6 +408,10 @@ def public_retrieval_summary(value: Any) -> dict | None:
     result = {"strategy": strategy, "status": status, "binding": binding, "duration_ms": duration,
             "evidence_count": count, "diagnostics": diagnostics[:20], "references": references,
             "references_omitted": omitted + max(0, len(refs) - 6)}
+    if value.get('graph_schema_version') is not None:
+        if type(value['graph_schema_version']) is not int or value['graph_schema_version'] not in {1,2}:
+            return None
+        result['graph_schema_version']=value['graph_schema_version']
     if 'mode' in value:
         if value['mode'] not in {'keyword','vector','hybrid'}:
             return None
@@ -799,6 +845,10 @@ class ApplicationTraceNormalizer:
             retrieval = public_retrieval_summary(getattr(tool, "retrieval", None))
             if retrieval is not None:
                 payload["retrieval"] = retrieval
+        if str(getattr(tool,'tool',''))=='query_graph':
+            graph=public_graph_summary(getattr(tool,'graph',None))
+            if graph is not None:
+                payload['graph']=graph
         if outcome != "success":
             category = "policy_denied" if outcome == "denied" else "tool_error"
             payload["error"] = normalize_error(category).to_dict()
