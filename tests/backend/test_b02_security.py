@@ -7,7 +7,7 @@ import pytest
 from backend.app.auth import AUDIENCE, ISSUER, TokenCodec, hash_password, verify_password
 from backend.app.config import AuthSettings
 from backend.app.core.errors import BackendError
-from backend.app.schemas.auth import RegisterRequest, TokenResponse
+from backend.app.schemas.auth import LoginRequest, RegisterRequest, TokenResponse
 
 
 JWT_SECRET = "b02-tests-only-random-key-material-" * 2
@@ -40,6 +40,48 @@ def test_whitespace_and_unicode_passwords_are_not_trimmed_or_truncated():
     assert verify_password(password, encoded)
     assert not verify_password(password.strip(), encoded)
     assert not verify_password(password + "extra", encoded)
+
+
+@pytest.mark.parametrize("password", [
+    pytest.param("123456", id="six-digits"),
+    pytest.param("abcdef", id="six-letters-no-uppercase-digits-or-symbols"),
+    pytest.param("abc123", id="letters-and-digits"),
+    pytest.param("a" * 7, id="seven"),
+    pytest.param("a" * 15, id="fifteen"),
+    pytest.param("a" * 128, id="maximum"),
+    pytest.param(" abCd ", id="preserve-case-and-spaces"),
+    pytest.param("      ", id="spaces-only"),
+    pytest.param("密码无需转换", id="six-unicode-characters"),
+])
+def test_registration_and_hashing_accept_the_same_passwords_unchanged(password):
+    request = RegisterRequest(account_name="alice", password=password)
+    assert request.password.get_secret_value() == password
+    encoded = hash_password(password)
+    assert encoded.startswith("$argon2id$v=19$m=65536,t=3,p=1$")
+    assert verify_password(password, encoded)
+    assert not verify_password(password + "x", encoded)
+    if password.strip() != password:
+        assert not verify_password(password.strip(), encoded)
+    if password.lower() != password:
+        assert not verify_password(password.lower(), encoded)
+
+
+@pytest.mark.parametrize("password", [
+    pytest.param("abcde", id="five"),
+    pytest.param("x" * 129, id="over-maximum"),
+    pytest.param("ab\ud800cde", id="invalid-utf8"),
+])
+def test_registration_and_hashing_reject_the_same_invalid_passwords(password):
+    for validate in (lambda value: RegisterRequest(account_name="alice", password=value), hash_password):
+        with pytest.raises(ValueError) as failure:
+            validate(password)
+        assert password not in str(failure.value)
+
+
+@pytest.mark.parametrize("password", ["x", "abcde", "x" * 128], ids=["one", "five", "maximum"])
+def test_login_keeps_its_legacy_minimum_and_original_password(password):
+    request = LoginRequest(account_name="alice", password=password)
+    assert request.password.get_secret_value() == password
 
 
 def test_bearer_claims_round_trip_and_sensitive_reprs_are_hidden():

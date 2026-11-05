@@ -4,7 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
-from backend.app.auth import validate_password
+from backend.app.auth import MIN_REGISTER_PASSWORD_LENGTH, validate_password
 from backend.app.core.errors import BackendError
 from backend.app.core.models import UserStatus, normalize_account_name
 from backend.app.schemas.projects import RequestModel
@@ -31,7 +31,7 @@ class LoginRequest(RequestModel):
 
 
 class RegisterRequest(LoginRequest):
-    minimum_password_length: ClassVar[int] = 15
+    minimum_password_length: ClassVar[int] = MIN_REGISTER_PASSWORD_LENGTH
 
 
 class UserResponse(BaseModel):

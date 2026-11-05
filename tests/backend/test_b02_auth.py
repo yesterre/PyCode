@@ -92,11 +92,67 @@ def test_duplicate_registration_is_normalized_and_does_not_replace_password(auth
     assert_unauthenticated(login(auth_context, password="a completely different password"))
 
 
+@pytest.mark.parametrize("password", [
+    pytest.param("123456", id="six-digits"),
+    pytest.param("abcdef", id="six-letters"),
+    pytest.param("abc123", id="letters-and-digits"),
+    pytest.param("a" * 7, id="seven"),
+    pytest.param("a" * 15, id="fifteen"),
+    pytest.param("a" * 128, id="maximum"),
+    pytest.param(" abCd ", id="preserve-case-and-spaces"),
+    pytest.param("密码无需转换", id="six-unicode-characters"),
+])
+def test_new_password_boundaries_register_login_and_me(auth_context, password):
+    created = register(auth_context, password=password)
+    assert created.status_code == 201, created.text
+    user_id = UUID(created.json()["id"])
+    with auth_context.uow_factory() as uow, uow.transaction():
+        stored_hash = uow.users.get(user_id).password_hash
+        assert stored_hash.startswith("$argon2id$v=19$m=65536,t=3,p=1$")
+        assert password not in stored_hash
+        assert verify_password(password, stored_hash)
+    authenticated = login(auth_context, password=password)
+    assert authenticated.status_code == 200, authenticated.text
+    current = auth_context.client.get(
+        "/api/v1/auth/me", headers={"Authorization": "Bearer " + authenticated.json()["access_token"]},
+    )
+    assert current.status_code == 200 and current.json() == created.json()
+    assert stored_hash not in created.text + authenticated.text + current.text
+    assert_unauthenticated(login(auth_context, password="!" + password[1:]))
+    if password.strip() != password:
+        assert_unauthenticated(login(auth_context, password=password.strip()))
+        assert_unauthenticated(login(auth_context, password=password.lower()))
+
+
+@pytest.mark.parametrize("password,encoded_hash", [
+    pytest.param(
+        "x",
+        "$argon2id$v=19$m=65536,t=3,p=1$CJ/5pTdvc8EubEF0ReBn/g$M/cnjozo4U50UHjl0p2gr49CPoljQHHT3LslJESnOJ8",
+        id="legacy-one-character",
+    ),
+    pytest.param(
+        "preexisting test password",
+        "$argon2id$v=19$m=65536,t=3,p=1$k5cwiCJx9eUe01qV3cLAsg$5W+uWsHmJSuNkwgYZ2gd+5aTMoPCUhbUC+1D6zMg7V4",
+        id="existing-long-password",
+    ),
+])
+def test_existing_hash_login_and_me_do_not_rehash_or_change_stored_password(auth_context, password, encoded_hash):
+    user = seed_user(auth_context, encoded_hash=encoded_hash)
+    authenticated = login(auth_context, password=password)
+    assert authenticated.status_code == 200, authenticated.text
+    current = auth_context.client.get(
+        "/api/v1/auth/me", headers={"Authorization": "Bearer " + authenticated.json()["access_token"]},
+    )
+    assert current.status_code == 200 and current.json()["id"] == str(user.id)
+    with auth_context.uow_factory() as uow, uow.transaction():
+        assert uow.users.get(user.id).password_hash == encoded_hash
+
+
 @pytest.mark.parametrize("body", [
     {}, {"account_name": "alice"}, {"account_name": "ab", "password": PASSWORD},
     {"account_name": "用户", "password": PASSWORD}, {"account_name": "../alice", "password": PASSWORD},
     {"account_name": "a" * 65, "password": PASSWORD},
-    {"account_name": "alice", "password": "too-short"},
+    {"account_name": "alice", "password": "short"},
     {"account_name": "alice", "password": "x" * 129},
     {"account_name": "alice", "password": None},
     {"account_name": "alice", "password": {"private": PASSWORD}},
@@ -109,6 +165,8 @@ def test_registration_validation_is_sanitized_and_has_no_writes(auth_context, bo
         response = auth_context.client.post("/api/v1/auth/register", json=body)
     assert response.status_code == 422, response.text
     assert PASSWORD not in response.text + caplog.text and "private-hash" not in response.text + caplog.text
+    if isinstance(body.get("password"), str):
+        assert body["password"] not in response.text + caplog.text
     assert all("input" not in error and "ctx" not in error for error in response.json()["detail"])
     with auth_context.uow_factory() as uow, uow.transaction():
         assert uow.users.get_by_account_name("alice") is None

@@ -267,7 +267,7 @@ docker compose restart frontend
 
 后端提供 `POST /api/v1/auth/register`、`POST /api/v1/auth/login` 和
 `GET /api/v1/auth/me`。注册和登录使用 JSON 字段 `account_name`、`password`；
-注册密码长度为 15～128 个字符，不自动去除首尾空格。
+注册密码长度为 6～128 个字符，不要求大小写、数字或特殊符号组合，不自动去除首尾空格或转换大小写。
 
 按 [`.env.example`](.env.example) 配置 `PYCODE_JWT_SECRET`，使用至少 32 字节的随机密钥。
 `PYCODE_JWT_ALGORITHM` 仅支持 `HS256`；`PYCODE_ACCESS_TOKEN_TTL_SECONDS` 默认 900 秒，

@@ -19,6 +19,7 @@ _PASSWORD_HASHER = PasswordHasher(
 )
 ISSUER = "pycode-backend"
 AUDIENCE = "pycode-api"
+MIN_REGISTER_PASSWORD_LENGTH = 6
 
 
 def validate_password(value: str, *, minimum: int = 1) -> str:
@@ -32,7 +33,7 @@ def validate_password(value: str, *, minimum: int = 1) -> str:
 
 
 def hash_password(password: str) -> str:
-    validate_password(password, minimum=15)
+    validate_password(password, minimum=MIN_REGISTER_PASSWORD_LENGTH)
     try:
         return _PASSWORD_HASHER.hash(password)
     except HashingError:
