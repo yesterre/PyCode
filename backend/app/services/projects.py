@@ -25,6 +25,7 @@ _HISTORY_MODES: dict[str, AnalysisHistoryMode] = {
     "ask": "repository",
     "impact": "impact",
     "agent": "agent",
+    "question": "repository",
 }
 
 

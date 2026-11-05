@@ -44,17 +44,21 @@ export function TracePanel({projectId, runId}: {projectId: string; runId: string
   useEffect(() => {
     if (terminal(run.data?.status)) void queryClient.invalidateQueries({queryKey: ['trace', runId]})
   }, [run.data?.status, queryClient, runId])
-  if (run.isLoading) return <Card><Spinner label="正在加载智能体分析…" /></Card>
+  if (run.isLoading) return <Card><Spinner label="正在加载分析…" /></Card>
   if (run.error) return <Card><ErrorState error={run.error} /></Card>
   if (!belongs) return <Card><ErrorState error={new Error('该运行记录不属于当前项目。')} /></Card>
   const connection = terminal(run.data?.status) && durable.data ? 'historical' : trace.connection
   const events = durable.data && (terminal(run.data?.status) || trace.connection === 'gap' || trace.connection === 'historical') ? durable.data.events : trace.events
-  return <section><Card><SectionHeading title="智能体执行轨迹" subtitle={run.data?.task} action={<div className="flex gap-2"><StatusBadge status={run.data?.status ?? 'queued'} /><StatusBadge status={connection} /></div>} />
+  return <section><Card><SectionHeading title="分析执行轨迹" subtitle={run.data?.task} action={<div className="flex gap-2"><StatusBadge status={run.data?.status ?? 'queued'} /><StatusBadge status={connection} /></div>} />
+    {run.data?.execution_metadata?.schema_version === 2 && <p className="mb-3 text-sm text-slate-300">
+      执行方式：{run.data.execution_metadata.strategy === 'fast' ? '快速回答' : '智能体分析'} · 意图：{run.data.execution_metadata.intent}
+      <span className="ml-2 text-xs text-slate-400">{run.data.execution_metadata.reasons.join(' · ')}</span>
+    </p>}
     {trace.connection === 'gap' && <p role="alert" className="mb-3 rounded bg-amber-400/10 p-3 text-sm text-amber-200">实时轨迹数据不完整。{terminal(run.data?.status) ? '当前展示持久化轨迹。' : '正在等待持久化轨迹。'}</p>}
     {trace.connection === 'unavailable' && <div className="mb-3 flex items-center gap-3 rounded bg-amber-400/10 p-3 text-sm text-amber-200">实时连接暂时不可用，运行状态仍会继续更新。<Button variant="quiet" onClick={trace.retry}>重试实时连接</Button></div>}
     {trace.connection === 'reconnecting' && <p className="mb-3 text-sm text-amber-200">正在重新连接实时轨迹…</p>}
     {durable.error && <ErrorState error={durable.error} />}
-    {terminal(run.data?.status) ? <div className="mt-4 rounded-lg border border-slate-700 p-4"><h3 className="mb-2 font-semibold">{run.data?.status === 'failed' ? '错误' : '分析结果'}</h3><p className="whitespace-pre-wrap text-sm leading-7 text-slate-300">{run.data?.status === 'failed' ? run.data.error_message ?? '运行失败，但没有错误信息。' : run.data?.result ?? '暂无结果'}</p></div> : <p className="text-sm text-slate-400">{run.data?.status === 'queued' ? '智能体分析正在排队。' : '智能体分析正在运行。'}</p>}
+    {terminal(run.data?.status) ? <div className="mt-4 rounded-lg border border-slate-700 p-4"><h3 className="mb-2 font-semibold">{run.data?.status === 'failed' ? '错误' : '分析结果'}</h3><p className="whitespace-pre-wrap text-sm leading-7 text-slate-300">{run.data?.status === 'failed' ? run.data.error_message ?? '运行失败，但没有错误信息。' : run.data?.result ?? '暂无结果'}</p></div> : <p className="text-sm text-slate-400">{run.data?.status === 'queued' ? '分析正在排队。' : '分析正在运行。'}</p>}
     {terminal(run.data?.status) && <RunEvidence run={run.data!} />}
     </Card><TraceContents events={events} />
   </section>

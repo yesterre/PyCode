@@ -45,7 +45,7 @@ def test_old_sync_and_agent_paths_persist_metadata_without_new_entrypoint(resour
     assert trace['events'] and all(e['schema_version']==1 for e in trace['events'])
     assert any(e['event_type']=='plan_created' for e in trace['events'])  # Still the real Runtime.
     assert client.get('/api/v1/agent-runs/'+task['run_id'],headers=r.other_headers).status_code==404
-    assert not any(p.endswith('/questions') for p in client.get('/openapi.json').json()['paths'])
+    assert any(p.endswith('/questions') for p in client.get('/openapi.json').json()['paths'])
     injection=client.post('/api/v1/agent-runs',headers=r.headers,
         json={'project_id':str(r.own),'task':'attempt override','execution_metadata':{'strategy':'fast'}})
     assert injection.status_code==422

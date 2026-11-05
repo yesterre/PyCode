@@ -109,11 +109,27 @@ class PyCodeAdapter:
         except (OSError, ValueError, UnicodeError, KeyError, TypeError, AttributeError) as exc:
             raise BackendError("artifacts_unavailable", "Snapshot retrieval inputs are unavailable.") from exc
 
-    def run_agent(self, root: Path, task: str, *, trace_observer=None,
+    @staticmethod
+    def decide_question(question, target=None):
+        from pycode.question import route_question
+        return route_question(question, target)
+
+    def answer_question(self, root, question, *, decision, model=None,
+                        retrieval_context, trace_observer=None):
+        try:
+            return self.engine.answer_question(root, question, decision=decision, model=model,
+                llm_client=self._llm_client(model), retrieval_context=retrieval_context,
+                trace_observer=trace_observer)
+        except LLMError as exc:
+            raise _model_error(exc) from exc
+
+    def run_agent(self, root: Path, task: str, *, trace_observer=None, model=None,
                   retrieval_context: RetrievalContext | None = None) -> AgentResult:
         """Invoke the existing Agent facade without changing its runtime defaults."""
         try:
-            kwargs = {"llm_client": self._llm_client(None)}
+            kwargs = {"llm_client": self._llm_client(model)}
+            if model is not None:
+                kwargs['model'] = model
             if retrieval_context is not None:
                 kwargs["retrieval_context"] = retrieval_context
             parameters = signature(self.engine.run_agent).parameters

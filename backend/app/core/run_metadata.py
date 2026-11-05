@@ -54,6 +54,35 @@ class ExecutionMetadata(Versioned):
     source: Literal['legacy_entrypoint']
 
 
+class QuestionRequestMetadata(Versioned):
+    schema_version: Literal[2]
+    entrypoint: Literal['question']
+    target: str | None = None
+
+    @field_validator('target')
+    @classmethod
+    def target_value(cls, value):
+        from pycode.question import safe_target
+        return safe_target(value)
+
+
+class QuestionExecutionMetadata(QuestionRequestMetadata):
+    strategy: Literal['fast', 'agent']
+    source: Literal['rules']
+    policy_version: Literal['a04b-v1']
+    intent: Literal['general', 'explain', 'impact', 'onboard', 'entry', 'dependency']
+    reasons: list[Literal['explicit_target', 'simple_orientation', 'impact', 'cross_module',
+                          'multi_step', 'default_agent', 'routing_fallback']] = Field(min_length=1, max_length=4)
+    evidence_requirement: Literal['snapshot_evidence', 'multi_step']
+
+    @model_validator(mode='after')
+    def consistent_decision(self):
+        if ((self.strategy == 'agent') != (self.evidence_requirement == 'multi_step')
+                or len(set(self.reasons)) != len(self.reasons)):
+            raise ValueError('Inconsistent question decision')
+        return self
+
+
 class EvidenceReference(StrictMetadata):
     path: str = Field(min_length=1, max_length=500)
     symbol: str | None = Field(default=None, max_length=200)
@@ -119,7 +148,11 @@ def validated(name, value):
         # Bound hostile containers before validation; never echo any input.
         if len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode('utf-8')) > LIMITS[name]:
             raise ValueError()
-        return MODELS[name].model_validate(value).model_dump(mode='json')
+        model = MODELS[name]
+        if isinstance(value, dict) and type(value.get('schema_version')) is int and value['schema_version'] == 2:
+            model = {'request_metadata': QuestionRequestMetadata,
+                     'execution_metadata': QuestionExecutionMetadata}.get(name, model)
+        return model.model_validate(value).model_dump(mode='json')
     except (ValueError, TypeError, KeyError, RecursionError):
         raise invalid_metadata() from None
 
@@ -139,16 +172,28 @@ def legacy_execution(request):
                 strategy='agent' if request['entrypoint']=='agent' else 'fast', source='legacy_entrypoint')
 
 
+def question_metadata(snapshot, decision, target):
+    request = dict(schema_version=2, binding=binding_for(snapshot), entrypoint='question', target=target)
+    execution = dict(request, strategy=decision.strategy, source='rules', policy_version=decision.policy_version,
+                     intent=decision.intent, target=decision.target, reasons=list(decision.reasons),
+                     evidence_requirement=decision.evidence_requirement)
+    return validated('request_metadata', request), validated('execution_metadata', execution)
+
+
 def checked(project_id, snapshot_id, run_type, status, snapshot, request, execution, result):
     values = {name: validated(name, value) for name, value in zip(MODELS, (request, execution, result))}
     if not any(value is not None for value in values.values()):
+        if run_type == 'question':
+            raise invalid_metadata()
         return values  # Historical rows remain genuinely empty.
     request, execution, result = values.values()
     if (request is None or snapshot is None or str(snapshot.project_id)!=str(project_id)
         or str(snapshot.id)!=str(snapshot_id) or request['entrypoint']!=run_type
         or any(value is not None and value['binding']!=binding_for(snapshot) for value in values.values())
         or (status!='queued' and execution is None)
-        or (execution is not None and execution!=legacy_execution(request))
+        or (request['schema_version']==1 and execution is not None and execution!=legacy_execution(request))
+        or (request['schema_version']==2 and (execution is None or execution['schema_version']!=2
+            or (request['target'] is not None and request['target']!=execution['target'])))
         or ((status in {'completed','failed'}) != (result is not None))
         or (result is not None and result['outcome']!=status)):
         raise invalid_metadata()
@@ -237,5 +282,7 @@ def result_for(run, retrievals=(), *, intent=None, failed=False):
 
 
 def agent_retrievals(result):
+    if getattr(result, 'retrieval', None) is not None:
+        return [result.retrieval.summary()]
     return [getattr(tool,'data',{}).get('retrieval') for tool in getattr(result,'tool_results',())
             if isinstance(getattr(tool,'data',None),dict)]

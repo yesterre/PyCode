@@ -42,63 +42,21 @@ describe('project UI', () => {
   })
 })
 
-describe('Agent modes', () => {
-  it('renders synchronous question evidence and uses a file path for impact', async () => {
-    const fetchMock = vi.fn((url: string) => Promise.resolve(response({project_id: 'p', answer: 'Entry is main.py',
-      intent: url.endsWith('/impact') ? 'impact' : 'location', evidence: url.endsWith('/impact')
-        ? ['src/main.py', 'func:src/main.py:main'] : ['main.py:1', 'file:main.py']})))
+describe('Unified questions', () => {
+  it('has one input, no mode selector, and sends an idempotent question', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(response({run_id: 'run-1', task_id: 'task-1', status: 'queued'}))
     vi.stubGlobal('fetch', fetchMock)
-    render(wrapper(<AgentPanel projectId="p" onRun={vi.fn()} />))
-    expect(screen.getByText('针对当前仓库快速提问，并基于代码提供回答和相关证据。')).toBeVisible()
-    await userEvent.type(screen.getByLabelText('提问'), 'Where?')
-    await userEvent.click(screen.getByRole('button', {name: '开始分析'}))
-    expect(await screen.findByText('证据（2）')).toBeVisible()
-    expect(screen.queryByText('main.py:1')).not.toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', {name: '展开证据'}))
-    expect(screen.getByText('main.py:1')).toBeVisible()
-    expect(screen.getByText('file:main.py')).toBeVisible()
-    await userEvent.click(screen.getByRole('button', {name: '收起证据'}))
-    expect(screen.queryByText('main.py:1')).not.toBeInTheDocument()
-    await userEvent.click(screen.getByRole('tab', {name: '文件影响分析'}))
-    expect(screen.getByText('分析指定文件发生变化后可能影响的代码和依赖关系。')).toBeVisible()
-    await userEvent.type(screen.getByLabelText('文件路径'), 'main.py')
-    await userEvent.click(screen.getByRole('button', {name: '开始分析'}))
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/p/impact',
-      expect.objectContaining({body: JSON.stringify({file_path: 'main.py'})})))
-    expect(await screen.findByText('证据（2）')).toBeVisible()
-    expect(screen.queryByText('src/main.py')).not.toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', {name: '展开证据'}))
-    expect(screen.getByText('src/main.py')).toBeVisible()
-    expect(screen.getByText('func:src/main.py:main')).toBeVisible()
-  })
-  it('passes an asynchronous run ID to workspace navigation', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({run_id: 'run-1', task_id: 'task-1', status: 'queued'})))
     const onRun = vi.fn()
     render(wrapper(<AgentPanel projectId="p" onRun={onRun} />))
-    await userEvent.click(screen.getByRole('tab', {name: '智能体分析'}))
-    expect(screen.getByText('由智能体制定计划、调用工具并进行多步骤仓库分析。')).toBeVisible()
-    await userEvent.type(screen.getByLabelText('分析任务'), 'Inspect code')
-    await userEvent.click(screen.getByRole('button', {name: '开始智能体分析'}))
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('textbox')).toHaveLength(1)
+    await userEvent.type(screen.getByRole('textbox'), 'impact of main.py')
+    await userEvent.click(screen.getByRole('button'))
     await waitFor(() => expect(onRun).toHaveBeenCalledWith('run-1'))
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/p/questions', expect.objectContaining({method: 'POST', body: JSON.stringify({question: 'impact of main.py'})}))
+    const options = fetchMock.mock.calls[0][1] as RequestInit
+    expect(new Headers(options.headers).get('Idempotency-Key')).toBeTruthy()
   })
-  it('refreshes History after Repository Question and Impact succeed', async () => {
-    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(response({
-      project_id: 'p', answer: 'Answer', intent: 'analysis', evidence: [],
-    })))
-    vi.stubGlobal('fetch', fetchMock)
-    const client = new QueryClient({defaultOptions: {queries: {retry: false}, mutations: {retry: false}}})
-    const invalidate = vi.spyOn(client, 'invalidateQueries')
-    render(<QueryClientProvider client={client}><MemoryRouter><AgentPanel projectId="p" onRun={vi.fn()} /></MemoryRouter></QueryClientProvider>)
-    await userEvent.type(screen.getByLabelText('提问'), 'Where?')
-    await userEvent.click(screen.getByRole('button', {name: '开始分析'}))
-    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({queryKey: analysisHistoryKey('p')}))
-    invalidate.mockClear()
-    await userEvent.click(screen.getByRole('tab', {name: '文件影响分析'}))
-    await userEvent.type(screen.getByLabelText('文件路径'), 'main.py')
-    await userEvent.click(screen.getByRole('button', {name: '开始分析'}))
-    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({queryKey: analysisHistoryKey('p')}))
-  })
-
   it('refreshes History after an Agent run has a successful result', async () => {
     const client = new QueryClient({defaultOptions: {queries: {retry: false, staleTime: Infinity}}})
     client.setQueryData(['run', 'run-1'], {
@@ -127,44 +85,41 @@ it('shows immediate submitting feedback and sends one POST for a double click', 
   let finishPost!: (value: Response) => void
   const pendingPost = new Promise<Response>(resolve => {finishPost = resolve})
   const fetchMock = vi.fn((url: string, options?: RequestInit) =>
-    url === '/api/v1/agent-runs' && options?.method === 'POST'
+    url === '/api/v1/projects/p/questions' && options?.method === 'POST'
       ? pendingPost : Promise.resolve(response(queuedRun)))
   vi.stubGlobal('fetch', fetchMock)
   renderAgentHarness()
-  await userEvent.click(screen.getByRole('tab', {name: '智能体分析'}))
-  await userEvent.type(screen.getByLabelText('分析任务'), 'Inspect code')
-  const button = screen.getByRole('button', {name: '开始智能体分析'})
+  await userEvent.type(screen.getByLabelText('提问'), 'Inspect code')
+  const button = screen.getByRole('button', {name: '开始分析'})
   fireEvent.click(button)
   fireEvent.click(button)
-  await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => url === '/api/v1/agent-runs')).toHaveLength(1))
+  await waitFor(() => expect(fetchMock.mock.calls.filter(([url]) => url === '/api/v1/projects/p/questions')).toHaveLength(1))
   expect(screen.getByRole('button', {name: '正在提交…'})).toBeDisabled()
-  expect(screen.getByRole('status')).toHaveTextContent('正在提交智能体分析…')
+  expect(screen.getByRole('status')).toHaveTextContent('正在提交分析…')
 
   await act(async () => {finishPost(response({run_id: 'run-1', task_id: 'task-1', status: 'queued'}, 202))})
   expect(await screen.findByTestId('current-run-id')).toHaveTextContent('run-1')
-  expect(await screen.findByRole('button', {name: '智能体分析进行中'})).toBeDisabled()
-  expect(fetchMock.mock.calls.filter(([url]) => url === '/api/v1/agent-runs')).toHaveLength(1)
+  expect(await screen.findByRole('button', {name: '分析进行中'})).toBeDisabled()
+  expect(fetchMock.mock.calls.filter(([url]) => url === '/api/v1/projects/p/questions')).toHaveLength(1)
 })
 
 it('re-enables Run Agent and shows ApiError when submit fails', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({detail: {code: 'unavailable', message: 'Try again.'}}, 503)))
   renderAgentHarness()
-  await userEvent.click(screen.getByRole('tab', {name: '智能体分析'}))
-  await userEvent.type(screen.getByLabelText('分析任务'), 'Inspect code')
-  await userEvent.click(screen.getByRole('button', {name: '开始智能体分析'}))
+  await userEvent.type(screen.getByLabelText('提问'), 'Inspect code')
+  await userEvent.click(screen.getByRole('button', {name: '开始分析'}))
   expect(await screen.findByRole('alert')).toHaveTextContent('Try again.')
-  expect(screen.getByRole('button', {name: '开始智能体分析'})).toBeEnabled()
+  expect(screen.getByRole('button', {name: '开始分析'})).toBeEnabled()
 })
 
 it.each(['queued', 'running'])('blocks a new Agent submit while current run is %s', async status => {
   const fetchMock = vi.fn().mockResolvedValue(response({...queuedRun, status}))
   vi.stubGlobal('fetch', fetchMock)
   renderAgentHarness('/?runId=run-1')
-  await userEvent.click(screen.getByRole('tab', {name: '智能体分析'}))
-  await userEvent.type(screen.getByLabelText('分析任务'), 'Inspect code')
-  expect(await screen.findByText(/当前智能体分析状态：/)).toBeVisible()
-  expect(screen.getByRole('button', {name: '智能体分析进行中'})).toBeDisabled()
-  expect(fetchMock.mock.calls.filter(([url]) => url === '/api/v1/agent-runs')).toHaveLength(0)
+  await userEvent.type(screen.getByLabelText('提问'), 'Inspect code')
+  expect(await screen.findByText(/当前分析状态：/)).toBeVisible()
+  expect(screen.getByRole('button', {name: '分析进行中'})).toBeDisabled()
+  expect(fetchMock.mock.calls.filter(([url]) => url === '/api/v1/projects/p/questions')).toHaveLength(0)
 })
 
 function IndexProbe() {

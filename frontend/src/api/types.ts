@@ -45,8 +45,11 @@ export type AgentRun = {
   id: string; project_id: string; snapshot_id: string | null; task: string; run_type: string;
   status: TaskStatus; result: string | null; error_message: string | null;
   created_at: string; started_at: string | null; core_started_at: string | null; finished_at: string | null
-  request_metadata?: {schema_version: 1; binding: RunBinding; entrypoint: 'ask'|'impact'|'agent'} | null
-  execution_metadata?: {schema_version: 1; binding: RunBinding; strategy: 'fast'|'agent'; source: 'legacy_entrypoint'} | null
+  request_metadata?: {schema_version: 1; binding: RunBinding; entrypoint: 'ask'|'impact'|'agent'} |
+    {schema_version: 2; binding: RunBinding; entrypoint: 'question'; target: string | null} | null
+  execution_metadata?: {schema_version: 1; binding: RunBinding; strategy: 'fast'|'agent'; source: 'legacy_entrypoint'} |
+    {schema_version: 2; binding: RunBinding; entrypoint: 'question'; strategy: 'fast'|'agent'; source: 'rules';
+      policy_version: 'a04b-v1'; intent: string; target: string | null; reasons: string[]; evidence_requirement: 'snapshot_evidence'|'multi_step'} | null
   result_metadata?: RunResultMetadata | null
   metadata_warnings?: string[]
 }

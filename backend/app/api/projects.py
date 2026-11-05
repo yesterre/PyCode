@@ -4,12 +4,14 @@ from pathlib import PurePosixPath, PureWindowsPath
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from backend.app.api.dependencies import get_background_task_service, get_current_user, get_project_service
+from backend.app.api.dependencies import get_background_task_service, get_current_user, get_project_service, get_agent_run_service
+from backend.app.services.agent_runs import AgentRunService
+from backend.app.schemas.agent_runs import AgentRunAcceptedResponse
 from backend.app.api.idempotency import IdempotencyKeyHeader
 from backend.app.schemas.projects import (
     AnalysisHistoryItem, AnalysisHistoryResponse, AnalysisResponse, AskRequest,
     CreateProjectRequest, ErrorResponse, ImpactRequest, ProjectResponse,
-    ProjectListResponse,
+    ProjectListResponse, QuestionRequest,
 )
 from backend.app.schemas.snapshots import SnapshotListResponse, SnapshotResponse, SnapshotDetailResponse
 from backend.app.schemas.graph import GraphResponse
@@ -26,6 +28,17 @@ router = APIRouter(
     prefix="/api/v1/projects", tags=["projects"],
     responses={code: {"model": ErrorResponse} for code in (401, 403, 404, 409, 500, 502, 503, 504)},
 )
+
+
+@router.post('/{project_id}/questions', status_code=202, response_model=AgentRunAcceptedResponse,
+             responses={429: {'model': ErrorResponse}})
+def submit_question(project_id: UUID, body: QuestionRequest, user: CurrentUser,
+                    service: Annotated[AgentRunService, Depends(get_agent_run_service)],
+                    idempotency_key: IdempotencyKeyHeader = None):
+    submission = service.submit_question(project_id, body.question, idempotency_key,
+        owner_id=user.id, model=body.model, snapshot_id=body.snapshot_id, target=body.target)
+    return AgentRunAcceptedResponse(run_id=submission.run.id, task_id=submission.background_task.id,
+                                    status=submission.run.status)
 
 
 @router.get("", response_model=ProjectListResponse, responses={401: {"model": ErrorResponse}})

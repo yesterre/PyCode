@@ -30,3 +30,8 @@ def agent_run_fingerprint(project_id: object, task: str) -> str:
         "project_id": str(project_id),
         "task": task,
     })
+
+
+def question_fingerprint(project_id, question, model, snapshot_id, target):
+    return request_fingerprint(dict(operation='question', project_id=str(project_id),
+        question=question, model=model, snapshot_id=str(snapshot_id) if snapshot_id else None, target=target))

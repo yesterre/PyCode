@@ -85,7 +85,8 @@ def environment(connection):
 
 
 def save_report(name, report):
-    directory = Path(__file__).resolve().parents[2] / "docs_v3.0" / "v3_backend"
+    directory = Path(os.environ['PYCODE_TEST_REPORT_DIR']) if os.environ.get('PYCODE_TEST_REPORT_DIR') else (
+        Path(__file__).resolve().parents[2] / "docs_v3.0" / "v3_backend")
     directory.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     path = directory / f"B09_{name}_{stamp}.json"
@@ -93,7 +94,7 @@ def save_report(name, report):
     return path
 
 
-def history_cases(connection):
+def history_cases(connection, *, include_questions=False):
     import hashlib
 
     project = UUID(hashlib.md5(b"project-1").hexdigest())
@@ -101,16 +102,21 @@ def history_cases(connection):
     for page_limit in [1, 20, 100]:
         for offset in [0, 1000, 9000]:
             # Frozen query from pre-B09 HEAD a28d5e2; no production fallback.
-            before = (select(AgentRunORM).where(
-                AgentRunORM.project_id == project, AgentRunORM.status == "completed",
-                AgentRunORM.result.is_not(None), AgentRunORM.run_type.in_(("ask", "impact", "agent")),
-            ).order_by(AgentRunORM.created_at.desc(), AgentRunORM.id.desc())
-                .limit(page_limit + 1).offset(offset))
+            def reference(kinds):
+                return (select(AgentRunORM).where(
+                    AgentRunORM.project_id == project, AgentRunORM.status == "completed",
+                    AgentRunORM.result.is_not(None), AgentRunORM.run_type.in_(kinds),
+                ).order_by(AgentRunORM.created_at.desc(), AgentRunORM.id.desc())
+                    .limit(page_limit + 1).offset(offset))
+            legacy = reference(("ask", "impact", "agent"))
+            before = reference(("ask", "impact", "agent", "question")) if include_questions else legacy
             after, _ = repository_sql(connection, lambda uow: uow.agent_runs.list_history_for_project(
                 project, page_limit + 1, offset,
             ))
             baseline_sql = str(before.compile(dialect=connection.dialect, compile_kwargs={"literal_binds": True}))
-            cases[f"limit_{page_limit}_offset_{offset}"] = {"before": baseline_sql, "after": after}
+            cases[f"limit_{page_limit}_offset_{offset}"] = {"before": baseline_sql, "after": after,
+                "frozen_pre_b09": str(legacy.compile(dialect=connection.dialect, compile_kwargs={"literal_binds": True})),
+                "contract": "a04b-question-v2" if include_questions else "pre-b09"}
     return cases
 
 

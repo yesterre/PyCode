@@ -14,7 +14,8 @@ def test_history_pagination_plans_results_and_write_controls(postgresql_engine):
     _truncate(engine)
     report = {"projects": PROJECTS, "agent_runs": RUNS, "owners": 50,
               "history_projects": 20, "warmups": 2, "samples": REPEATS,
-              "write_batch_rows": 500, "queries": {}, "write_controls": {}}
+              "write_batch_rows": 500, "queries": {}, "write_controls": {},
+              "history_contract": "a04b-question-v2"}
     try:
         with engine.begin() as connection:
             seed(connection)
@@ -30,7 +31,9 @@ def test_history_pagination_plans_results_and_write_controls(postgresql_engine):
             report["table_bytes"] = {table: connection.execute(text(
                 "SELECT pg_total_relation_size(:table)"
             ), {"table": table}).scalar_one() for table in ["projects", "agent_runs"]}
-            for name, sql in history_cases(connection).items():
+            frozen_cases = history_cases(connection)
+            for name, sql in history_cases(connection, include_questions=True).items():
+                assert sql['frozen_pre_b09'] == frozen_cases[name]['before']
                 if name.endswith("_offset_0"):
                     assert sql["before"] == sql["after"]
                 before_rows = list(connection.execute(text(sql["before"])))
@@ -38,7 +41,8 @@ def test_history_pagination_plans_results_and_write_controls(postgresql_engine):
                 assert before_rows == after_rows
                 before, after = measure(connection, sql["before"]), measure(connection, sql["after"])
                 report["queries"][name] = {"before": before, "after": after,
-                                           "rows": len(after_rows), "ids": [str(row.id) for row in after_rows]}
+                    "rows": len(after_rows), "ids": [str(row.id) for row in after_rows],
+                    "frozen_pre_b09_sql": sql['frozen_pre_b09'], "contract": sql['contract']}
                 print(name, before["median_execution_ms"], after["median_execution_ms"])
             for name, sql in [("project_insert", PROJECT_INSERT), ("project_update", PROJECT_UPDATE),
                               ("run_insert", RUN_INSERT), ("run_complete", RUN_COMPLETE)]:

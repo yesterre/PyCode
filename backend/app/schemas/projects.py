@@ -3,6 +3,7 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, StringConstraints, Field
+from backend.app.core.questions import QuestionInput as QuestionRequest
 
 from backend.app.core.models import ProjectStatus
 

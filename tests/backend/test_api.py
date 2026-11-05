@@ -26,6 +26,7 @@ def test_health_and_openapi_without_model_or_project():
             "/api/v1/projects/{project_id}/analysis-history",
             "/api/v1/projects/{project_id}/index", "/api/v1/projects/{project_id}/ask",
             "/api/v1/projects/{project_id}/impact",
+            "/api/v1/projects/{project_id}/questions",
             "/api/v1/projects/{project_id}/snapshots",
             "/api/v1/projects/{project_id}/snapshots/{snapshot_id}",
             "/api/v1/projects/{project_id}/snapshots/{snapshot_id}/graph",

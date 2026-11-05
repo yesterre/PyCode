@@ -428,7 +428,7 @@ class InMemoryAgentRunRepository:
                 if run.project_id == project_id
                 and run.status == AgentRunStatus.COMPLETED
                 and run.result is not None
-                and run.run_type in {"ask", "impact", "agent"}
+                and run.run_type in {"ask", "impact", "agent", "question"}
             ),
             key=lambda run: (run.created_at, str(run.id)), reverse=True,
         )

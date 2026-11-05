@@ -45,6 +45,13 @@ class AnswerResult:
         return self.retrieval.evidence
 
 
+@dataclass
+class QuestionAnswer(AnswerResult):
+    trace: object
+    ok: bool = True
+    stop_reason: str = 'final'
+
+
 class PyCodeEngine:
     """Stateless facade. Calls return data and never render terminal output.
 
@@ -156,6 +163,40 @@ class PyCodeEngine:
         root = Path(project_path)
         index, graph = _retrieval_artifacts(root, index_path, graph_path, retrieval_context)
         return _answer(retrieve_for_question(question, root, index, graph, context=retrieval_context), model, llm_client)
+
+    def answer_question(self, project_path, question, *, decision, model=None,
+                        llm_client=None, retrieval_context, trace_observer=None):
+        """One Fast retrieval/answer, using the same Pack and prompt as ask/impact."""
+        from pycode.agent.trace import TraceRecorder
+        from pycode.agent.types import AgentTask
+        from pycode.retriever import retrieve
+        from pycode.retrieval_evidence import Query, RetrievalRequest
+        root = Path(project_path)
+        if root.resolve() != retrieval_context.root:
+            raise ValueError('Retrieval context belongs to another workspace.')
+        recorder = TraceRecorder(AgentTask(question, root), trace_observer)
+        query_text = question
+        target = decision['target']
+        if target and decision['intent'] == 'general' and target not in question:
+            query_text += '\n' + target
+        retrieval = retrieve(RetrievalRequest(Query(query_text, decision['intent'], target)), retrieval_context)
+        if query_text != question:
+            from dataclasses import replace
+            retrieval = replace(retrieval, question=question)
+        event = recorder.record_event('ContextAssembled', data={
+            'included_section_names': ['evidence'], 'skipped_section_names': []})
+        # Keep the bounded, code-free summary intact, rather than generic trace
+        # summarization which deliberately crops nested values.
+        event.data['retrieval'] = retrieval.summary()
+        recorder.observe('context', event)
+        recorder.start_llm('answer')
+        try:
+            result = _answer(retrieval, model, llm_client)
+        except Exception as exc:
+            recorder.finish_llm('answer', success=False, fallback_used=False, error=exc)
+            raise
+        recorder.finish_llm('answer', success=True, fallback_used=False)
+        return QuestionAnswer(result.answer, retrieval, recorder.finish('final'))
 
     def explain(
         self, project_path: str | Path, file_path: str | Path,

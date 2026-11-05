@@ -7,19 +7,6 @@ import { TracePanel } from './TracePanel'
 vi.mock('../../api/agentRuns', () => ({getAgentRun: vi.fn(), getTrace: vi.fn(),
   eventsUrl: (id: string) => `/api/v1/agent-runs/${id}/events`}))
 
-class Source {
-  static instances: Source[] = []
-  listeners = new Map<string, () => void>()
-  onopen = null
-  onerror = null
-  closed = false
-  constructor() {Source.instances.push(this)}
-  addEventListener(type: string, callback: EventListenerOrEventListenerObject) {
-    this.listeners.set(type, callback as unknown as () => void)
-  }
-  close() {this.closed = true}
-  emit(type: string) {this.listeners.get(type)?.()}
-}
 function renderPanel() {
   const client = new QueryClient({defaultOptions: {queries: {retry: false}}})
   return render(<QueryClientProvider client={client}><TracePanel projectId="p" runId="r" /></QueryClientProvider>)
@@ -27,7 +14,7 @@ function renderPanel() {
 const baseRun = {id: 'r', project_id: 'p', task: 'Inspect code', status: 'completed', result: 'Final answer',
   error_message: null, snapshot_id: 's', run_type: 'agent', created_at: '', started_at: null,
   core_started_at: null, finished_at: null}
-afterEach(() => {vi.unstubAllGlobals(); vi.clearAllMocks(); Source.instances = []})
+afterEach(() => {vi.unstubAllGlobals(); vi.clearAllMocks()})
 
 it('restores durable Plan, Context, Tool and result for a completed run', async () => {
   vi.mocked(getAgentRun).mockResolvedValue(baseRun as never)
@@ -69,13 +56,17 @@ it.each([
 })
 
 it('closes realtime stream and waits for durable trace after a gap', async () => {
-  vi.stubGlobal('EventSource', Source)
+  let sink!: ReadableStreamDefaultController<Uint8Array>
+  let cancelled = false
+  const body = new ReadableStream<Uint8Array>({start(controller) {sink=controller}, cancel() {cancelled=true}})
+  const fetchMock = vi.fn().mockResolvedValue(new Response(body, {headers: {'Content-Type':'text/event-stream'}}))
+  vi.stubGlobal('fetch', fetchMock)
   vi.mocked(getAgentRun).mockResolvedValue({...baseRun, status: 'running', result: null} as never)
   vi.mocked(getTrace).mockResolvedValue({run_id: 'r', events: []})
   renderPanel()
-  await waitFor(() => expect(Source.instances).toHaveLength(1))
-  act(() => Source.instances[0].emit('realtime_trace_gap'))
-  expect(Source.instances[0].closed).toBe(true)
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+  await act(async () => sink.enqueue(new TextEncoder().encode('event: realtime_trace_gap\ndata: {}\n\n')))
+  expect(cancelled).toBe(true)
   expect(await screen.findByText(/正在等待持久化轨迹/)).toBeVisible()
   expect(getTrace).toHaveBeenCalledWith('r')
 })

@@ -533,7 +533,7 @@ class SqlAlchemyAgentRunRepository:
                 AgentRunORM.project_id == project_id,
                 AgentRunORM.status == AgentRunStatus.COMPLETED.value,
                 AgentRunORM.result.is_not(None),
-                AgentRunORM.run_type.in_(("ask", "impact", "agent")),
+                AgentRunORM.run_type.in_(("ask", "impact", "agent", "question")),
             )
             .order_by(AgentRunORM.created_at.desc(), AgentRunORM.id.desc())
             .offset(offset)

@@ -7,7 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from backend.app.core.application_trace import ApplicationEventType
 from backend.app.core.models import AgentRunStatus
 from backend.app.schemas.projects import NonEmptyString, RequestModel
-from backend.app.core.run_metadata import RequestMetadata,ExecutionMetadata,ResultMetadata
+from backend.app.core.run_metadata import (RequestMetadata, ExecutionMetadata, ResultMetadata,
+    QuestionRequestMetadata, QuestionExecutionMetadata)
 
 
 class CreateAgentRunRequest(RequestModel):
@@ -39,8 +40,8 @@ class AgentRunResponse(BaseModel):
     started_at: datetime | None
     core_started_at: datetime | None
     finished_at: datetime | None
-    request_metadata: RequestMetadata | None = None
-    execution_metadata: ExecutionMetadata | None = None
+    request_metadata: RequestMetadata | QuestionRequestMetadata | None = None
+    execution_metadata: ExecutionMetadata | QuestionExecutionMetadata | None = None
     result_metadata: ResultMetadata | None = None
     metadata_warnings: list[str] = Field(default_factory=list)
 

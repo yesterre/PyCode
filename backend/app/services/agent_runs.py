@@ -69,9 +69,21 @@ class AgentRunService:
         self, project_id: UUID, task_text: str,
         idempotency_key: str | None = None, *, owner_id: UUID,
     ) -> AgentRunSubmission:
+        return self._submit(project_id, task_text, idempotency_key, owner_id=owner_id)
+
+    def submit_question(self, project_id, question, idempotency_key=None, *, owner_id,
+                        model=None, snapshot_id=None, target=None):
+        from backend.app.core.questions import QuestionInput
+        body = QuestionInput(question=question, model=model, snapshot_id=snapshot_id, target=target)
+        return self._submit(project_id, body.question, idempotency_key, owner_id=owner_id,
+                            question=body)
+
+    def _submit(self, project_id, task_text, idempotency_key, *, owner_id, question=None):
         from backend.app.core.run_metadata import legacy_request
+        from backend.app.services.idempotency import question_fingerprint
         fingerprint = (
-            agent_run_fingerprint(project_id, task_text)
+            (question_fingerprint(project_id, task_text, question.model, question.snapshot_id, question.target)
+             if question is not None else agent_run_fingerprint(project_id, task_text))
             if idempotency_key is not None else None
         )
         with self.unit_of_work.transaction():
@@ -106,24 +118,30 @@ class AgentRunService:
                 log_event("task_submitted", task_id=background_task.id, run_id=run.id, task_type=AGENT_RUN_TASK_TYPE)
                 return AgentRunSubmission(run, background_task)
             project.ensure_not_archived()
-            if project.current_snapshot_id is None:
+            snapshot_id = question.snapshot_id if question is not None and question.snapshot_id else project.current_snapshot_id
+            if snapshot_id is None:
                 raise BackendError(
                     "project_not_ready", "Build the project index before analysis.",
                 )
-            snapshot = self.unit_of_work.snapshots.get_for_project(project_id, project.current_snapshot_id)
+            snapshot = self.unit_of_work.snapshots.get_for_project(project_id, snapshot_id)
             if snapshot.status != "ready":
                 raise BackendError(
                     "project_not_ready", "Build the project index before analysis.",
                 )
             if self.background_tasks.admission is not None:
                 self.background_tasks.admission.admit_task(self.unit_of_work, owner_id, "agent")
+            request = legacy_request(snapshot, 'agent') if question is None else None
+            execution = None
+            if question is not None:
+                from backend.app.core.run_metadata import question_metadata
+                request, execution = question_metadata(snapshot, self.adapter.decide_question(task_text, question.target), question.target)
             run = self.unit_of_work.agent_runs.create_queued(
                 project_id,
                 snapshot.id,
                 task=task_text,
-                run_type="agent",
-                model=None,
-                request_metadata=legacy_request(snapshot,'agent'),
+                run_type="agent" if question is None else "question",
+                model=None if question is None else question.model,
+                request_metadata=request, execution_metadata=execution,
             )
             background_task = self.unit_of_work.background_tasks.link_agent_run(
                 creation.task.id, run.id, snapshot.id,
@@ -297,7 +315,7 @@ class AgentRunService:
                 raise BackendError(error_code, error_message)
 
             from backend.app.core.run_metadata import result_for,agent_retrievals
-            metadata=result_for(run,agent_retrievals(result))
+            metadata=result_for(run,agent_retrievals(result), intent=getattr(getattr(result,'retrieval',None),'intent',None))
             with self.unit_of_work.transaction():
                 if self.unit_of_work.background_tasks.guard_execution(
                     task_id, execution_token,
@@ -418,12 +436,19 @@ class AgentRunService:
             run_id,
             marked.run.core_started_at,
         )
-        run_agent = self.adapter.run_agent
+        is_question = marked.run.run_type == 'question'
+        is_fast = is_question and marked.run.execution_metadata['strategy'] == 'fast'
+        run_agent = self.adapter.answer_question if is_fast else self.adapter.run_agent
         # Preserve compatibility with old injected test/extension adapters. The
         # production PyCodeAdapter always accepts the trusted context.
         parameters = signature(run_agent).parameters
         accepts_kwargs = any(p.kind == p.VAR_KEYWORD for p in parameters.values())
         kwargs = {}
+        if is_fast:
+            kwargs['decision'] = marked.run.execution_metadata
+            kwargs['model'] = marked.run.model
+        elif is_question:
+            kwargs['model'] = marked.run.model
         if "retrieval_context" in parameters or accepts_kwargs:
             kwargs["retrieval_context"] = retrieval_context
         try:
@@ -459,12 +484,16 @@ class AgentRunService:
             from backend.app.core.run_metadata import result_for,agent_retrievals
             run=self.unit_of_work.agent_runs.get(run_id)
             try:
-                metadata=result_for(run,agent_retrievals(result),failed=True)
+                retrievals = agent_retrievals(result)
+                if result is None and trace_session is not None:
+                    retrievals = [event.payload['retrieval'] for event in trace_session.events
+                                  if 'retrieval' in event.payload]
+                metadata=result_for(run,retrievals,failed=True)
                 failed_run = self.unit_of_work.agent_runs.fail(run_id, error_message,result_metadata=metadata)
             except BackendError as exc:
                 if exc.code!='invalid_run_metadata':raise
                 failed_run=self.unit_of_work.agent_runs.quarantine_invalid(run_id,error_message)
-            if trace_session is not None and trace_session.observed and result is not None:
+            if trace_session is not None and trace_session.observed:
                 try:
                     terminal_event = trace_session.append_terminal(
                         failed_run, result=result, failure=failure,

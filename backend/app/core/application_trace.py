@@ -25,6 +25,7 @@ class ApplicationEventType(StrEnum):
 
 
 class LLMPurpose(StrEnum):
+    ANSWER = 'answer'
     PLAN = "plan"
     NEXT_ACTION = "next_action"
     SUMMARY = "summary"
@@ -173,7 +174,7 @@ def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, 
         ApplicationEventType.RUN_STARTED: {"run_type", "snapshot_id"},
         ApplicationEventType.PLAN_CREATED: {"source", "fallback_used", "steps"},
         ApplicationEventType.CONTEXT_UPDATED: {
-            "included_sections", "turn_index", "skipped_sections", "warnings",
+            "included_sections", "turn_index", "skipped_sections", "warnings", "retrieval",
         },
         ApplicationEventType.LLM_STARTED: {"purpose", "turn_index", "model"},
         ApplicationEventType.LLM_FINISHED: {
@@ -218,6 +219,9 @@ def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, 
                 raise ValueError("Invalid plan reason.")
             _require_bool(step["required"], "required")
     elif event_type == ApplicationEventType.CONTEXT_UPDATED:
+        if 'retrieval' in payload and (not isinstance(payload['retrieval'],dict)
+                or public_retrieval_summary(payload['retrieval']) != payload['retrieval']):
+            raise ValueError('Invalid public retrieval summary')
         _validate_context_identifiers(payload["included_sections"])
         if "skipped_sections" in payload:
             _validate_context_identifiers(payload["skipped_sections"])
@@ -812,6 +816,9 @@ class ApplicationTraceNormalizer:
         warnings = data.get("warnings")
         if isinstance(warnings, list):
             payload["warnings"] = [sanitize_text(item) for item in warnings[:MAX_PUBLIC_LIST_ITEMS]]
+        retrieval = public_retrieval_summary(data.get('retrieval'))
+        if retrieval is not None:
+            payload['retrieval'] = retrieval
         return payload
 
     @staticmethod

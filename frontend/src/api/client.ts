@@ -1,3 +1,5 @@
+import { accessToken, clearSession, sessionRevision, trackRequest } from '../auth/session'
+
 const API_ORIGIN = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '')
 
 export function apiUrl(path: string): string {
@@ -39,18 +41,40 @@ export async function parseError(response: Response): Promise<ApiError> {
   return new ApiError(response.status, 'http_error', fallback)
 }
 
+export async function authenticatedFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  const token = accessToken(), revision = sessionRevision()
+  const headers = new Headers(options.headers)
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  options.signal?.addEventListener('abort', abort, {once: true})
+  if (options.signal?.aborted) controller.abort()
+  const release = trackRequest(controller)
+  try {
+    const response = await fetch(url, {...options, headers, signal: controller.signal})
+    if (revision !== sessionRevision()) {await response.body?.cancel(); throw new DOMException('Session changed', 'AbortError')}
+    if (response.status === 401 && token) clearSession()
+    return response
+  } finally {release()}
+}
+
 export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const revision = sessionRevision()
+  const headers = new Headers(options.headers)
+  if (options.body && !headers.has('Content-Type')) headers.set('Content-Type','application/json')
   let response: Response
   try {
-    response = await fetch(apiUrl(path), {
+    response = await authenticatedFetch(apiUrl(path), {
       ...options,
-      headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers },
+      headers,
     })
   } catch {
     throw new ApiError(null, 'network_error', '无法连接服务器。')
   }
   if (!response.ok) throw await parseError(response)
-  return response.json() as Promise<T>
+  const value = await response.json() as T
+  if (revision !== sessionRevision()) throw new DOMException('Session changed', 'AbortError')
+  return value
 }
 
 export function messageOf(error: unknown): string {

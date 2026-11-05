@@ -1,22 +1,23 @@
 """Controlled Phase 8 browser server: real FastAPI routes, no paid model or external services."""
 
 import asyncio
-import json
 import shutil
 import tempfile
 import threading
 import time
-from datetime import datetime, timezone
+import os
 from pathlib import Path
 from uuid import UUID
 
 from backend.app.core.application_trace import ApplicationEventType, ApplicationTraceEvent
+from backend.app.config import AuthSettings
+from backend.app.auth import hash_password
 from backend.app.infrastructure.realtime_trace import event_json, stream_key
 from backend.app.infrastructure.repositories import GitRepositorySource, RepositoryRevision, RepositoryWorkspace
 from backend.app.integrations.pycode import PyCodeAdapter
 from backend.app.main import create_app
 from backend.app.repositories import InMemoryPersistence, InMemoryUnitOfWork
-from backend.app.runtime import build_project_service
+from backend.app.runtime import build_project_service, build_agent_run_service
 from backend.app.services.background_tasks import BackgroundTaskService
 
 
@@ -78,6 +79,7 @@ class FakeRedis:
 
 class ControlledLLM:
     def generate(self, prompt: str) -> str:
+        time.sleep(0.3)  # Keep live SSE observable without a remote model.
         return "Controlled repository answer."
 
 
@@ -121,32 +123,13 @@ class Dispatcher:
         time.sleep(0.7)
         app = self.app
         uow = InMemoryUnitOfWork(app.state.persistence)
-        with uow.transaction():
-            task = uow.background_tasks.get(task_id)
-            run = uow.agent_runs.mark_running(task.agent_run_id)
-        specifications = [
-            (ApplicationEventType.RUN_STARTED, None, {"run_type": "agent", "snapshot_id": str(run.snapshot_id)}),
-            (ApplicationEventType.PLAN_CREATED, None, {"source": "rule", "fallback_used": False,
-                "steps": [{"step_index": 0, "tool": "read_file", "reason": "Inspect the entry point", "required": True}]}),
-            (ApplicationEventType.CONTEXT_UPDATED, None, {"included_sections": ["project", "evidence"], "turn_index": 0}),
-            (ApplicationEventType.TOOL_STARTED, "read_file", {"turn_index": 0, "arguments": {"path": "main.py"}}),
-            (ApplicationEventType.TOOL_FINISHED, "read_file", {"outcome": "success", "duration_ms": 50,
-                "summary": "Read main.py"}),
-            (ApplicationEventType.RUN_COMPLETED, None, {"stop_reason": "completed", "has_result": True,
-                "trace_complete": True}),
-        ]
-        events = []
-        for sequence, (kind, tool_name, payload) in enumerate(specifications):
-            event = ApplicationTraceEvent(sequence=sequence, event_type=kind,
-                occurred_at=datetime.now(timezone.utc), tool_name=tool_name, payload=payload)
-            events.append(event)
-            app.state.realtime_redis.append(run.id, event)
-            time.sleep(2.5 if kind == ApplicationEventType.PLAN_CREATED else 0.75)
-        with uow.transaction():
-            for event in events:
-                uow.trace_events.create(run.id, event.sequence, event.event_type.value,
-                                        tool_name=event.tool_name, payload=event.database_payload())
-            uow.agent_runs.complete(run.id, "Controlled analysis complete.")
+        projects = build_project_service(uow, adapter=app.state.adapter, workspace=app.state.workspace,
+            artifacts=app.state.artifacts, operations=app.state.project_operations)
+        from types import SimpleNamespace
+        service = build_agent_run_service(uow, background_tasks=BackgroundTaskService(uow),
+            projects=projects, adapter=app.state.adapter, agent_workspace=app.state.agent_workspace,
+            trace_publisher=SimpleNamespace(publish=app.state.realtime_redis.append))
+        service.execute(task_id)
 
 
 _root = Path(tempfile.mkdtemp(prefix="phase8-browser-", dir=Path(".tmp").resolve()))
@@ -155,8 +138,14 @@ _source.mkdir()
 (_source / "main.py").write_text("from service import answer\ndef main():\n    return answer()\n", encoding="utf-8")
 (_source / "service.py").write_text("def answer():\n    return 42\n", encoding="utf-8")
 _dispatcher = Dispatcher()
+os.environ['PYTHON_DOTENV_DISABLED'] = '1'
+os.environ['PYCODE_EMBEDDING_ENABLED'] = 'false'
 app = create_app(adapter=PyCodeAdapter(llm_client=ControlledLLM()),
     workspace=RepositoryWorkspace(_root / "workspaces", CopySource(_source)),
-    persistence=InMemoryPersistence(), task_dispatcher=_dispatcher)
+    persistence=InMemoryPersistence(), task_dispatcher=_dispatcher,
+    auth_settings=AuthSettings('browser-test-only-' + 'x'*48))
+_users = InMemoryUnitOfWork(app.state.persistence)
+with _users.transaction():
+    _users.users.create('browser-user', hash_password('browser-test-password'))
 app.state.realtime_redis = FakeRedis()
 _dispatcher.app = app

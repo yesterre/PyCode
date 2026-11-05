@@ -270,7 +270,7 @@ class StaleRunningReconciler:
                 and snapshot.project_id == current.project_id
                 and snapshot.status == "ready"
                 and project.status == ProjectStatus.READY
-                and project.current_snapshot_id == snapshot.id
+                and (project.current_snapshot_id == snapshot.id or run.run_type == 'question')
             )
             run_matches_task = (
                 run is not None
@@ -280,8 +280,17 @@ class StaleRunningReconciler:
             # An inconsistent foreign key must not grant authority over another
             # Run's trace, Core marker or terminal state.
             traces = self.uow.trace_events.list_for_run(run.id) if run_matches_task else []
+            metadata_valid = True
+            if run_matches_task and run.run_type == 'question':
+                from backend.app.core.run_metadata import checked
+                try:
+                    checked(run.project_id, run.snapshot_id, run.run_type, run.status, snapshot,
+                            run.request_metadata, run.execution_metadata, run.result_metadata)
+                except BackendError:
+                    metadata_valid = False
             can_requeue = (
                 relation_valid
+                and metadata_valid
                 and current.execution_token is not None
                 and run is not None
                 and run.core_started_at is None
