@@ -2,7 +2,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PostgreSQLUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.db.base import Base
@@ -22,6 +22,9 @@ class AgentRunORM(Base):
         ),
         Index("ix_agent_runs_project_created", "project_id", "created_at"),
         Index("ix_agent_runs_snapshot_id", "snapshot_id"),
+        *(CheckConstraint(f"{name} IS NULL OR (jsonb_typeof({name}) = 'object' AND octet_length({name}::text) <= {limit})",
+                          name=f"agent_run_{name}_size")
+          for name,limit in [('request_metadata',2048),('execution_metadata',2048),('result_metadata',16384)]),
     )
 
     id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -38,6 +41,9 @@ class AgentRunORM(Base):
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_metadata: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    execution_metadata: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    result_metadata: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     core_started_at: Mapped[datetime | None] = mapped_column(

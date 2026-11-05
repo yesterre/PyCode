@@ -341,32 +341,41 @@ class SqlAlchemyAgentRunRepository:
     def create(
         self, project_id: UUID, snapshot_id: UUID | None, *,
         task: str, run_type: str, model: str | None,
+        request_metadata: dict | None = None, execution_metadata: dict | None = None,
     ) -> AgentRun:
         return self._create(
             project_id, snapshot_id, task=task, run_type=run_type, model=model,
             status=AgentRunStatus.RUNNING,
+            request_metadata=request_metadata, execution_metadata=execution_metadata,
         )
 
     def create_queued(
         self, project_id: UUID, snapshot_id: UUID | None, *,
         task: str, run_type: str, model: str | None,
+        request_metadata: dict | None = None, execution_metadata: dict | None = None,
     ) -> AgentRun:
         return self._create(
             project_id, snapshot_id, task=task, run_type=run_type, model=model,
             status=AgentRunStatus.QUEUED,
+            request_metadata=request_metadata, execution_metadata=execution_metadata,
         )
 
     def _create(
         self, project_id: UUID, snapshot_id: UUID | None, *,
         task: str, run_type: str, model: str | None, status: AgentRunStatus,
+        request_metadata=None, execution_metadata=None,
     ) -> AgentRun:
         now = _now()
+        from backend.app.core.run_metadata import checked
+        snapshot=self.session.get(ProjectSnapshotORM,snapshot_id) if request_metadata is not None else None
+        metadata=checked(project_id,snapshot_id,run_type,status,snapshot,request_metadata,execution_metadata,None)
         record = AgentRunORM(
             id=uuid4(), project_id=project_id, snapshot_id=snapshot_id,
             task=task, run_type=run_type, status=status.value,
             model=model,
             started_at=now if status == AgentRunStatus.RUNNING else None,
             created_at=now,
+            **metadata,
         )
         self.session.add(record)
         self.session.flush()
@@ -390,15 +399,23 @@ class SqlAlchemyAgentRunRepository:
 
     def mark_running(self, run_id: UUID) -> AgentRun:
         record = self._expect(run_id, AgentRunStatus.QUEUED)
+        self._metadata(record,AgentRunStatus.QUEUED,record.execution_metadata,record.result_metadata)
+        from backend.app.core.run_metadata import legacy_execution
+        execution=record.execution_metadata or legacy_execution(record.request_metadata)
+        metadata=self._metadata(record,AgentRunStatus.RUNNING,execution,None)
         record.status = AgentRunStatus.RUNNING.value
         record.started_at = _now()
         record.finished_at = None
         record.result = None
         record.error_message = None
+        for name,value in metadata.items():setattr(record,name,value)
         self.session.flush()
         return _agent_run(record)
 
     def requeue_running(self, run_id: UUID) -> AgentRun:
+        current=self._expect(run_id,AgentRunStatus.RUNNING)
+        self._metadata(current,AgentRunStatus.RUNNING,current.execution_metadata,current.result_metadata)
+        metadata=self._metadata(current,AgentRunStatus.QUEUED,current.execution_metadata,None)
         statement = (
             update(AgentRunORM)
             .where(
@@ -410,6 +427,7 @@ class SqlAlchemyAgentRunRepository:
                 status=AgentRunStatus.QUEUED.value,
                 started_at=None, finished_at=None, result=None,
                 error_message=None,
+                **metadata,
             )
             .returning(AgentRunORM)
             .execution_options(populate_existing=True)
@@ -449,23 +467,52 @@ class SqlAlchemyAgentRunRepository:
     def complete(
         self, run_id: UUID, result: str | None, *,
         prompt_tokens: int | None = None, completion_tokens: int | None = None,
+        result_metadata: dict | None = None,
     ) -> AgentRun:
         record = self._expect(run_id, AgentRunStatus.RUNNING)
+        self._metadata(record,AgentRunStatus.RUNNING,record.execution_metadata,record.result_metadata)
+        from backend.app.core.run_metadata import result_for
+        value=result_metadata if result_metadata is not None else result_for(_agent_run(record))
+        metadata=self._metadata(record,AgentRunStatus.COMPLETED,record.execution_metadata,value)
         record.status = AgentRunStatus.COMPLETED.value
         record.result = result
         record.error_message = None
         record.prompt_tokens = prompt_tokens
         record.completion_tokens = completion_tokens
         record.finished_at = _now()
+        for name,value in metadata.items():setattr(record,name,value)
         self.session.flush()
         return _agent_run(record)
 
-    def fail(self, run_id: UUID, error_message: str) -> AgentRun:
+    def fail(self, run_id: UUID, error_message: str, *, result_metadata: dict | None = None) -> AgentRun:
         record = self._expect(run_id, AgentRunStatus.RUNNING)
+        self._metadata(record,AgentRunStatus.RUNNING,record.execution_metadata,record.result_metadata)
+        from backend.app.core.run_metadata import result_for
+        value=result_metadata if result_metadata is not None else result_for(_agent_run(record),failed=True)
+        metadata=self._metadata(record,AgentRunStatus.FAILED,record.execution_metadata,value)
         record.status = AgentRunStatus.FAILED.value
         record.result = None
         record.error_message = error_message
         record.finished_at = _now()
+        for name,value in metadata.items():setattr(record,name,value)
+        self.session.flush()
+        return _agent_run(record)
+
+    def _metadata(self,record,status,execution,result):
+        from backend.app.core.run_metadata import checked
+        snapshot=self.session.get(ProjectSnapshotORM,record.snapshot_id) if record.request_metadata is not None else None
+        return checked(record.project_id,record.snapshot_id,record.run_type,status,snapshot,
+                       record.request_metadata,execution,result)
+
+    def quarantine_invalid(self,run_id: UUID,error_message: str) -> AgentRun:
+        record=self._get_record(run_id)
+        from backend.app.core.run_metadata import require_quarantine
+        snapshot=self.session.get(ProjectSnapshotORM,record.snapshot_id) if record.snapshot_id else None
+        require_quarantine(_agent_run(record),snapshot)
+        record.status=AgentRunStatus.FAILED.value
+        record.error_message=error_message
+        record.started_at=record.started_at or _now()
+        record.finished_at=_now()
         self.session.flush()
         return _agent_run(record)
 
@@ -503,7 +550,8 @@ class SqlAlchemyAgentRunRepository:
         return [_agent_run(record) for record in self.session.scalars(statement)]
 
     def _get_record(self, run_id: UUID) -> AgentRunORM:
-        record = self.session.get(AgentRunORM, run_id)
+        record = self.session.scalars(select(AgentRunORM).where(AgentRunORM.id==run_id)
+            .with_for_update().execution_options(populate_existing=True)).one_or_none()
         if record is None:
             raise BackendError("agent_run_not_found", "Agent run does not exist.")
         return record
@@ -1172,12 +1220,15 @@ def _snapshot(record: ProjectSnapshotORM) -> ProjectSnapshot:
 
 
 def _agent_run(record: AgentRunORM) -> AgentRun:
+    from copy import deepcopy
     return AgentRun(
         record.id, record.project_id, record.snapshot_id, record.task, record.run_type,
         AgentRunStatus(record.status), record.model, record.prompt_tokens,
         record.completion_tokens, record.result, record.error_message,
         record.started_at, record.finished_at, record.created_at,
         core_started_at=record.core_started_at,
+        request_metadata=deepcopy(record.request_metadata),execution_metadata=deepcopy(record.execution_metadata),
+        result_metadata=deepcopy(record.result_metadata),
     )
 
 

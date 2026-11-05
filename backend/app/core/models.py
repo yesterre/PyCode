@@ -145,6 +145,10 @@ class AgentRun:
     finished_at: datetime | None
     created_at: datetime
     core_started_at: datetime | None = None
+    request_metadata: dict[str, Any] | None = None
+    execution_metadata: dict[str, Any] | None = None
+    result_metadata: dict[str, Any] | None = None
+    metadata_warnings: tuple[str, ...] = ()
 
 
 AnalysisHistoryMode = Literal["repository", "impact", "agent"]

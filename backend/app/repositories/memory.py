@@ -276,40 +276,49 @@ class InMemoryAgentRunRepository:
     def create(
         self, project_id: UUID, snapshot_id: UUID | None, *,
         task: str, run_type: str, model: str | None,
+        request_metadata: dict | None = None, execution_metadata: dict | None = None,
     ) -> AgentRun:
         return self._create(
             project_id, snapshot_id, task=task, run_type=run_type, model=model,
             status=AgentRunStatus.RUNNING,
+            request_metadata=request_metadata, execution_metadata=execution_metadata,
         )
 
     def create_queued(
         self, project_id: UUID, snapshot_id: UUID | None, *,
         task: str, run_type: str, model: str | None,
+        request_metadata: dict | None = None, execution_metadata: dict | None = None,
     ) -> AgentRun:
         return self._create(
             project_id, snapshot_id, task=task, run_type=run_type, model=model,
             status=AgentRunStatus.QUEUED,
+            request_metadata=request_metadata, execution_metadata=execution_metadata,
         )
 
     def _create(
         self, project_id: UUID, snapshot_id: UUID | None, *,
         task: str, run_type: str, model: str | None, status: AgentRunStatus,
+        request_metadata=None, execution_metadata=None,
     ) -> AgentRun:
         InMemoryProjectRepository(self.state).get(project_id)
         if snapshot_id is not None and snapshot_id not in self.state.snapshots:
             raise BackendError("database_conflict", "A related persistent record is invalid.")
         now = _now()
+        from backend.app.core.run_metadata import checked
+        metadata=checked(project_id,snapshot_id,run_type,status,self.state.snapshots.get(snapshot_id),
+                         request_metadata,execution_metadata,None)
         run = AgentRun(
             uuid4(), project_id, snapshot_id, task, run_type, status,
             model, None, None, None, None,
             now if status == AgentRunStatus.RUNNING else None, None, now,
+            **metadata,
         )
         self.state.agent_runs[run.id] = run
-        return run
+        return deepcopy(run)
 
     def get(self, run_id: UUID) -> AgentRun:
         try:
-            return self.state.agent_runs[run_id]
+            return deepcopy(self.state.agent_runs[run_id])
         except KeyError:
             raise BackendError("agent_run_not_found", "Agent run does not exist.") from None
 
@@ -318,19 +327,25 @@ class InMemoryAgentRunRepository:
         project = self.state.projects.get(run.project_id) if run is not None else None
         if owner_id is None or run is None or project is None or project.owner_id != owner_id:
             raise BackendError("agent_run_not_found", "Agent run does not exist.")
-        return run
+        return deepcopy(run)
 
     def mark_running(self, run_id: UUID) -> AgentRun:
+        from backend.app.core.run_metadata import legacy_execution
+        current=self._expect(run_id,AgentRunStatus.QUEUED)
+        self._metadata(current,AgentRunStatus.QUEUED,current.execution_metadata,current.result_metadata)
+        execution=current.execution_metadata or legacy_execution(current.request_metadata)
         run = replace(
-            self._expect(run_id, AgentRunStatus.QUEUED),
+            current,
             status=AgentRunStatus.RUNNING, started_at=_now(), finished_at=None,
             result=None, error_message=None,
+            **self._metadata(current,AgentRunStatus.RUNNING,execution,None),
         )
         self.state.agent_runs[run.id] = run
-        return run
+        return deepcopy(run)
 
     def requeue_running(self, run_id: UUID) -> AgentRun:
         run = self._expect(run_id, AgentRunStatus.RUNNING)
+        self._metadata(run,AgentRunStatus.RUNNING,run.execution_metadata,run.result_metadata)
         if run.core_started_at is not None:
             raise BackendError(
                 "agent_run_state_conflict",
@@ -339,47 +354,68 @@ class InMemoryAgentRunRepository:
         queued = replace(
             run, status=AgentRunStatus.QUEUED, started_at=None,
             finished_at=None, result=None, error_message=None,
+            **self._metadata(run,AgentRunStatus.QUEUED,run.execution_metadata,None),
         )
         self.state.agent_runs[run_id] = queued
-        return queued
+        return deepcopy(queued)
 
     def mark_core_started(self, run_id: UUID) -> AgentCoreStart:
         run = self.state.agent_runs.get(run_id)
         if run is None:
             return AgentCoreStart(AgentCoreStartStatus.NOT_FOUND, None)
         if run.core_started_at is not None:
-            return AgentCoreStart(AgentCoreStartStatus.ALREADY_MARKED, run)
+            return AgentCoreStart(AgentCoreStartStatus.ALREADY_MARKED, deepcopy(run))
         if run.status != AgentRunStatus.RUNNING:
-            return AgentCoreStart(AgentCoreStartStatus.INVALID_STATE, run)
+            return AgentCoreStart(AgentCoreStartStatus.INVALID_STATE, deepcopy(run))
         marked = replace(run, core_started_at=_now())
         self.state.agent_runs[run_id] = marked
-        return AgentCoreStart(AgentCoreStartStatus.MARKED, marked)
+        return AgentCoreStart(AgentCoreStartStatus.MARKED, deepcopy(marked))
 
     def complete(
         self, run_id: UUID, result: str | None, *,
         prompt_tokens: int | None = None, completion_tokens: int | None = None,
+        result_metadata: dict | None = None,
     ) -> AgentRun:
-        run = replace(
-            self._expect(run_id, AgentRunStatus.RUNNING),
-            status=AgentRunStatus.COMPLETED, result=result,
-            error_message=None, prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens, finished_at=_now(),
-        )
-        self.state.agent_runs[run.id] = run
-        return run
+        with self.state.guard:
+            run=self._expect(run_id,AgentRunStatus.RUNNING)
+            self._metadata(run,AgentRunStatus.RUNNING,run.execution_metadata,run.result_metadata)
+            from backend.app.core.run_metadata import result_for
+            metadata=result_metadata if result_metadata is not None else result_for(run)
+            updated=replace(run,status=AgentRunStatus.COMPLETED,result=result,error_message=None,
+                prompt_tokens=prompt_tokens,completion_tokens=completion_tokens,finished_at=_now(),
+                **self._metadata(run,AgentRunStatus.COMPLETED,run.execution_metadata,metadata))
+            self.state.agent_runs[run.id]=updated
+            return deepcopy(updated)
 
-    def fail(self, run_id: UUID, error_message: str) -> AgentRun:
-        run = replace(
-            self._expect(run_id, AgentRunStatus.RUNNING),
-            status=AgentRunStatus.FAILED, result=None,
-            error_message=error_message, finished_at=_now(),
-        )
-        self.state.agent_runs[run.id] = run
-        return run
+    def fail(self, run_id: UUID, error_message: str, *, result_metadata: dict | None = None) -> AgentRun:
+        with self.state.guard:
+            run=self._expect(run_id,AgentRunStatus.RUNNING)
+            self._metadata(run,AgentRunStatus.RUNNING,run.execution_metadata,run.result_metadata)
+            from backend.app.core.run_metadata import result_for
+            metadata=result_metadata if result_metadata is not None else result_for(run,failed=True)
+            updated=replace(run,status=AgentRunStatus.FAILED,result=None,error_message=error_message,finished_at=_now(),
+                            **self._metadata(run,AgentRunStatus.FAILED,run.execution_metadata,metadata))
+            self.state.agent_runs[run.id]=updated
+            return deepcopy(updated)
+
+    def _metadata(self,run,status,execution,result):
+        from backend.app.core.run_metadata import checked
+        return checked(run.project_id,run.snapshot_id,run.run_type,status,self.state.snapshots.get(run.snapshot_id),
+                       run.request_metadata,execution,result)
+
+    def quarantine_invalid(self,run_id: UUID,error_message: str) -> AgentRun:
+        with self.state.guard:
+            run=self.get(run_id)
+            from backend.app.core.run_metadata import require_quarantine
+            require_quarantine(run,self.state.snapshots.get(run.snapshot_id))
+            failed=replace(run,status=AgentRunStatus.FAILED,error_message=error_message,
+                           started_at=run.started_at or _now(),finished_at=_now())
+            self.state.agent_runs[run.id]=failed
+            return deepcopy(failed)
 
     def list_for_project(self, project_id: UUID) -> list[AgentRun]:
         return sorted(
-            (run for run in self.state.agent_runs.values() if run.project_id == project_id),
+            (deepcopy(run) for run in self.state.agent_runs.values() if run.project_id == project_id),
             key=lambda run: (run.created_at, str(run.id)), reverse=True,
         )
 
@@ -396,7 +432,7 @@ class InMemoryAgentRunRepository:
             ),
             key=lambda run: (run.created_at, str(run.id)), reverse=True,
         )
-        return eligible[offset:offset + limit]
+        return deepcopy(eligible[offset:offset + limit])
 
     def _expect(self, run_id: UUID, expected: AgentRunStatus) -> AgentRun:
         run = self.get(run_id)

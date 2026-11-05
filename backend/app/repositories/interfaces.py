@@ -106,11 +106,13 @@ class AgentRunRepository(Protocol):
     def create(
         self, project_id: UUID, snapshot_id: UUID | None, *,
         task: str, run_type: str, model: str | None,
+        request_metadata: dict | None = None, execution_metadata: dict | None = None,
     ) -> AgentRun: ...
 
     def create_queued(
         self, project_id: UUID, snapshot_id: UUID | None, *,
         task: str, run_type: str, model: str | None,
+        request_metadata: dict | None = None, execution_metadata: dict | None = None,
     ) -> AgentRun: ...
 
     def get(self, run_id: UUID) -> AgentRun: ...
@@ -126,9 +128,12 @@ class AgentRunRepository(Protocol):
     def complete(
         self, run_id: UUID, result: str | None, *,
         prompt_tokens: int | None = None, completion_tokens: int | None = None,
+        result_metadata: dict | None = None,
     ) -> AgentRun: ...
 
-    def fail(self, run_id: UUID, error_message: str) -> AgentRun: ...
+    def fail(self, run_id: UUID, error_message: str, *, result_metadata: dict | None = None) -> AgentRun: ...
+
+    def quarantine_invalid(self, run_id: UUID, error_message: str) -> AgentRun: ...
 
     def list_for_project(self, project_id: UUID) -> list[AgentRun]: ...
 

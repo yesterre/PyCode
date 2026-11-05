@@ -86,6 +86,7 @@ ERROR_CATALOG.update({
         "database_conflict": 409,
         "database_failed": 500,
         "agent_run_state_conflict": 409,
+        "invalid_run_metadata": 500,
         "background_task_state_conflict": 409,
         "background_task_consistency_error": 500,
         "worker_execution_lost": 500,

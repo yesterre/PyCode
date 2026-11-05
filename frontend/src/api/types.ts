@@ -45,6 +45,19 @@ export type AgentRun = {
   id: string; project_id: string; snapshot_id: string | null; task: string; run_type: string;
   status: TaskStatus; result: string | null; error_message: string | null;
   created_at: string; started_at: string | null; core_started_at: string | null; finished_at: string | null
+  request_metadata?: {schema_version: 1; binding: RunBinding; entrypoint: 'ask'|'impact'|'agent'} | null
+  execution_metadata?: {schema_version: 1; binding: RunBinding; strategy: 'fast'|'agent'; source: 'legacy_entrypoint'} | null
+  result_metadata?: RunResultMetadata | null
+  metadata_warnings?: string[]
+}
+export type RunBinding = {project_id: string; snapshot_id: string; commit_sha: string}
+export type RunResultMetadata = {
+  schema_version: 1; binding: RunBinding; outcome: 'completed'|'failed'
+  quality: 'evidence_available'|'partial'|'insufficient'|'unavailable'; intent: string | null
+  references: {path: string; symbol: string | null; start_line: number | null; end_line: number | null;
+    chunk_ids: string[]; chunk_ids_omitted: number; source: RetrievalSource;
+    coverage: 'complete_symbol'|'complete_file'|'unavailable'; relation_resolution: 'static'|'declaration'|'legacy'|'unknown'|null}[]
+  references_omitted: number; diagnostics: string[]
 }
 export type EventType = 'run_started' | 'plan_created' | 'context_updated' | 'llm_started' |
   'llm_finished' | 'tool_started' | 'tool_finished' | 'run_completed' | 'run_failed'

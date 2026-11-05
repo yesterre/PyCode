@@ -321,10 +321,16 @@ class StaleRunningReconciler:
             if failed is None:
                 return "noop"
             if run_matches_task:
-                if run.status == AgentRunStatus.QUEUED:
-                    run = self.uow.agent_runs.mark_running(run.id)
-                if run.status == AgentRunStatus.RUNNING:
-                    run = self.uow.agent_runs.fail(run.id, error_message)
+                was_inflight=run.status in {AgentRunStatus.QUEUED,AgentRunStatus.RUNNING}
+                try:
+                    if run.status == AgentRunStatus.QUEUED:
+                        run = self.uow.agent_runs.mark_running(run.id)
+                    if run.status == AgentRunStatus.RUNNING:
+                        run = self.uow.agent_runs.fail(run.id, error_message)
+                except BackendError as exc:
+                    if exc.code!='invalid_run_metadata':raise
+                    run=self.uow.agent_runs.quarantine_invalid(run.id,error_message)
+                if was_inflight and run.status == AgentRunStatus.FAILED:
                     if post_core:
                         normalized = ApplicationTraceNormalizer().normalize(
                             run,

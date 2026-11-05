@@ -463,6 +463,7 @@ class ProjectService:
     def _analyze(
         self, project_id: UUID, text: str, model: str | None, *, impact: bool, owner_id: UUID,
     ) -> ProjectAnalysis:
+        from backend.app.core.run_metadata import legacy_request,legacy_execution,result_for
         with self.uow.transaction():
             self.uow.projects.get_owned(project_id, owner_id).ensure_not_archived()
         with self.operations.operation(project_id) as project_lock:
@@ -478,9 +479,11 @@ class ProjectService:
                     )
                 if self.admission is not None:
                     self.admission.admit_analysis(owner_id)
+                request=legacy_request(snapshot,'impact' if impact else 'ask')
                 run = self.uow.agent_runs.create(
                     project_id, snapshot.id, task=text,
                     run_type="impact" if impact else "ask", model=model,
+                    request_metadata=request,execution_metadata=legacy_execution(request),
                 )
             try:
                 root, snapshot, bundle = self._analysis_snapshot(
@@ -522,9 +525,10 @@ class ProjectService:
                 with self.uow.transaction():
                     self.uow.agent_runs.fail(run.id, _safe_analysis_error(exc))
                 raise
+            metadata=result_for(run,[result.retrieval],intent=result.intent)
             with self.uow.transaction():
                 project_lock.ensure_owned()
-                self.uow.agent_runs.complete(run.id, result.answer)
+                self.uow.agent_runs.complete(run.id, result.answer,result_metadata=metadata)
             return ProjectAnalysis(project_id, result.answer, result.intent, result.evidence, result.retrieval)
 
     def retrieval_context(self, root, snapshot, bundle):

@@ -69,6 +69,7 @@ class AgentRunService:
         self, project_id: UUID, task_text: str,
         idempotency_key: str | None = None, *, owner_id: UUID,
     ) -> AgentRunSubmission:
+        from backend.app.core.run_metadata import legacy_request
         fingerprint = (
             agent_run_fingerprint(project_id, task_text)
             if idempotency_key is not None else None
@@ -122,6 +123,7 @@ class AgentRunService:
                 task=task_text,
                 run_type="agent",
                 model=None,
+                request_metadata=legacy_request(snapshot,'agent'),
             )
             background_task = self.unit_of_work.background_tasks.link_agent_run(
                 creation.task.id, run.id, snapshot.id,
@@ -136,7 +138,14 @@ class AgentRunService:
 
     def get_owned(self, run_id: UUID, owner_id: UUID) -> AgentRun:
         with self.unit_of_work.transaction():
-            return self.unit_of_work.agent_runs.get_owned(run_id, owner_id)
+            run=self.unit_of_work.agent_runs.get_owned(run_id, owner_id)
+            snapshot=None
+            if run.snapshot_id and any(v is not None for v in (run.request_metadata,run.execution_metadata,run.result_metadata)):
+                try:snapshot=self.unit_of_work.snapshots.get_for_project(run.project_id,run.snapshot_id)
+                except BackendError as exc:
+                    if exc.code!='snapshot_not_found':raise
+            from backend.app.core.run_metadata import public_run
+            return public_run(run,snapshot)
 
     def get_trace(self, run_id: UUID, *, owner_id: UUID) -> list[ApplicationTraceEvent]:
         with self.unit_of_work.transaction():
@@ -170,7 +179,7 @@ class AgentRunService:
         except BackendError as exc:
             if (
                 claim.status == BackgroundTaskClaimStatus.CLAIMED
-                and exc.code == "background_task_consistency_error"
+                and exc.code in {"background_task_consistency_error","project_not_ready","invalid_run_metadata"}
             ):
                 self._terminalize_invalid_claim(background_task, exc)
             raise
@@ -218,6 +227,11 @@ class AgentRunService:
 
             if run.status != AgentRunStatus.QUEUED:
                 raise self._consistency_error()
+            try:
+                self.unit_of_work.snapshots.get_for_project(run.project_id,run.snapshot_id)
+            except BackendError as exc:
+                if exc.code!='snapshot_not_found':raise
+                raise BackendError('project_not_ready','Build the project index before analysis.') from None
             run = self.unit_of_work.agent_runs.mark_running(run.id)
 
         log_event("task_claimed", task_id=background_task.id, run_id=run.id, task_type=AGENT_RUN_TASK_TYPE,
@@ -282,6 +296,8 @@ class AgentRunService:
                     return self.get(run.id)
                 raise BackendError(error_code, error_message)
 
+            from backend.app.core.run_metadata import result_for,agent_retrievals
+            metadata=result_for(run,agent_retrievals(result))
             with self.unit_of_work.transaction():
                 if self.unit_of_work.background_tasks.guard_execution(
                     task_id, execution_token,
@@ -290,6 +306,7 @@ class AgentRunService:
                 else:
                     completed = self.unit_of_work.agent_runs.complete(
                         run.id, result.answer,
+                        result_metadata=metadata,
                     )
                     trace_session = trace_holder[0] if trace_holder else None
                     if trace_session is not None and trace_session.observed:
@@ -347,10 +364,14 @@ class AgentRunService:
                     # A corrupt Task link must not fail an unrelated Run.
                     if (run.project_id == background_task.project_id
                             and run.snapshot_id == background_task.snapshot_id):
-                        if run.status == AgentRunStatus.QUEUED:
-                            run = self.unit_of_work.agent_runs.mark_running(run.id)
-                        if run.status == AgentRunStatus.RUNNING:
-                            self.unit_of_work.agent_runs.fail(run.id, error.message)
+                        try:
+                            if run.status == AgentRunStatus.QUEUED:
+                                run = self.unit_of_work.agent_runs.mark_running(run.id)
+                            if run.status == AgentRunStatus.RUNNING:
+                                self.unit_of_work.agent_runs.fail(run.id, error.message)
+                        except BackendError as exc:
+                            if exc.code!='invalid_run_metadata':raise
+                            self.unit_of_work.agent_runs.quarantine_invalid(run.id,error.message)
             self.unit_of_work.background_tasks.mark_failed(
                 background_task.id,
                 error_code=error.code,
@@ -435,7 +456,14 @@ class AgentRunService:
             ) is None:
                 self._log_stale_write(task_id, run_id, execution_token)
                 return False
-            failed_run = self.unit_of_work.agent_runs.fail(run_id, error_message)
+            from backend.app.core.run_metadata import result_for,agent_retrievals
+            run=self.unit_of_work.agent_runs.get(run_id)
+            try:
+                metadata=result_for(run,agent_retrievals(result),failed=True)
+                failed_run = self.unit_of_work.agent_runs.fail(run_id, error_message,result_metadata=metadata)
+            except BackendError as exc:
+                if exc.code!='invalid_run_metadata':raise
+                failed_run=self.unit_of_work.agent_runs.quarantine_invalid(run_id,error_message)
             if trace_session is not None and trace_session.observed and result is not None:
                 try:
                     terminal_event = trace_session.append_terminal(

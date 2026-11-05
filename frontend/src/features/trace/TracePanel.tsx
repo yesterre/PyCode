@@ -5,6 +5,7 @@ import type { TraceEvent } from '../../api/types'
 import { Badge, Button, Card, EmptyState, ErrorState, SectionHeading, Spinner, StatusBadge } from '../../components/ui'
 import { llmActivities, orderedEvents, toolActivities } from './model'
 import { useAgentTrace } from './useAgentTrace'
+import { RunEvidence } from '../agent/RunEvidence'
 import { traceEventLabel } from '../../presentation'
 
 const terminal = (status?: string) => status === 'completed' || status === 'failed'
@@ -54,6 +55,7 @@ export function TracePanel({projectId, runId}: {projectId: string; runId: string
     {trace.connection === 'reconnecting' && <p className="mb-3 text-sm text-amber-200">正在重新连接实时轨迹…</p>}
     {durable.error && <ErrorState error={durable.error} />}
     {terminal(run.data?.status) ? <div className="mt-4 rounded-lg border border-slate-700 p-4"><h3 className="mb-2 font-semibold">{run.data?.status === 'failed' ? '错误' : '分析结果'}</h3><p className="whitespace-pre-wrap text-sm leading-7 text-slate-300">{run.data?.status === 'failed' ? run.data.error_message ?? '运行失败，但没有错误信息。' : run.data?.result ?? '暂无结果'}</p></div> : <p className="text-sm text-slate-400">{run.data?.status === 'queued' ? '智能体分析正在排队。' : '智能体分析正在运行。'}</p>}
+    {terminal(run.data?.status) && <RunEvidence run={run.data!} />}
     </Card><TraceContents events={events} />
   </section>
 }
