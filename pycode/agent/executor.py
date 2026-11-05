@@ -93,8 +93,15 @@ def run_agent_task(
     """Run the Agent runtime loop and optionally ask an LLM to summarize evidence."""
     from pycode.agent.runtime import run_agent_runtime
 
+    seed = context.initial_evidence if context is not None else None
+    if seed is not None:
+        if context.project_root != Path(project_path).resolve() or context.project_root != seed.context.root:
+            raise ValueError('Initial evidence belongs to another workspace')
+        seed.validate(context.retrieval_context)
+
     task = AgentTask(
         description=description,
+        initial_evidence=seed,
         project_path=Path(project_path),
         allow_tests=allow_tests,
         max_steps=max_steps,

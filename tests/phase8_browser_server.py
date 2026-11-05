@@ -1,6 +1,7 @@
 """Controlled Phase 8 browser server: real FastAPI routes, no paid model or external services."""
 
 import asyncio
+import json
 import shutil
 import tempfile
 import threading
@@ -80,6 +81,20 @@ class FakeRedis:
 class ControlledLLM:
     def generate(self, prompt: str) -> str:
         time.sleep(0.3)  # Keep live SSE observable without a remote model.
+        if prompt.startswith('You are the PyCode LLM Planner.'):
+            payload = json.loads(prompt.split('Planning input:\n')[-1])
+            if payload.get('initial_evidence'):
+                question = payload['initial_evidence']['question']
+                return json.dumps([dict(tool='retrieve_context',arguments={'question':question},reason='inspect seed',required=False)])
+        if prompt.startswith('You are the PyCode LLM Next-Action Planner.'):
+            payload = json.loads(prompt.split('Next-action input:\n')[-1])
+            if any(section['name']=='initial_evidence' for section in payload['context_sections']) or any(
+                    result.get('data',{}).get('initial_evidence_reused') for result in payload['recent_tool_results']):
+                if not payload['recent_tool_results']:
+                    section = next(s for s in payload['context_sections'] if s['name']=='initial_evidence')
+                    question = json.loads(section['content'])['question']
+                    return json.dumps(dict(action_type='tool_call',tool_name='retrieve_context',arguments={'question':question},reason='inspect seed'))
+                return json.dumps(dict(action_type='final_answer',final_answer='Controlled upgraded answer.',reason='limited evidence'))
         return "Controlled repository answer."
 
 

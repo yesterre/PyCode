@@ -154,6 +154,8 @@ def build_llm_planner_prompt(
             for memory in relevant_memories or []
         ],
     }
+    if task.initial_evidence is not None:
+        payload['initial_evidence'] = task.initial_evidence.projection()
     return "\n\n".join(
         [
             "You are the PyCode LLM Planner.",

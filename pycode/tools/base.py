@@ -14,6 +14,7 @@ class ToolContext:
     max_output_chars: int = 4000
     state: dict[str, Any] = field(default_factory=dict)
     retrieval_context: "RetrievalContext | None" = None
+    initial_evidence: Any = field(default=None, repr=False)
 
     @property
     def project_root(self) -> Path:

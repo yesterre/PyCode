@@ -1,0 +1,7 @@
+[
+  {"question":"explain main.py","rule":"fast","preflight":"sufficient","final":"fast"},
+  {"question":"explain absent.py","rule":"fast","preflight":"insufficient","final":"agent"},
+  {"question":"Explain `unseen_symbol`","rule":"fast","preflight":"insufficient","final":"agent"},
+  {"question":"where is the entrypoint?","filename":"logic.py","rule":"fast","preflight":"insufficient","final":"agent"},
+  {"question":"investigate cross-module call chain","rule":"agent","preflight":null,"final":"agent"}
+]

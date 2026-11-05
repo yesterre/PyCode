@@ -2,7 +2,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, expect, it, vi } from 'vitest'
 import { getAgentRun, getTrace } from '../../api/agentRuns'
-import { TracePanel } from './TracePanel'
+import { TracePanel, QuestionProgress } from './TracePanel'
 
 vi.mock('../../api/agentRuns', () => ({getAgentRun: vi.fn(), getTrace: vi.fn(),
   eventsUrl: (id: string) => `/api/v1/agent-runs/${id}/events`}))
@@ -15,6 +15,25 @@ const baseRun = {id: 'r', project_id: 'p', task: 'Inspect code', status: 'comple
   error_message: null, snapshot_id: 's', run_type: 'agent', created_at: '', started_at: null,
   core_started_at: null, finished_at: null}
 afterEach(() => {vi.unstubAllGlobals(); vi.clearAllMocks()})
+
+it.each(['sufficient','insufficient','failed'] as const)('shows safe persisted preflight %s and explicit coverage', status => {
+  const run={...baseRun,execution_metadata:{schema_version:3,initial_strategy:'fast',strategy:status==='insufficient'?'agent':'fast',
+    preflight:{status,reasons:status==='insufficient'?['budget_limited']:[],pack_digest:'a'.repeat(64),
+      selected_count:1,discarded_count:2,budget:4096,estimated_tokens:2000}}}
+  render(<QuestionProgress run={run as never} events={[]} />)
+  const value=screen.getByRole('status')
+  expect(value).toHaveTextContent(status==='insufficient'?'已升级为智能体分析':status==='sufficient'?'继续快速回答':'未通过升级重试')
+  expect(value).toHaveTextContent('舍弃 2 条')
+  expect(value).toHaveTextContent('不代表实际模型用量')
+})
+
+it('shows upgrade immediately from authenticated trace before the next Run poll',()=>{
+  render(<QuestionProgress run={baseRun as never} events={[{schema_version:1,sequence:1,event_type:'context_updated',
+    occurred_at:'2026-01-01T00:00:00Z',tool_name:null,payload:{question_preflight:{status:'insufficient',reasons:['evidence_empty'],
+      selected_count:0,discarded_count:0,budget:4096,estimated_tokens:100}}}]} />)
+  expect(screen.getByRole('status')).toHaveTextContent('已升级为智能体分析')
+  expect(screen.getByRole('status')).toHaveTextContent('没有可用证据')
+})
 
 it('restores durable Plan, Context, Tool and result for a completed run', async () => {
   vi.mocked(getAgentRun).mockResolvedValue(baseRun as never)

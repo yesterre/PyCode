@@ -32,7 +32,8 @@ def test_question_full_worker_uses_saved_strategy_and_real_trace(resources, work
     run=r.context.client.get('/api/v1/agent-runs/'+data['run_id'],headers=r.headers).json()
     assert run['status']=='completed', run
     assert len(seen)==1 and str(seen[0].snapshot_id)==run['snapshot_id']
-    assert run['execution_metadata']['schema_version']==2 and run['execution_metadata']['strategy']==strategy
+    assert run['execution_metadata']['schema_version']==(3 if strategy=='fast' else 2)
+    assert run['execution_metadata']['strategy']==strategy
     assert run['result_metadata']['outcome']=='completed'
     assert run['result_metadata']['binding']==run['execution_metadata']['binding']
     events=r.context.client.get('/api/v1/agent-runs/'+data['run_id']+'/trace',headers=r.headers).json()['events']

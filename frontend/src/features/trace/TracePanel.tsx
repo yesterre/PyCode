@@ -1,7 +1,7 @@
 import { useCallback, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getAgentRun, getTrace } from '../../api/agentRuns'
-import type { TraceEvent } from '../../api/types'
+import type { TraceEvent, AgentRun, QuestionPreflight } from '../../api/types'
 import { Badge, Button, Card, EmptyState, ErrorState, SectionHeading, Spinner, StatusBadge } from '../../components/ui'
 import { llmActivities, orderedEvents, toolActivities } from './model'
 import { useAgentTrace } from './useAgentTrace'
@@ -31,6 +31,23 @@ function TraceContents({events}: {events: TraceEvent[]}) {
   </div>
 }
 
+export function QuestionProgress({run, events}: {run: AgentRun; events: TraceEvent[]}) {
+  const stored = run.execution_metadata?.schema_version === 3 ? run.execution_metadata.preflight : null
+  const latest = [...events].reverse().find(event => event.event_type === 'context_updated' && event.payload.question_preflight)
+  const value = stored ?? latest?.payload.question_preflight as QuestionPreflight | undefined
+  if (!value || !['sufficient','insufficient','failed'].includes(value.status)) return null
+  const reasons: Record<string,string> = {evidence_empty:'没有可用证据',source_unavailable:'代码来源不可用',
+    partial_coverage:'代码覆盖不完整',budget_limited:'部分证据因预算或数量限制舍弃',
+    relations_unconfirmed:'静态关系不足以确认',preflight_failed:'检索预检失败'}
+  return <div className="mb-3 rounded-lg border border-slate-700 p-3 text-sm" role="status">
+    <p>{value.status === 'insufficient' ? '首轮证据不足，已升级为智能体分析，并保留首轮证据与原 Snapshot。' :
+      value.status === 'sufficient' ? '首轮证据可用，继续快速回答。' : '首轮证据预检失败，本次运行未通过升级重试。'}</p>
+    <p>{value.reasons?.map(reason => reasons[reason]).filter(Boolean).join('；')}</p>
+    {typeof value.selected_count === 'number' && typeof value.discarded_count === 'number' && <p>选用 {value.selected_count} 条证据，舍弃 {value.discarded_count} 条。</p>}
+    {value.budget != null && <p>证据预算估算：{value.estimated_tokens} / {value.budget}，不代表实际模型用量。</p>}
+  </div>
+}
+
 export function TracePanel({projectId, runId}: {projectId: string; runId: string}) {
   const queryClient = useQueryClient()
   const run = useQuery({queryKey: ['run', runId], queryFn: () => getAgentRun(runId),
@@ -50,10 +67,11 @@ export function TracePanel({projectId, runId}: {projectId: string; runId: string
   const connection = terminal(run.data?.status) && durable.data ? 'historical' : trace.connection
   const events = durable.data && (terminal(run.data?.status) || trace.connection === 'gap' || trace.connection === 'historical') ? durable.data.events : trace.events
   return <section><Card><SectionHeading title="分析执行轨迹" subtitle={run.data?.task} action={<div className="flex gap-2"><StatusBadge status={run.data?.status ?? 'queued'} /><StatusBadge status={connection} /></div>} />
-    {run.data?.execution_metadata?.schema_version === 2 && <p className="mb-3 text-sm text-slate-300">
+    {run.data?.execution_metadata && run.data.execution_metadata.schema_version !== 1 && <p className="mb-3 text-sm text-slate-300">
       执行方式：{run.data.execution_metadata.strategy === 'fast' ? '快速回答' : '智能体分析'} · 意图：{run.data.execution_metadata.intent}
       <span className="ml-2 text-xs text-slate-400">{run.data.execution_metadata.reasons.join(' · ')}</span>
     </p>}
+    <QuestionProgress run={run.data!} events={events} />
     {trace.connection === 'gap' && <p role="alert" className="mb-3 rounded bg-amber-400/10 p-3 text-sm text-amber-200">实时轨迹数据不完整。{terminal(run.data?.status) ? '当前展示持久化轨迹。' : '正在等待持久化轨迹。'}</p>}
     {trace.connection === 'unavailable' && <div className="mb-3 flex items-center gap-3 rounded bg-amber-400/10 p-3 text-sm text-amber-200">实时连接暂时不可用，运行状态仍会继续更新。<Button variant="quiet" onClick={trace.retry}>重试实时连接</Button></div>}
     {trace.connection === 'reconnecting' && <p className="mb-3 text-sm text-amber-200">正在重新连接实时轨迹…</p>}

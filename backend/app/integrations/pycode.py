@@ -114,17 +114,30 @@ class PyCodeAdapter:
         from pycode.question import route_question
         return route_question(question, target)
 
+    def prepare_question(self, question, decision, retrieval_context):
+        try:
+            return self.engine.prepare_question(question, decision, retrieval_context)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise BackendError('artifacts_unavailable', 'Question preflight inputs are unavailable.') from exc
+
+    @staticmethod
+    def failed_preflight_event(summary):
+        from pycode.agent.trace import TraceEvent
+        from datetime import datetime, timezone
+        return TraceEvent('ContextAssembled', datetime.now(timezone.utc), data={
+            'included_section_names': [], 'skipped_section_names': ['evidence'], 'question_preflight': summary})
+
     def answer_question(self, root, question, *, decision, model=None,
-                        retrieval_context, trace_observer=None):
+                        retrieval_context, trace_observer=None, preflight=None):
         try:
             return self.engine.answer_question(root, question, decision=decision, model=model,
                 llm_client=self._llm_client(model), retrieval_context=retrieval_context,
-                trace_observer=trace_observer)
+                trace_observer=trace_observer, preflight=preflight)
         except LLMError as exc:
             raise _model_error(exc) from exc
 
     def run_agent(self, root: Path, task: str, *, trace_observer=None, model=None,
-                  retrieval_context: RetrievalContext | None = None) -> AgentResult:
+                  retrieval_context: RetrievalContext | None = None, preflight=None) -> AgentResult:
         """Invoke the existing Agent facade without changing its runtime defaults."""
         try:
             kwargs = {"llm_client": self._llm_client(model)}
@@ -132,11 +145,17 @@ class PyCodeAdapter:
                 kwargs['model'] = model
             if retrieval_context is not None:
                 kwargs["retrieval_context"] = retrieval_context
+            if preflight is not None:
+                preflight.initial_evidence.validate(retrieval_context)
+                kwargs['initial_evidence'] = preflight.initial_evidence
             parameters = signature(self.engine.run_agent).parameters
             accepts_kwargs = any(p.kind == p.VAR_KEYWORD for p in parameters.values())
             if trace_observer is not None and ("trace_observer" in parameters or accepts_kwargs):
                 kwargs["trace_observer"] = trace_observer
-            return self.engine.run_agent(root, task, **kwargs)
+            result = self.engine.run_agent(root, task, **kwargs)
+            if preflight is not None and result.trace is not None:
+                result.trace.events.insert(0, preflight.event)
+            return result
         except LLMError as exc:
             raise _model_error(exc) from exc
 

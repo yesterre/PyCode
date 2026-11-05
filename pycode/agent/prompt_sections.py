@@ -91,6 +91,13 @@ def policy_section() -> ContextSection:
     )
 
 
+def initial_evidence_section(seed) -> ContextSection:
+    return ContextSection(name='initial_evidence', title='Initial Snapshot Evidence',
+        source='question_preflight', placement=PLACEMENT_USER,
+        content=_format_data(seed.projection()), metadata={'static': False}, priority=190,
+        reason='Same budgeted Pack from preflight; not an executed Tool or Memory.')
+
+
 def project_section(task: "AgentTask") -> ContextSection:
     return ContextSection(
         name="project",

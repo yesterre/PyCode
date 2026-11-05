@@ -174,7 +174,7 @@ def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, 
         ApplicationEventType.RUN_STARTED: {"run_type", "snapshot_id"},
         ApplicationEventType.PLAN_CREATED: {"source", "fallback_used", "steps"},
         ApplicationEventType.CONTEXT_UPDATED: {
-            "included_sections", "turn_index", "skipped_sections", "warnings", "retrieval",
+            "included_sections", "turn_index", "skipped_sections", "warnings", "retrieval", "question_preflight",
         },
         ApplicationEventType.LLM_STARTED: {"purpose", "turn_index", "model"},
         ApplicationEventType.LLM_FINISHED: {
@@ -185,6 +185,7 @@ def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, 
         ApplicationEventType.TOOL_FINISHED: {
             "outcome", "duration_ms", "summary", "error", "denied_by", "result_summary",
             "retrieval", "graph",
+            "retrieval_origin", "initial_pack_digest",
         },
         ApplicationEventType.RUN_COMPLETED: {
             "stop_reason", "has_result", "trace_complete", "duration_ms",
@@ -219,6 +220,10 @@ def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, 
                 raise ValueError("Invalid plan reason.")
             _require_bool(step["required"], "required")
     elif event_type == ApplicationEventType.CONTEXT_UPDATED:
+        if 'question_preflight' in payload:
+            from backend.app.core.run_metadata import PreflightMetadata
+            if PreflightMetadata.model_validate(payload['question_preflight']).model_dump(mode='json') != payload['question_preflight']:
+                raise ValueError('Invalid question preflight')
         if 'retrieval' in payload and (not isinstance(payload['retrieval'],dict)
                 or public_retrieval_summary(payload['retrieval']) != payload['retrieval']):
             raise ValueError('Invalid public retrieval summary')
@@ -255,6 +260,11 @@ def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, 
         if "reason" in payload and not isinstance(payload["reason"], str):
             raise ValueError("Invalid tool reason.")
     elif event_type == ApplicationEventType.TOOL_FINISHED:
+        if 'retrieval_origin' in payload or 'initial_pack_digest' in payload:
+            if (payload.get('retrieval_origin') != 'question_preflight' or 'retrieval' not in payload
+                or not isinstance(payload.get('initial_pack_digest'),str)
+                or not re.fullmatch(r'[0-9a-f]{64}',payload['initial_pack_digest'])):
+                raise ValueError('Invalid initial evidence origin')
         if payload["outcome"] not in {"success", "failed", "denied"}:
             raise ValueError("Invalid tool outcome.")
         if payload.get("denied_by") not in {None, "policy", "hook", "other"}:
@@ -600,7 +610,7 @@ _CONTEXT_MAP = {
     "response_contract": "system", "project": "project", "plan": "plan",
     "tool_results": "tool_results", "evidence": "evidence", "tasks": "task_state",
     "todo": "task_state", "memory": "memory", "memory_index": "memory",
-    "trace": "execution_history",
+    "trace": "execution_history", 'initial_evidence': 'evidence',
 }
 
 
@@ -819,6 +829,9 @@ class ApplicationTraceNormalizer:
         retrieval = public_retrieval_summary(data.get('retrieval'))
         if retrieval is not None:
             payload['retrieval'] = retrieval
+        if 'question_preflight' in data:
+            from backend.app.core.run_metadata import PreflightMetadata
+            payload['question_preflight'] = PreflightMetadata.model_validate(data['question_preflight']).model_dump(mode='json')
         return payload
 
     @staticmethod
@@ -852,6 +865,9 @@ class ApplicationTraceNormalizer:
             retrieval = public_retrieval_summary(getattr(tool, "retrieval", None))
             if retrieval is not None:
                 payload["retrieval"] = retrieval
+                digest = getattr(tool, 'initial_pack_digest', None)
+                if isinstance(digest,str) and re.fullmatch(r'[0-9a-f]{64}',digest):
+                    payload.update(retrieval_origin='question_preflight', initial_pack_digest=digest)
         if str(getattr(tool,'tool',''))=='query_graph':
             graph=public_graph_summary(getattr(tool,'graph',None))
             if graph is not None:

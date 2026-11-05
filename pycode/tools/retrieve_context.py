@@ -29,6 +29,17 @@ def retrieve_context(
             return failure("retrieve_context", "Artifact path denied.", "trusted_artifacts_cannot_be_overridden")
         if trusted.root != context.project_root:
             return failure("retrieve_context", "Artifact path denied.", "trusted_workspace_mismatch")
+        seed = context.initial_evidence
+        if seed is not None:
+            try:
+                seed.validate(trusted)
+                if seed.matches(question, target, intent):
+                    data = seed.projection()
+                    data['compatibility_notes'] = ['max_snippet_chars_ignored_to_preserve_evidence'] if max_snippet_chars is not None else []
+                    data['initial_evidence_reused'] = True
+                    return success('retrieve_context', f'Selected {len(seed.result.items)} context items (initial Pack reused).', **data)
+            except ValueError:
+                return failure('retrieve_context', 'Initial evidence denied.', 'initial_evidence_mismatch')
         return _retrieve(trusted, question, target, intent, max_snippet_chars)
     try:
         resolved_index_path = context.resolve_in_project(

@@ -21,6 +21,7 @@ class AgentTask:
     max_steps: int = 8
     graph_path: Path | None = None
     task_type: str = "general"
+    initial_evidence: object | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass

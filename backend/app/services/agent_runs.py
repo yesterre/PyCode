@@ -438,19 +438,7 @@ class AgentRunService:
         )
         is_question = marked.run.run_type == 'question'
         is_fast = is_question and marked.run.execution_metadata['strategy'] == 'fast'
-        run_agent = self.adapter.answer_question if is_fast else self.adapter.run_agent
-        # Preserve compatibility with old injected test/extension adapters. The
-        # production PyCodeAdapter always accepts the trusted context.
-        parameters = signature(run_agent).parameters
-        accepts_kwargs = any(p.kind == p.VAR_KEYWORD for p in parameters.values())
-        kwargs = {}
-        if is_fast:
-            kwargs['decision'] = marked.run.execution_metadata
-            kwargs['model'] = marked.run.model
-        elif is_question:
-            kwargs['model'] = marked.run.model
-        if "retrieval_context" in parameters or accepts_kwargs:
-            kwargs["retrieval_context"] = retrieval_context
+        trace_session = None
         try:
             trace_session = RealtimeTraceSession(
                 marked.run, ownership, self.trace_publisher,
@@ -458,10 +446,47 @@ class AgentRunService:
             trace_holder.append(trace_session)
         except Exception:
             logger.warning("Realtime Trace activation degraded run_id=%s", run_id, exc_info=True)
-            return run_agent(repository, task_text, **kwargs)
+        preflight = None
+        execution = marked.run.execution_metadata
+        if is_fast:
+            try:
+                preflight = self.adapter.prepare_question(task_text, execution, retrieval_context)
+            except Exception:
+                summary = dict(status='failed', reasons=['preflight_failed'], pack_digest=None,
+                    selected_count=0, discarded_count=0, budget=None, estimated_tokens=None)
+                self._record_preflight(task_id, marked.run, execution_token, summary)
+                if trace_session is not None:
+                    trace_session.observe('context', self.adapter.failed_preflight_event(summary))
+                raise
+            updated = self._record_preflight(task_id, marked.run, execution_token, preflight.summary())
+            execution = updated.execution_metadata
+            is_fast = execution['strategy'] == 'fast'
+            if trace_session is not None:
+                trace_session.observe('context', preflight.event)
+        run_agent = self.adapter.answer_question if is_fast else self.adapter.run_agent
+        parameters = signature(run_agent).parameters
+        accepts_kwargs = any(p.kind == p.VAR_KEYWORD for p in parameters.values())
+        kwargs = {}
+        if is_fast:
+            kwargs['decision'] = execution
+        if is_question:
+            kwargs['model'] = marked.run.model
+        if preflight is not None:
+            kwargs['preflight'] = preflight
+        if 'retrieval_context' in parameters or accepts_kwargs:
+            kwargs['retrieval_context'] = retrieval_context
         if "trace_observer" in parameters or accepts_kwargs:
-            kwargs["trace_observer"] = trace_session.observe
+            kwargs["trace_observer"] = trace_session.observe if trace_session is not None else None
         return run_agent(repository, task_text, **kwargs)
+
+    def _record_preflight(self, task_id, run, token, summary):
+        from backend.app.core.run_metadata import preflight_execution
+        execution = preflight_execution(run.execution_metadata, summary)
+        with self.unit_of_work.transaction():
+            task = self.unit_of_work.background_tasks.guard_execution(task_id, token)
+            if task is None or task.agent_run_id != run.id or task.project_id != run.project_id or task.snapshot_id != run.snapshot_id:
+                raise self._consistency_error()
+            return self.unit_of_work.agent_runs.record_question_preflight(run.id, run.execution_metadata, execution)
 
     def _fail(
         self,

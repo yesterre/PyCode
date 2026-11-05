@@ -83,6 +83,41 @@ class QuestionExecutionMetadata(QuestionRequestMetadata):
         return self
 
 
+class PreflightMetadata(StrictMetadata):
+    status: Literal['sufficient', 'insufficient', 'failed']
+    reasons: list[Literal['evidence_empty', 'source_unavailable', 'partial_coverage',
+                         'budget_limited', 'relations_unconfirmed', 'preflight_failed']] = Field(max_length=6)
+    pack_digest: str | None = Field(pattern=r'^[0-9a-f]{64}$')
+    selected_count: int = Field(ge=0, le=20)
+    discarded_count: int = Field(ge=0)
+    budget: int | None = Field(ge=4096, le=1048576)
+    estimated_tokens: int | None = Field(ge=0)
+
+    @model_validator(mode='after')
+    def coherent(self):
+        if (len(set(self.reasons)) != len(self.reasons)
+            or (self.status == 'sufficient' and self.reasons)
+            or (self.status == 'insufficient' and (not self.reasons or 'preflight_failed' in self.reasons))
+            or (self.status == 'failed' and (self.reasons != ['preflight_failed'] or self.pack_digest is not None
+                or self.budget is not None or self.estimated_tokens is not None or self.selected_count or self.discarded_count))
+            or (self.status != 'failed' and (self.pack_digest is None or self.budget is None
+                or self.estimated_tokens is None or self.estimated_tokens > self.budget))):
+            raise ValueError('Inconsistent preflight metadata')
+        return self
+
+
+class QuestionExecutionMetadataV3(QuestionExecutionMetadata):
+    schema_version: Literal[3]
+    initial_strategy: Literal['fast']
+    preflight: PreflightMetadata
+
+    @model_validator(mode='after')
+    def coherent_preflight(self):
+        if (self.preflight.status == 'insufficient') != (self.strategy == 'agent'):
+            raise ValueError('Preflight strategy mismatch')
+        return self
+
+
 class EvidenceReference(StrictMetadata):
     path: str = Field(min_length=1, max_length=500)
     symbol: str | None = Field(default=None, max_length=200)
@@ -152,6 +187,8 @@ def validated(name, value):
         if isinstance(value, dict) and type(value.get('schema_version')) is int and value['schema_version'] == 2:
             model = {'request_metadata': QuestionRequestMetadata,
                      'execution_metadata': QuestionExecutionMetadata}.get(name, model)
+        if name == 'execution_metadata' and isinstance(value, dict) and type(value.get('schema_version')) is int and value['schema_version'] == 3:
+            model = QuestionExecutionMetadataV3
         return model.model_validate(value).model_dump(mode='json')
     except (ValueError, TypeError, KeyError, RecursionError):
         raise invalid_metadata() from None
@@ -192,12 +229,33 @@ def checked(project_id, snapshot_id, run_type, status, snapshot, request, execut
         or any(value is not None and value['binding']!=binding_for(snapshot) for value in values.values())
         or (status!='queued' and execution is None)
         or (request['schema_version']==1 and execution is not None and execution!=legacy_execution(request))
-        or (request['schema_version']==2 and (execution is None or execution['schema_version']!=2
+        or (request['schema_version']==2 and (execution is None or execution['schema_version'] not in {2,3}
             or (request['target'] is not None and request['target']!=execution['target'])))
         or ((status in {'completed','failed'}) != (result is not None))
         or (result is not None and result['outcome']!=status)):
         raise invalid_metadata()
     return values
+
+
+def preflight_execution(execution, summary):
+    initial = validated('execution_metadata', execution)
+    if initial is None or initial['schema_version'] != 2 or initial['strategy'] != 'fast':
+        raise invalid_metadata()
+    value = dict(initial, schema_version=3, initial_strategy='fast', preflight=summary)
+    if summary['status'] == 'insufficient':
+        value.update(strategy='agent', evidence_requirement='multi_step')
+    return validated('execution_metadata', value)
+
+
+def require_preflight_transition(run, expected, proposed):
+    """CAS once, after marker; no binding, request, target or policy rewrites."""
+    value = validated('execution_metadata', proposed)
+    if (run.status != 'running' or run.core_started_at is None
+        or value is None or value['schema_version'] != 3
+        or preflight_execution(expected, value['preflight']) != value
+        or run.execution_metadata not in (expected, value)):
+        raise BackendError('agent_run_state_conflict', 'Question preflight cannot make this transition.')
+    return value
 
 
 def public_run(run, snapshot):
@@ -284,5 +342,7 @@ def result_for(run, retrievals=(), *, intent=None, failed=False):
 def agent_retrievals(result):
     if getattr(result, 'retrieval', None) is not None:
         return [result.retrieval.summary()]
-    return [getattr(tool,'data',{}).get('retrieval') for tool in getattr(result,'tool_results',())
+    initial = [event.data['retrieval'] for event in getattr(getattr(result,'trace',None),'events',())
+               if isinstance(getattr(event,'data',None),dict) and 'question_preflight' in event.data and 'retrieval' in event.data]
+    return initial + [getattr(tool,'data',{}).get('retrieval') for tool in getattr(result,'tool_results',())
             if isinstance(getattr(tool,'data',None),dict)]

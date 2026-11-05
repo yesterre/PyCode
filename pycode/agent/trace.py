@@ -50,6 +50,7 @@ class ToolTrace:
     result_data: dict[str, Any] = field(default_factory=dict)
     retrieval: dict[str, Any] | None = None
     graph: dict[str, Any] | None = None
+    initial_pack_digest: str | None = None
     _started_counter: float = field(default_factory=perf_counter, repr=False)
 
     def finish(self, result: ToolResult) -> None:
@@ -62,6 +63,8 @@ class ToolTrace:
             # Keep the code-free metadata projection intact; generic trace
             # summaries intentionally truncate nested values and lose bindings.
             self.retrieval = result.data["retrieval"]
+            if result.data.get('initial_evidence_reused') is True:
+                self.initial_pack_digest = result.data.get('initial_pack_digest')
         if (result.tool == 'query_graph' and isinstance(result.data.get('graph'),dict)
                 and result.data['graph'].get('graph_schema_version') in {2,3,4}):
             self.graph = result.data['graph']
@@ -98,6 +101,8 @@ class ToolTrace:
         }
         if self.graph is not None:
             value['graph'] = self.graph
+        if self.initial_pack_digest is not None:
+            value['initial_pack_digest'] = self.initial_pack_digest
         return value
 
 

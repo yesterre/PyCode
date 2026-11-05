@@ -125,6 +125,8 @@ class AgentRunRepository(Protocol):
 
     def mark_core_started(self, run_id: UUID) -> AgentCoreStart: ...
 
+    def record_question_preflight(self, run_id: UUID, expected: dict, execution: dict) -> AgentRun: ...
+
     def complete(
         self, run_id: UUID, result: str | None, *,
         prompt_tokens: int | None = None, completion_tokens: int | None = None,

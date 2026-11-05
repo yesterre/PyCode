@@ -371,6 +371,16 @@ class InMemoryAgentRunRepository:
         self.state.agent_runs[run_id] = marked
         return AgentCoreStart(AgentCoreStartStatus.MARKED, deepcopy(marked))
 
+    def record_question_preflight(self, run_id: UUID, expected: dict, execution: dict) -> AgentRun:
+        from backend.app.core.run_metadata import require_preflight_transition
+        with self.state.guard:
+            run = self.get(run_id)
+            value = require_preflight_transition(run, expected, execution)
+            metadata = self._metadata(run, run.status, value, None)
+            updated = replace(run, **metadata)
+            self.state.agent_runs[run_id] = updated
+            return deepcopy(updated)
+
     def complete(
         self, run_id: UUID, result: str | None, *,
         prompt_tokens: int | None = None, completion_tokens: int | None = None,

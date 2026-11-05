@@ -464,6 +464,15 @@ class SqlAlchemyAgentRunRepository:
             status = AgentCoreStartStatus.INVALID_STATE
         return AgentCoreStart(status, _agent_run(record))
 
+    def record_question_preflight(self, run_id: UUID, expected: dict, execution: dict) -> AgentRun:
+        from backend.app.core.run_metadata import require_preflight_transition
+        record = self._get_record(run_id)
+        value = require_preflight_transition(_agent_run(record), expected, execution)
+        metadata = self._metadata(record, record.status, value, None)
+        for name, value in metadata.items():setattr(record, name, value)
+        self.session.flush()
+        return _agent_run(record)
+
     def complete(
         self, run_id: UUID, result: str | None, *,
         prompt_tokens: int | None = None, completion_tokens: int | None = None,

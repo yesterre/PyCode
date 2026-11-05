@@ -164,8 +164,12 @@ class PyCodeEngine:
         index, graph = _retrieval_artifacts(root, index_path, graph_path, retrieval_context)
         return _answer(retrieve_for_question(question, root, index, graph, context=retrieval_context), model, llm_client)
 
+    def prepare_question(self, question, decision, retrieval_context):
+        from pycode.question import prepare_question
+        return prepare_question(question, decision, retrieval_context)
+
     def answer_question(self, project_path, question, *, decision, model=None,
-                        llm_client=None, retrieval_context, trace_observer=None):
+                        llm_client=None, retrieval_context, trace_observer=None, preflight=None):
         """One Fast retrieval/answer, using the same Pack and prompt as ask/impact."""
         from pycode.agent.trace import TraceRecorder
         from pycode.agent.types import AgentTask
@@ -179,16 +183,20 @@ class PyCodeEngine:
         target = decision['target']
         if target and decision['intent'] == 'general' and target not in question:
             query_text += '\n' + target
-        retrieval = retrieve(RetrievalRequest(Query(query_text, decision['intent'], target)), retrieval_context)
+        retrieval = (preflight.initial_evidence.validate(retrieval_context) if preflight is not None else
+                     retrieve(RetrievalRequest(Query(query_text, decision['intent'], target)), retrieval_context))
         if query_text != question:
             from dataclasses import replace
             retrieval = replace(retrieval, question=question)
         event = recorder.record_event('ContextAssembled', data={
-            'included_section_names': ['evidence'], 'skipped_section_names': []})
+            'included_section_names': ['evidence'], 'skipped_section_names': []}) if preflight is None else preflight.event
+        if preflight is not None:
+            recorder.trace.events.append(event)
         # Keep the bounded, code-free summary intact, rather than generic trace
         # summarization which deliberately crops nested values.
         event.data['retrieval'] = retrieval.summary()
-        recorder.observe('context', event)
+        if preflight is None:
+            recorder.observe('context', event)
         recorder.start_llm('answer')
         try:
             result = _answer(retrieval, model, llm_client)
@@ -234,6 +242,7 @@ class PyCodeEngine:
         enable_memory: bool = True, enable_memory_extraction: bool = True,
         trace_observer=None,
         retrieval_context: RetrievalContext | None = None,
+        initial_evidence=None,
     ) -> AgentResult:
         """Run the existing harness with a fresh task and its existing policy.
 
@@ -247,7 +256,9 @@ class PyCodeEngine:
             raise ValueError("Retrieval context belongs to another workspace.")
         if client is None and not (plan_only and not use_llm_planner):
             client = OpenAIResponsesClient(model=model)
-        return run_agent_task(
+        if initial_evidence is not None:
+            initial_evidence.validate(retrieval_context)
+        result = run_agent_task(
             task, root, allow_tests=allow_tests,
             graph_path=_resolve_agent_graph_path(root, graph_path),
             llm_client=client, tools=tools, max_steps=max_steps,
@@ -255,8 +266,10 @@ class PyCodeEngine:
             enable_memory=enable_memory,
             enable_memory_extraction=enable_memory_extraction,
             trace_observer=trace_observer,
-            context=ToolContext(root, allow_tests=allow_tests, retrieval_context=retrieval_context),
+            context=ToolContext(root, allow_tests=allow_tests, retrieval_context=retrieval_context,
+                                initial_evidence=initial_evidence),
         )
+        return result
 
 
 def _retrieval_artifacts(root, index_path, graph_path, context):

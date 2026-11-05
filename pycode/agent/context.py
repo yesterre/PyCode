@@ -178,7 +178,12 @@ class ContextAssembler:
     ) -> list[tuple[str, ContextSection | None, str]]:
         from pycode.agent import prompt_sections
 
-        return [
+        initial = self.task.initial_evidence
+        if initial is not None:
+            initial.validate(initial.context)
+            if any(result.data.get('initial_pack_digest') == initial.digest for result in self.tool_results):
+                initial = None
+        candidates = [
             (
                 "identity",
                 prompt_sections.identity_section(),
@@ -245,6 +250,10 @@ class ContextAssembler:
                 "Relevant memory bodies are included when selected.",
             ),
         ]
+        if initial is not None:
+            candidates.append(('initial_evidence', prompt_sections.initial_evidence_section(initial),
+                               'Snapshot evidence from the question preflight; no tool was executed.'))
+        return candidates
 
     def _load_task_dag_summary(self) -> list["TaskNode"]:
         try:
