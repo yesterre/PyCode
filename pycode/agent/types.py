@@ -39,6 +39,8 @@ class ToolCall:
     arguments: dict = field(default_factory=dict)
     reason: str = ""
     required: bool = True
+    planned_todo_id: str | None = field(default=None,repr=False,compare=False)
+    execution_key: str | None = field(default=None,repr=False,compare=False)
 
     @classmethod
     def from_step(cls, step: AgentStep) -> "ToolCall":
@@ -115,6 +117,8 @@ class AgentStopReason(StrEnum):
     MAX_TURNS = "max_turns"
     ERROR = "error"
     NO_ACTION = "no_action"
+    NO_PROGRESS = "no_progress"
+    REQUIRED_TOOL_FAILED = "required_tool_failed"
 
 
 @dataclass
@@ -167,6 +171,30 @@ class AgentResult:
     planner_source: str = "rule"
     planner_error: str | None = None
     execution_budget: dict | None = None
+    execution_report: dict | None = None
+
+    @property
+    def required_failures(self) -> int:
+        required = {s.todo_id for s in self.steps if s.required and s.todo_id is not None}
+        observed = {}
+        for turn in self.turns:
+            if turn.tool_call is not None and turn.tool_result is not None:
+                key = turn.tool_call.planned_todo_id
+                if key in required:
+                    r = turn.tool_result
+                    operation = turn.tool_call.execution_key
+                    # A success for another target cannot erase a failed operation
+                    # merely because the legacy plan matcher shares the tool name.
+                    outstanding = observed.setdefault(key,set())
+                    if not r.ok or (r.execution is not None and r.execution.category == 'empty'):
+                        outstanding.add(operation)
+                    else:
+                        outstanding.discard(operation)
+        if observed or self.todos:
+            return sum(bool(operations) for operations in observed.values())
+        # Compatibility for manually constructed legacy results without runtime Todo bindings.
+        return sum(s.required and i < len(self.tool_results) and self.tool_results[i].tool == s.tool
+                   and not self.tool_results[i].ok for i,s in enumerate(self.steps))
 
     @property
     def ok(self) -> bool:
@@ -175,10 +203,14 @@ class AgentResult:
             return False
         if self.stop_reason == AgentStopReason.PLAN_ONLY:
             return True
+        if self.required_failures:
+            return False
         if self.stop_reason in {
             AgentStopReason.ERROR,
             AgentStopReason.MAX_TURNS,
             AgentStopReason.NO_ACTION,
+            AgentStopReason.NO_PROGRESS,
+            AgentStopReason.REQUIRED_TOOL_FAILED,
         }:
             return False
         if self.stop_reason == AgentStopReason.FINAL and self.answer:

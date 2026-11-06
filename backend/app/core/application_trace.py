@@ -13,6 +13,36 @@ from typing import Any
 APPLICATION_TRACE_SCHEMA_VERSION = 1
 
 
+def public_tool_execution(value):
+    from pycode.tools.base import ToolExecution
+    if not isinstance(value, dict) or set(value) != {
+            'schema_version','category','attempts','retryable','truncated'}:
+        return None
+    try:
+        return ToolExecution(**value).to_dict()
+    except (TypeError,ValueError):
+        return None
+
+
+def public_harness_execution(value):
+    fields = {'tool_calls','handler_attempts','retried_tools','completed_tools',
+              'failed_tools','empty_tools','required_failed'}
+    if (not isinstance(value,dict) or set(value) != fields | {'schema_version','outcome','stop_reason'}
+            or type(value['schema_version']) is not int or value['schema_version'] != 1
+            or any(type(value[k]) is not int or not 0 <= value[k] <= 512 for k in fields)
+            or not isinstance(value['outcome'],str) or value['outcome'] not in {'complete','partial','failed'}
+            or not isinstance(value['stop_reason'],str) or value['stop_reason'] not in {
+                'final','plan_only','max_turns','error','no_action','no_progress','required_tool_failed',
+                'budget_turns','budget_tools','budget_models','budget_embeddings','budget_time','execution_lost'}):
+        return None
+    if (value['completed_tools'] + value['failed_tools'] + value['empty_tools'] != value['tool_calls']
+            or value['retried_tools'] > value['tool_calls']
+            or value['handler_attempts'] > 2 * value['tool_calls']
+            or value['required_failed'] > value['failed_tools'] + value['empty_tools']):
+        return None
+    return dict(value)
+
+
 def public_harness_budget(value):
     """Accept a bounded, code-free execution snapshot; never project arbitrary data."""
     if not isinstance(value, dict) or set(value) != {
@@ -203,6 +233,9 @@ _REQUIRED_PAYLOAD_FIELDS: dict[ApplicationEventType, set[str]] = {
 
 
 def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, Any]) -> None:
+    for key,validator in (('execution',public_tool_execution),('harness_execution',public_harness_execution)):
+        if key in payload and (not isinstance(payload[key],dict) or validator(payload[key]) != payload[key]):
+            raise ValueError('Invalid public tool execution summary')
     if 'harness_budget' in payload and (not isinstance(payload['harness_budget'], dict)
             or public_harness_budget(payload['harness_budget']) != payload['harness_budget']):
         raise ValueError('Invalid public execution budget')
@@ -226,14 +259,17 @@ def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, 
             "outcome", "duration_ms", "summary", "error", "denied_by", "result_summary",
             "retrieval", "graph",
             "retrieval_origin", "initial_pack_digest",
+            "execution",
         },
         ApplicationEventType.RUN_COMPLETED: {
             "stop_reason", "has_result", "trace_complete", "duration_ms",
             "harness_budget",
+            "harness_execution",
         },
         ApplicationEventType.RUN_FAILED: {
             "stage", "error", "trace_complete", "duration_ms",
             "harness_budget",
+            "harness_execution",
         },
     }[event_type]
     unexpected = payload.keys() - allowed
@@ -708,7 +744,7 @@ class ApplicationTraceNormalizer:
                     plan_payload = self._plan_payload(kind, result)
                     drafts.append((ApplicationEventType.PLAN_CREATED, occurred, None, plan_payload))
                     plan_emitted = True
-                elif kind == "ExecutionBudget":
+                elif kind in {"ExecutionBudget", "ExecutionOutcome"}:
                     continue  # Snapshot is attached to the existing terminal event below.
                 elif kind == "ContextAssembled":
                     if not isinstance(data.get("included_section_names"), list) or not isinstance(
@@ -815,6 +851,12 @@ class ApplicationTraceNormalizer:
         if drafts and budget is not None and drafts[-1][0] in {
                 ApplicationEventType.RUN_COMPLETED, ApplicationEventType.RUN_FAILED}:
             drafts[-1][3]['harness_budget'] = budget
+        execution = next((value for event in reversed(internal_events)
+                          if isinstance(data := getattr(event,'data',None),dict)
+                          and (value := public_harness_execution(data.get('harness_execution'))) is not None),None)
+        if drafts and execution is not None and drafts[-1][0] in {
+                ApplicationEventType.RUN_COMPLETED,ApplicationEventType.RUN_FAILED}:
+            drafts[-1][3]['harness_execution'] = execution
         events: list[ApplicationTraceEvent] = []
         for event_type, occurred_at, tool_name, payload in drafts:
             try:
@@ -914,9 +956,12 @@ class ApplicationTraceNormalizer:
         duration = getattr(tool, "duration_ms", None)
         if isinstance(duration, (int, float)) and duration >= 0:
             payload["duration_ms"] = duration
-        summary = getattr(tool, "summary", None)
+        summary = getattr(tool, "safe_summary", getattr(tool, "summary", None))
         if summary:
             payload["summary"] = sanitize_text(summary)
+        execution = public_tool_execution(getattr(tool,'execution',None))
+        if execution is not None:
+            payload['execution'] = execution
         if str(getattr(tool, "tool", "")) == "retrieve_context":
             retrieval = public_retrieval_summary(getattr(tool, "retrieval", None))
             if retrieval is not None:
@@ -943,7 +988,7 @@ class ApplicationTraceNormalizer:
 
 
 _KEY_INTERNAL_EVENTS = {
-    "LLMPlanGenerated", "LLMPlanFallback", "PlannerSelected", "ContextAssembled", "ExecutionBudget",
+    "LLMPlanGenerated", "LLMPlanFallback", "PlannerSelected", "ContextAssembled", "ExecutionBudget", "ExecutionOutcome",
     "LLMCallStarted", "LLMCallFinished", "PreToolUse", "PostToolUse",
 }
 

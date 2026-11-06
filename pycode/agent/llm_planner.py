@@ -224,8 +224,9 @@ def build_llm_next_action_prompt(
             {
                 "tool": result.tool,
                 "ok": result.ok,
-                "summary": result.summary,
-                "error": result.error,
+                "summary": result.safe_summary,
+                "error": result.safe_error,
+                "execution": result.execution.to_dict() if result.execution else None,
                 "data": result.data,
             }
             for result in tool_results[-5:]
@@ -237,7 +238,7 @@ def build_llm_next_action_prompt(
                 "status": todo.status,
                 "title": todo.title,
                 "reason": todo.reason,
-                "error": todo.error,
+                "error": todo.safe_error,
             }
             for todo in todos
         ],

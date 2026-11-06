@@ -2,7 +2,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from pycode.tools.base import ToolContext, failure, success, truncate_text
+from pycode.tools.base import ToolContext, failure, success, truncate_text, normalize_tool_result
 
 
 def run_pytest(
@@ -55,6 +55,10 @@ def run_pytest(
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout or ""
         stderr = exc.stderr or ""
+        if isinstance(stdout,bytes):stdout=stdout.decode('utf-8',errors='replace')
+        if isinstance(stderr,bytes):stderr=stderr.decode('utf-8',errors='replace')
+        stdout, stdout_truncated = truncate_text(stdout,context.max_output_chars)
+        stderr, stderr_truncated = truncate_text(stderr,context.max_output_chars)
         return failure(
             "run_tests",
             "Pytest timed out.",
@@ -62,6 +66,8 @@ def run_pytest(
             command=command,
             stdout=stdout,
             stderr=stderr,
+            stdout_truncated=stdout_truncated,
+            stderr_truncated=stderr_truncated,
             timed_out=True,
         )
     except OSError as exc:
@@ -69,7 +75,7 @@ def run_pytest(
 
     stdout, stdout_truncated = truncate_text(completed.stdout, context.max_output_chars)
     stderr, stderr_truncated = truncate_text(completed.stderr, context.max_output_chars)
-    return success(
+    result = success(
         "run_tests",
         "Pytest passed." if completed.returncode == 0 else "Pytest failed.",
         command=command,
@@ -80,3 +86,7 @@ def run_pytest(
         stderr_truncated=stderr_truncated,
         timed_out=False,
     )
+    if completed.returncode != 0:
+        result.ok = False
+        result.error = 'Test process exited unsuccessfully.'
+    return normalize_tool_result(result,'run_tests')

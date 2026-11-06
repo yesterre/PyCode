@@ -1,4 +1,6 @@
 from pathlib import Path
+import errno
+import subprocess
 
 from pycode.agent.planner import classify_task, plan_task
 from pycode.agent.policy import authorize_tool_call
@@ -6,7 +8,7 @@ from pycode.agent.prompts import build_agent_summary_prompt
 from pycode.agent.types import AgentResult, AgentStep, AgentTask, RuntimeConfig, ToolCall
 from pycode.llm_client import LLMClient
 from pycode.tools import TOOLS, ToolContext, ToolResult, ToolSpec
-from pycode.tools.base import failure, validate_tool_arguments
+from pycode.tools.base import failure, validate_tool_arguments, normalize_tool_result
 
 
 def execute_tool_call(
@@ -21,37 +23,58 @@ def execute_tool_call(
     tool_context = context or ToolContext(task.project_path, allow_tests=task.allow_tests)
     spec = tool_registry.get(tool_call.name)
     if spec is None:
-        return failure(
+        return normalize_tool_result(failure(
             tool_call.name,
             "Unknown tool.",
             f"Tool is not registered: {tool_call.name}",
-        )
+        ), tool_call.name, attempts=0, category='unknown_tool')
 
     denied = authorize_tool_call(tool_call.name, spec, tool_context)
     if denied is not None:
-        return denied
+        return normalize_tool_result(denied,tool_call.name,attempts=0,category='permission_denied')
 
     argument_error = validate_tool_arguments(spec, tool_call.arguments)
     if argument_error is not None:
-        return failure(
+        return normalize_tool_result(failure(
             tool_call.name,
             "Tool arguments are invalid.",
             argument_error,
-            arguments=tool_call.arguments,
-        )
+        ),tool_call.name,attempts=0,category='invalid_arguments')
 
-    try:
-        from pycode.agent.budget import current_budget
-        budget = current_budget()
-        if budget is not None:
+    from pycode.agent.budget import current_budget
+    for attempt in range(1,spec.max_attempts+1):
+        # Retry uses the same authority and A05a counters, never a new scope.
+        denied = authorize_tool_call(tool_call.name,spec,tool_context)
+        if denied is not None:
+            return normalize_tool_result(denied,tool_call.name,attempts=attempt-1,category='permission_denied')
+        if (budget := current_budget()) is not None:
+            if tool_context.retrieval_context is not None:
+                budget.validate_binding(tool_context.retrieval_context.binding)
             budget.consume('tool_calls')
-        return spec.handler(tool_context, **tool_call.arguments)
-    except Exception as exc:  # pragma: no cover - defensive boundary
-        return failure(
-            tool_call.name,
-            "Tool execution raised an exception.",
-            f"{type(exc).__name__}: {exc}",
-        )
+        category = None
+        try:
+            result = spec.handler(tool_context, **tool_call.arguments)
+        except Exception as exc:
+            if isinstance(exc,PermissionError):
+                category = 'permission_denied'
+            elif isinstance(exc,FileNotFoundError):
+                category = 'not_found'
+            elif isinstance(exc,(TimeoutError,subprocess.TimeoutExpired)):
+                category = 'timeout'
+            elif isinstance(exc,OSError) and exc.errno in {errno.EAGAIN,errno.EINTR}:
+                category = 'transient_io'
+            else:
+                category = 'internal_error'
+            result = failure(tool_call.name,'Tool execution raised an exception.',f'{type(exc).__name__}: {exc}')
+        result = normalize_tool_result(result,tool_call.name,attempts=attempt,category=category)
+        retryable = (not result.ok and result.execution.category in spec.retry_on
+                     and spec.read_only and not spec.writes_internal_state and not spec.destructive
+                     and not spec.requires_confirmation)
+        result = normalize_tool_result(result,tool_call.name,attempts=attempt,retryable=retryable)
+        if not retryable or attempt == spec.max_attempts:
+            return result
+        if budget is not None:
+            budget.check()
 
 
 def execute_plan(

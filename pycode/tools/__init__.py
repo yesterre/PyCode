@@ -14,6 +14,8 @@ TOOLS = {
         "read_file",
         read_file,
         read_only=True,
+        max_attempts=2,
+        retry_on=('transient_io',),
         description=(
             "Read one UTF-8 text file inside the project. Use file_path for the "
             "project-relative path; do not use path."

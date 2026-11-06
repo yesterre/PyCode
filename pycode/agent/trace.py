@@ -10,11 +10,13 @@ from pycode.agent._time_utils import format_timestamp, utc_now
 from pycode.agent.types import AgentTask, ToolCall
 from pycode.llm_client import classify_llm_error
 from pycode.tools import ToolResult
+from pycode.tools.base import TOOL_MESSAGES
 
 
 MAX_SUMMARY_CHARS = 500
 MAX_DATA_VALUE_CHARS = 200
 MAX_DATA_ITEMS = 8
+_SENSITIVE_KEYS = frozenset({'token','secret','password','authorization','api_key','apikey','access_key'})
 
 
 @dataclass
@@ -51,6 +53,7 @@ class ToolTrace:
     retrieval: dict[str, Any] | None = None
     graph: dict[str, Any] | None = None
     initial_pack_digest: str | None = None
+    execution: dict[str, Any] | None = None
     _started_counter: float = field(default_factory=perf_counter, repr=False)
 
     def finish(self, result: ToolResult) -> None:
@@ -58,6 +61,7 @@ class ToolTrace:
         self.duration_ms = round((perf_counter() - self._started_counter) * 1000, 3)
         self.summary = truncate_string(result.summary, MAX_SUMMARY_CHARS)
         self.error = truncate_string(result.error, MAX_SUMMARY_CHARS) if result.error else None
+        self.execution = result.execution.to_dict() if result.execution else None
         self.result_data = summarize_mapping(result.data)
         if result.tool == "retrieve_context" and isinstance(result.data.get("retrieval"), dict):
             # Keep the code-free metadata projection intact; generic trace
@@ -84,6 +88,16 @@ class ToolTrace:
         self.summary = truncate_string(summary, MAX_SUMMARY_CHARS)
         self.error = truncate_string(error, MAX_SUMMARY_CHARS) if error else None
 
+    @property
+    def safe_summary(self) -> str:
+        return TOOL_MESSAGES[self.execution['category']] if self.execution and self.status in {'failed','denied'} else self.summary
+
+    @property
+    def safe_error(self) -> str | None:
+        if self.execution:
+            return self.safe_summary if self.status in {'failed','denied'} else None
+        return self.error
+
     def to_dict(self) -> dict[str, Any]:
         value = {
             "turn_index": self.turn_index,
@@ -93,14 +107,16 @@ class ToolTrace:
             "duration_ms": self.duration_ms,
             "status": self.status,
             "arguments": self.arguments,
-            "summary": self.summary,
-            "error": self.error,
+            "summary": self.safe_summary,
+            "error": self.safe_error,
             "denied_by": self.denied_by,
             "result_data": self.result_data,
             "retrieval": self.retrieval,
         }
         if self.graph is not None:
             value['graph'] = self.graph
+        if self.execution is not None:
+            value['execution'] = self.execution
         if self.initial_pack_digest is not None:
             value['initial_pack_digest'] = self.initial_pack_digest
         return value
@@ -296,7 +312,8 @@ def summarize_mapping(data: dict[str, Any]) -> dict[str, Any]:
         if index >= MAX_DATA_ITEMS:
             summary["..."] = f"{len(data) - MAX_DATA_ITEMS} more keys"
             break
-        summary[str(key)] = summarize_value(value)
+        summary[str(key)] = ('[REDACTED]' if str(key).lower().replace('-','_') in _SENSITIVE_KEYS
+                             else summarize_value(value))
     return summary
 
 

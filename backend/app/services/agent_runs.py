@@ -646,6 +646,10 @@ def _failure_for_exception(error_code: str, exc: Exception) -> ApplicationTraceF
 
 
 def _failure_for_result(result: Any) -> ApplicationTraceFailure:
+    reason = str(getattr(result,'stop_reason',''))
+    if reason in {'required_tool_failed','no_progress'}:
+        return ApplicationTraceFailure(FailureStage.TOOL,
+            normalize_error(PublicErrorCategory.TOOL_ERROR.value,code=reason))
     steps = list(getattr(result, "steps", []) or [])
     tool_results = list(getattr(result, "tool_results", []) or [])
     for index, step in enumerate(steps):

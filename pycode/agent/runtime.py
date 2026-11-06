@@ -40,7 +40,8 @@ from pycode.agent.types import (
 )
 from pycode.llm_client import LLMClient, LLMError, classify_llm_error
 from pycode.tools import TOOLS, ToolContext, ToolResult, ToolSpec
-from pycode.tools.base import failure
+from pycode.tools.base import failure, normalize_tool_result
+from pycode.agent.progress import ProgressBlocked, ProgressTracker, execution_report
 from pycode.agent.budget import (
     BudgetedLLM, ExecutionBudget, ExecutionLimits, ExecutionStopped,
     budget_event, current_budget,
@@ -103,6 +104,13 @@ def run_agent_runtime(
                 todos=list(progress['todos'].items) if progress.get('todos') else [],
                 memory=progress.get('memory'))
         recorder = progress.get('trace')
+        result.execution_report = execution_report(result)
+        if recorder is not None:
+            from pycode.agent.trace import TraceEvent
+            from pycode.agent._time_utils import utc_now
+            event = TraceEvent('ExecutionOutcome',utc_now(),data={'harness_execution':result.execution_report})
+            recorder.trace.events.append(event)
+            recorder.observe('execution',event)
         event = budget_event(budget)
         if recorder is not None:
             recorder.trace.events.append(event)
@@ -241,6 +249,13 @@ def _run_agent_runtime(
     loop_planner_error = loop_result.planner_error
     if stop_reason == AgentStopReason.MAX_TURNS:
         budget.stop('max_turns')
+    outcome_check = AgentResult(task,steps,tool_results,'',turns=turns,todos=list(todo_manager.items))
+    if outcome_check.required_failures:
+        if stop_reason != AgentStopReason.NO_PROGRESS:
+            stop_reason = AgentStopReason.REQUIRED_TOOL_FAILED
+        direct_answer = None
+        _record_loop_event(trace_recorder,'StopDecided','Required tool evidence was not obtained.',
+            status='failed',data={'stop_reason':str(stop_reason),'required_failed':outcome_check.required_failures})
     budget.check()
 
     agent_context = build_agent_summary_context(
@@ -256,7 +271,8 @@ def _run_agent_runtime(
     prompt = render_agent_prompt(agent_context)
     if direct_answer is not None:
         answer = direct_answer
-    elif llm_client is not None and stop_reason != AgentStopReason.ERROR:
+    elif llm_client is not None and stop_reason not in {
+            AgentStopReason.ERROR,AgentStopReason.NO_PROGRESS,AgentStopReason.REQUIRED_TOOL_FAILED}:
         if trace_recorder is not None:
             trace_recorder.start_llm("summary")
         try:
@@ -368,6 +384,7 @@ def _run_observe_decide_act_loop(
     progress=None,
 ) -> _LoopOutcome:
     state = _LoopState()
+    tracker = ProgressTracker(current_budget().binding)
     if progress is not None:
         progress['state'] = state
 
@@ -425,11 +442,17 @@ def _run_observe_decide_act_loop(
                 tool_context,
                 trace_recorder,
                 turn_index,
+                tracker=tracker,
             )
         except _CompletedPlannedAction as exc:
             _handle_terminal_action(
                 AgentAction.stop_error(str(exc)), state, trace_recorder, turn_index,
             )
+            break
+        except ProgressBlocked:
+            action = AgentAction.stop_error('Repeated stateful action has no new progress.')
+            action.stop_reason = AgentStopReason.NO_PROGRESS
+            _handle_terminal_action(action,state,trace_recorder,turn_index)
             break
         _record_tool_observation(
             action,
@@ -438,6 +461,12 @@ def _run_observe_decide_act_loop(
             trace_recorder,
             turn_index,
         )
+        current_budget().check()
+        if tracker.observe(action.tool_call,result,tool_registry.get(action.tool_call.name)):
+            stop = AgentAction.stop_error('Tool observations made no new progress.')
+            stop.stop_reason = AgentStopReason.NO_PROGRESS
+            _handle_terminal_action(stop,state,trace_recorder,turn_index)
+            break
         current_budget().check()
         if _should_stop_after_tool_turn(
             decision_info,
@@ -618,6 +647,7 @@ def _execute_tool_action(
     tool_context: ToolContext,
     trace_recorder: TraceRecorder | None,
     turn_index: int,
+    tracker=None,
 ) -> ToolResult:
     tool_call = action.tool_call
     if tool_call is None:
@@ -628,6 +658,10 @@ def _execute_tool_action(
         )
 
     step = _step_for_action(action, steps, turns, todo_manager)
+    tool_call.planned_todo_id = step.todo_id if step is not None else None
+    if tracker is not None:
+        tool_call.execution_key = tracker.key(tool_call,tool_registry.get(tool_call.name))
+        tracker.before(tool_call,tool_registry.get(tool_call.name),tool_call.planned_todo_id)
     current_todo = _start_step_todo(todo_manager, step, trace_recorder)
     tool_call_id = f"turn-{turn_index}"
     messages.append(
@@ -661,6 +695,7 @@ def _execute_tool_action(
             denied_by=denied.denied_by or "hook",
             **denied_data,
         )
+        result = normalize_tool_result(result,tool_call.name,attempts=0,category='permission_denied')
     else:
         result = execute_tool_call(
             task,
@@ -684,7 +719,7 @@ def _execute_tool_action(
     messages.append(
         AgentMessage(
             role="tool",
-            content=result.summary if result.ok else f"{result.summary} {result.error}",
+            content=result.safe_summary if result.ok else f"{result.safe_summary} {result.safe_error}",
             tool_call_id=tool_call_id,
             tool_name=tool_call.name,
         )
@@ -741,7 +776,7 @@ def _decide_next_action(
                 data={
                     "turn_index": turn_index,
                     "action_type": str(result.action.type),
-                    "raw_response": result.raw_response,
+                    "raw_response": '[omitted]',
                     "warnings": list(result.warnings or []),
                 },
             )
@@ -1050,7 +1085,7 @@ def _record_next_action_event(
         "reason": action.reason,
         "stop_reason": action.stop_reason,
         "error": action.error,
-        "raw_response": decision_info.get("raw_response"),
+        "raw_response": '[omitted]' if decision_info.get("raw_response") is not None else None,
     }
     if action.tool_call is not None:
         data["tool"] = action.tool_call.name
@@ -1081,8 +1116,8 @@ def _record_policy_event(
             "tool": tool_call.name,
             "denied": denied,
             "denied_by": result.data.get("denied_by"),
-            "summary": result.summary,
-            "error": result.error,
+            "summary": result.safe_summary,
+            "error": result.safe_error,
         },
     )
 
@@ -1101,8 +1136,8 @@ def _record_observation_event(
             "turn_index": observation.turn_index,
             "action_type": observation.action_type,
             "tool": tool,
-            "summary": observation.summary,
-            "error": observation.error,
+            "summary": observation.tool_result.safe_summary if observation.tool_result else observation.summary,
+            "error": observation.tool_result.safe_error if observation.tool_result else observation.error,
         },
     )
 
@@ -1227,7 +1262,7 @@ def _finish_step_todo(
 ) -> TodoItem | None:
     if item is None:
         return None
-    if result.ok:
+    if result.ok and not (result.execution and result.execution.category == 'empty'):
         updated = todo_manager.complete(item.id)
         message = f"Todo {updated.id} completed."
     else:
@@ -1244,8 +1279,8 @@ def _finish_step_todo(
             "tool_result": {
                 "tool": result.tool,
                 "ok": result.ok,
-                "summary": result.summary,
-                "error": result.error,
+                "summary": result.safe_summary,
+                "error": result.safe_error,
                 "denied": result.data.get("denied", False),
                 "denied_by": result.data.get("denied_by"),
             },

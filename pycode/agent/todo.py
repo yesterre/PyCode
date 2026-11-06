@@ -37,6 +37,10 @@ class TodoItem:
     created_at: str = field(default_factory=lambda: format_timestamp(utc_now()))
     updated_at: str = field(default_factory=lambda: format_timestamp(utc_now()))
 
+    @property
+    def safe_error(self) -> str | None:
+        return 'Tool did not complete successfully.' if self.error else None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -44,7 +48,7 @@ class TodoItem:
             "tool": self.tool,
             "reason": self.reason,
             "status": self.status,
-            "error": self.error,
+            "error": self.safe_error,
             "step_index": self.step_index,
             "required": self.required,
             "source": self.source,

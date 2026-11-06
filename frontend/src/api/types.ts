@@ -71,6 +71,16 @@ export type TraceEvent = {
   schema_version: 1; sequence: number; event_type: EventType; occurred_at: string;
   tool_name: string | null; payload: Record<string, unknown>
 }
+export type ToolExecution = {
+  schema_version:1; category:'success'|'empty'|'unknown_tool'|'invalid_arguments'|'permission_denied'|
+    'not_found'|'timeout'|'internal_error'|'transient_io'|'test_failed'|'failed';
+  attempts:number; retryable:boolean; truncated:boolean;
+}
+export type HarnessExecution = {
+  schema_version:1; outcome:'complete'|'partial'|'failed'; stop_reason:string;
+  tool_calls:number; handler_attempts:number; retried_tools:number; completed_tools:number;
+  failed_tools:number; empty_tools:number; required_failed:number;
+}
 export type HarnessBudget = {
   schema_version: 1;
   limits: {max_turns:number; max_tool_calls:number; max_model_calls:number; max_query_embeddings:number;

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pycode.tools.base import ToolContext, failure, success, truncate_text
+from pycode.tools.base import ToolContext, failure, success, truncate_text, normalize_tool_result
 
 
 def read_file(
@@ -15,10 +15,12 @@ def read_file(
     try:
         path = context.resolve_in_project(file_path)
     except PermissionError as exc:
-        return failure("read_file", "File read denied.", str(exc))
+        return normalize_tool_result(failure("read_file", "File read denied.", str(exc)),
+            'read_file',attempts=0,category='permission_denied')
 
     if not path.exists():
-        return failure("read_file", "File does not exist.", f"Missing file: {file_path}")
+        return normalize_tool_result(failure("read_file", "File does not exist.", f"Missing file: {file_path}"),
+            'read_file',category='not_found')
     if not path.is_file():
         return failure("read_file", "Path is not a file.", f"Not a file: {file_path}")
     if start_line < 1:

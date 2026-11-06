@@ -2,7 +2,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, expect, it, vi } from 'vitest'
 import { getAgentRun, getTrace } from '../../api/agentRuns'
-import { TracePanel, QuestionProgress, BudgetProgress } from './TracePanel'
+import { TracePanel, QuestionProgress, BudgetProgress, ExecutionProgress, ToolExecutionInfo } from './TracePanel'
 
 vi.mock('../../api/agentRuns', () => ({getAgentRun: vi.fn(), getTrace: vi.fn(),
   eventsUrl: (id: string) => `/api/v1/agent-runs/${id}/events`}))
@@ -15,6 +15,28 @@ const baseRun = {id: 'r', project_id: 'p', task: 'Inspect code', status: 'comple
   error_message: null, snapshot_id: 's', run_type: 'agent', created_at: '', started_at: null,
   core_started_at: null, finished_at: null}
 afterEach(() => {vi.unstubAllGlobals(); vi.clearAllMocks()})
+
+it('shows partial execution, required failure and no-progress without claiming answer verification',()=>{
+  render(<ExecutionProgress events={[{schema_version:1,sequence:1,event_type:'run_failed',tool_name:null,
+    occurred_at:'2026-01-01T00:00:00Z',payload:{harness_execution:{schema_version:1,outcome:'partial',
+      tool_calls:3,handler_attempts:3,retried_tools:0,completed_tools:1,failed_tools:2,empty_tools:0,
+      required_failed:1,stop_reason:'no_progress'}}}]} />)
+  expect(screen.getByRole('status')).toHaveTextContent('执行部分完成')
+  expect(screen.getByRole('status')).toHaveTextContent('已停止重复操作')
+  expect(screen.getByRole('status')).toHaveTextContent('不能将答案视为执行成功')
+  expect(screen.getByRole('status')).toHaveTextContent('部分完成不代表回答已验证')
+})
+
+it('shows bounded tool attempts and explicit truncation',()=>{
+  render(<ToolExecutionInfo value={{schema_version:1,category:'timeout',attempts:2,retryable:true,truncated:true}} />)
+  expect(screen.getByText(/执行尝试 2/)).toHaveTextContent('超时')
+  expect(screen.getByText(/已有限重试/)).toHaveTextContent('工具输出已截断')
+})
+
+it('keeps legacy traces without tool execution contracts readable',()=>{
+  const {container}=render(<><ExecutionProgress events={[]} /><ToolExecutionInfo value={undefined} /></>)
+  expect(container).toBeEmptyDOMElement()
+})
 
 it('shows bounded execution counts and stop reason from a terminal replay event',()=>{
   const value={schema_version:1,limits:{max_turns:8,max_tool_calls:8,max_model_calls:2,max_query_embeddings:1,

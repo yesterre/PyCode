@@ -142,8 +142,8 @@ def record_trace_hook(context: HookContext) -> HookResult:
                 data={
                     "turn_index": context.turn_index,
                     "tool": context.tool_result.tool,
-                    "summary": context.tool_result.summary,
-                    "error": context.tool_result.error,
+                    "summary": context.tool_result.safe_summary,
+                    "error": context.tool_result.safe_error,
                     "denied": context.tool_result.data.get("denied", False),
                     "denied_by": context.tool_result.data.get("denied_by"),
                 },

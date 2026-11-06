@@ -66,6 +66,10 @@ class RealtimeTraceSession:
     def observe(self, kind: str, value: Any) -> None:
         try:
             normalizer = ApplicationTraceNormalizer
+            if kind == 'execution':
+                from backend.app.core.application_trace import public_harness_execution
+                self._harness_execution = public_harness_execution(value.data.get('harness_execution'))
+                return
             if kind == 'budget':
                 self._harness_budget = normalizer._context_payload(value.data).get('harness_budget')
                 return
@@ -202,4 +206,6 @@ class RealtimeTraceSession:
             payload["duration_ms"] = duration
         if getattr(self, '_harness_budget', None) is not None:
             payload['harness_budget'] = self._harness_budget
+        if getattr(self, '_harness_execution', None) is not None:
+            payload['harness_execution'] = self._harness_execution
         return self._append(event_type, run.finished_at, None, payload, publish=False)

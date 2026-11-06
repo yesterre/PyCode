@@ -172,8 +172,9 @@ def tool_results_section(
                     f"Purpose: {step.reason or 'N/A'}",
                     f"Required: {step.required}",
                     f"Status: {'ok' if result.ok else 'failed'}",
-                    f"Summary: {result.summary}",
-                    f"Error: {result.error or 'N/A'}",
+                    f"Summary: {result.safe_summary}",
+                    f"Error: {result.safe_error or 'N/A'}",
+                    f"Execution: {_format_data(result.execution.to_dict() if result.execution else None)}",
                     "Data:",
                     _format_data(result.data),
                 ]
@@ -222,7 +223,7 @@ def trace_section(trace: "AgentTrace | None") -> ContextSection | None:
     tool_lines = [
         (
             f"- turn {tool.turn_index}: {tool.tool} -> {tool.status}; "
-            f"summary={tool.summary or 'N/A'}; error={tool.error or 'N/A'}"
+            f"summary={tool.safe_summary or 'N/A'}; error={tool.safe_error or 'N/A'}"
         )
         for tool in trace.tools
     ]
@@ -272,7 +273,7 @@ def todo_section(todos: list["TodoItem"]) -> ContextSection | None:
     for item in todos:
         lines.append(
             f"- {item.id}: {item.status} | tool={item.tool} | "
-            f"title={item.title or item.reason or 'N/A'} | error={item.error or 'N/A'}"
+            f"title={item.title or item.reason or 'N/A'} | error={item.safe_error or 'N/A'}"
         )
     return ContextSection(
         name="todo",
