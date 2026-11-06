@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "kind": "offline_engineering_scenarios_not_model_quality",
+  "baseline_commit": "09bc1a83829064d57e6bf27b151ca3b69e341a93",
+  "corpus_commit": "09bc1a83829064d57e6bf27b151ca3b69e341a93",
+  "corpus_paths": ["tests/fixtures/demo_project/services/user_service.py", "pycode/agent/runtime.py"],
+  "limits": {"max_turns": 4, "max_tool_calls": 4, "max_model_calls": 8, "max_runtime_seconds": 1, "context_tokens": 16384, "tool_output_chars": 32768},
+  "invariants": {"prompt_within_budget": true},
+  "cases": [
+    {"id": "normal", "plan": ["read"], "actions": ["read", "final"], "expected": {"stop_reason": "final", "outcome": "complete", "model_calls": 3, "handler_attempts": 1}},
+    {"id": "model_budget", "plan": ["read"], "actions": ["read", "final"], "limits": {"max_model_calls": 0}, "expected": {"stop_reason": "budget_models", "outcome": "failed", "model_calls": 0, "handler_attempts": 0}},
+    {"id": "tool_budget", "plan": ["read"], "actions": ["read", "final"], "limits": {"max_tool_calls": 0}, "expected": {"stop_reason": "budget_tools", "outcome": "failed", "model_calls": 2, "handler_attempts": 0}},
+    {"id": "deadline", "plan": ["read"], "actions": ["read", "final"], "tool_mode": "deadline", "expected": {"stop_reason": "budget_time", "outcome": "partial", "model_calls": 2, "handler_attempts": 1}},
+    {"id": "repeated_failure", "plan": ["idle"], "actions": ["search", "search", "search", "search"], "expected": {"stop_reason": "no_progress", "outcome": "failed", "model_calls": 3, "handler_attempts": 2}},
+    {"id": "safe_retry", "plan": ["read"], "actions": ["read", "final"], "tool_mode": "transient_once", "expected": {"stop_reason": "final", "outcome": "complete", "model_calls": 3, "handler_attempts": 2}},
+    {"id": "invalid_plan", "plan": "invalid_json", "actions": ["retrieve", "final"], "expected": {"stop_reason": "final", "outcome": "complete", "fallback_min": 1}},
+    {"id": "provider_timeout", "plan": "timeout", "actions": ["retrieve", "final"], "expected": {"stop_reason": "final", "outcome": "complete", "fallback_min": 1}},
+    {"id": "tool_timeout", "plan": ["read"], "actions": ["read", "final"], "tool_mode": "timeout", "expected": {"stop_reason": "required_tool_failed", "outcome": "failed", "runtime_ok": false, "answer_present": false, "model_calls": 3, "handler_attempts": 1}},
+    {"id": "partial_success", "plan": ["read", "missing_optional"], "actions": ["read", "missing_optional", "final"], "expected": {"stop_reason": "final", "outcome": "partial", "model_calls": 4, "handler_attempts": 2}},
+    {"id": "large_context", "plan": ["large_optional"], "actions": ["large_optional", "final"], "limits": {"tool_output_chars": 1048576}, "expected": {"stop_reason": "final", "outcome": "complete", "model_calls": 3, "handler_attempts": 1, "discard_reason": "context_budget", "prompt_within_budget": true}},
+    {"id": "output_limit", "plan": ["read"], "actions": ["read", "final"], "limits": {"tool_output_chars": 256}, "expected": {"stop_reason": "final", "outcome": "complete", "model_calls": 3, "handler_attempts": 1, "discard_reason": "tool_output_limit", "prompt_within_budget": true}},
+    {"id": "upgrade_reuse", "plan": ["retrieve_optional"], "actions": ["retrieve_optional", "final"], "preflight": true, "expected": {"stop_reason": "final", "outcome": "complete", "model_calls": 3, "handler_attempts": 1, "pack_reused": true, "query_embedding_calls": 1, "preflight_status": "insufficient"}}
+  ]
+}
