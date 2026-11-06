@@ -305,6 +305,10 @@ def _answer(
     retrieval: RetrievalResult, model: str | None, llm_client: LLMClient | None,
 ) -> AnswerResult:
     client = llm_client if llm_client is not None else OpenAIResponsesClient(model=model)
+    from pycode.agent.budget import BudgetedLLM, current_budget
+    if (budget := current_budget()) is not None and not (
+            isinstance(client, BudgetedLLM) and client.budget is budget):
+        client = BudgetedLLM(client, budget)
     return AnswerResult(client.generate(build_code_qa_prompt(retrieval)), retrieval)
 
 

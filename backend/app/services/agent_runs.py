@@ -436,8 +436,6 @@ class AgentRunService:
             run_id,
             marked.run.core_started_at,
         )
-        is_question = marked.run.run_type == 'question'
-        is_fast = is_question and marked.run.execution_metadata['strategy'] == 'fast'
         trace_session = None
         try:
             trace_session = RealtimeTraceSession(
@@ -446,19 +444,31 @@ class AgentRunService:
             trace_holder.append(trace_session)
         except Exception:
             logger.warning("Realtime Trace activation degraded run_id=%s", run_id, exc_info=True)
+        with self.adapter.execution_scope(retrieval_context, ownership.ensure_owned,
+                trace_session.observe if trace_session is not None else None):
+            return self._execute_strategy(marked.run, task_id, execution_token,
+                repository, retrieval_context, trace_session)
+
+    def _execute_strategy(self, run, task_id, execution_token, repository,
+                          retrieval_context, trace_session):
+        task_text = run.task
+        is_question = run.run_type == 'question'
+        is_fast = is_question and run.execution_metadata['strategy'] == 'fast'
         preflight = None
-        execution = marked.run.execution_metadata
+        execution = run.execution_metadata
         if is_fast:
             try:
                 preflight = self.adapter.prepare_question(task_text, execution, retrieval_context)
-            except Exception:
+            except Exception as exc:
+                if isinstance(exc, BackendError) and exc.code in {'database_unavailable', 'worker_execution_lost'}:
+                    raise
                 summary = dict(status='failed', reasons=['preflight_failed'], pack_digest=None,
                     selected_count=0, discarded_count=0, budget=None, estimated_tokens=None)
-                self._record_preflight(task_id, marked.run, execution_token, summary)
+                self._record_preflight(task_id, run, execution_token, summary)
                 if trace_session is not None:
                     trace_session.observe('context', self.adapter.failed_preflight_event(summary))
                 raise
-            updated = self._record_preflight(task_id, marked.run, execution_token, preflight.summary())
+            updated = self._record_preflight(task_id, run, execution_token, preflight.summary())
             execution = updated.execution_metadata
             is_fast = execution['strategy'] == 'fast'
             if trace_session is not None:
@@ -470,14 +480,16 @@ class AgentRunService:
         if is_fast:
             kwargs['decision'] = execution
         if is_question:
-            kwargs['model'] = marked.run.model
+            kwargs['model'] = run.model
         if preflight is not None:
             kwargs['preflight'] = preflight
         if 'retrieval_context' in parameters or accepts_kwargs:
             kwargs['retrieval_context'] = retrieval_context
         if "trace_observer" in parameters or accepts_kwargs:
             kwargs["trace_observer"] = trace_session.observe if trace_session is not None else None
-        return run_agent(repository, task_text, **kwargs)
+        result = run_agent(repository, task_text, **kwargs)
+        self.adapter.record_budget(result)
+        return result
 
     def _record_preflight(self, task_id, run, token, summary):
         from backend.app.core.run_metadata import preflight_execution

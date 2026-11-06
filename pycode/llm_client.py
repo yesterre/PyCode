@@ -64,6 +64,9 @@ class OpenAIResponsesClient:
     api_type_env: str = API_TYPE_ENV
 
     def generate(self, prompt: str) -> str:
+        return self.generate_bounded(prompt, timeout_seconds=None)
+
+    def generate_bounded(self, prompt: str, *, timeout_seconds: float | None) -> str:
         settings = load_llm_settings(self.env_file)
         api_key = _setting(settings, self.api_key_env)
         if not api_key:
@@ -90,6 +93,8 @@ class OpenAIResponsesClient:
             ) from exc
 
         client_kwargs = {"api_key": api_key}
+        if timeout_seconds is not None:
+            client_kwargs['timeout'] = timeout_seconds
         if base_url:
             client_kwargs["base_url"] = base_url
         client = OpenAI(**client_kwargs)
@@ -120,6 +125,12 @@ class OpenAIResponsesClient:
             raise
         except Exception as exc:
             raise LLMError(str(exc), category=classify_llm_error(exc)) from exc
+        finally:
+            if callable(close := getattr(client, 'close', None)):
+                try:
+                    close()
+                except Exception:
+                    pass
 
 
 def load_llm_settings(env_file: Path | None = None) -> dict[str, str]:

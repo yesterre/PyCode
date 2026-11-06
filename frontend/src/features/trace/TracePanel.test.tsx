@@ -2,7 +2,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, expect, it, vi } from 'vitest'
 import { getAgentRun, getTrace } from '../../api/agentRuns'
-import { TracePanel, QuestionProgress } from './TracePanel'
+import { TracePanel, QuestionProgress, BudgetProgress } from './TracePanel'
 
 vi.mock('../../api/agentRuns', () => ({getAgentRun: vi.fn(), getTrace: vi.fn(),
   eventsUrl: (id: string) => `/api/v1/agent-runs/${id}/events`}))
@@ -15,6 +15,23 @@ const baseRun = {id: 'r', project_id: 'p', task: 'Inspect code', status: 'comple
   error_message: null, snapshot_id: 's', run_type: 'agent', created_at: '', started_at: null,
   core_started_at: null, finished_at: null}
 afterEach(() => {vi.unstubAllGlobals(); vi.clearAllMocks()})
+
+it('shows bounded execution counts and stop reason from a terminal replay event',()=>{
+  const value={schema_version:1,limits:{max_turns:8,max_tool_calls:8,max_model_calls:2,max_query_embeddings:1,
+    max_runtime_seconds:300,context_tokens:131072,tool_output_chars:32768},
+    usage:{turns:1,tool_calls:1,model_calls:2,query_embeddings:1},elapsed_ms:2500,
+    stop_reason:'budget_models',context_output_enforcement:'reserved_for_a05c',transport_attempts:'not_observed'}
+  render(<BudgetProgress events={[{schema_version:1,sequence:2,event_type:'run_failed',
+    occurred_at:'2026-01-01T00:00:00Z',tool_name:null,payload:{harness_budget:value}}]} />)
+  expect(screen.getByRole('status')).toHaveTextContent('模型调用 2 / 2')
+  expect(screen.getByRole('status')).toHaveTextContent('达到模型调用预算')
+  expect(screen.getByRole('status')).toHaveTextContent('不代表实际计费请求')
+})
+
+it('keeps old traces without execution budgets readable',()=>{
+  const {container}=render(<BudgetProgress events={[]} />)
+  expect(container).toBeEmptyDOMElement()
+})
 
 it.each(['sufficient','insufficient','failed'] as const)('shows safe persisted preflight %s and explicit coverage', status => {
   const run={...baseRun,execution_metadata:{schema_version:3,initial_strategy:'fast',strategy:status==='insufficient'?'agent':'fast',

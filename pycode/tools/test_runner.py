@@ -37,6 +37,9 @@ def run_pytest(
         *resolved_test_paths,
         *(extra_args or []),
     ]
+    from pycode.agent.budget import current_budget
+    if (budget := current_budget()) is not None:
+        timeout = min(timeout, budget.remaining_seconds())
 
     try:
         completed = subprocess.run(

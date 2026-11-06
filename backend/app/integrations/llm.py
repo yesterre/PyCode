@@ -40,6 +40,9 @@ class BackendOpenAIClient:
     env_file: Path | None = None
 
     def generate(self, prompt: str) -> str:
+        return self.generate_bounded(prompt, timeout_seconds=None)
+
+    def generate_bounded(self, prompt: str, *, timeout_seconds: float | None) -> str:
         values = load_llm_settings(self.env_file)
         api_key = _setting(values, API_KEY_ENV)
         if not api_key:
@@ -65,15 +68,16 @@ class BackendOpenAIClient:
                 category=LLM_ERROR_DEPENDENCY_MISSING,
             ) from exc
 
+        cap = lambda value: min(value, timeout_seconds) if timeout_seconds is not None else value
         kwargs = {
             "api_key": api_key,
             "max_retries": self.transport.max_retries,
             "timeout": Timeout(
-                self.transport.read_timeout_seconds,
-                connect=self.transport.connect_timeout_seconds,
-                read=self.transport.read_timeout_seconds,
-                write=self.transport.write_timeout_seconds,
-                pool=self.transport.pool_timeout_seconds,
+                cap(self.transport.read_timeout_seconds),
+                connect=cap(self.transport.connect_timeout_seconds),
+                read=cap(self.transport.read_timeout_seconds),
+                write=cap(self.transport.write_timeout_seconds),
+                pool=cap(self.transport.pool_timeout_seconds),
             ),
         }
         if base_url:
@@ -98,6 +102,12 @@ class BackendOpenAIClient:
             raise
         except Exception as exc:
             raise LLMError(str(exc), category=classify_llm_error(exc)) from exc
+        finally:
+            if callable(close := getattr(client, 'close', None)):
+                try:
+                    close()
+                except Exception:
+                    pass
 
 
 def backend_llm_client_factory_from_environment(

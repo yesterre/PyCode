@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import math
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -10,6 +11,41 @@ from typing import Any
 
 
 APPLICATION_TRACE_SCHEMA_VERSION = 1
+
+
+def public_harness_budget(value):
+    """Accept a bounded, code-free execution snapshot; never project arbitrary data."""
+    if not isinstance(value, dict) or set(value) != {
+        'schema_version', 'limits', 'usage', 'elapsed_ms', 'stop_reason',
+        'context_output_enforcement', 'transport_attempts'}:
+        return None
+    limits, usage = value['limits'], value['usage']
+    bounds = {'max_turns': (1,128), 'max_tool_calls': (0,256), 'max_model_calls': (0,256),
+              'max_query_embeddings': (0,256), 'context_tokens': (4096,1048576),
+              'tool_output_chars': (256,1048576)}
+    if not isinstance(limits, dict) or set(limits) != {*bounds, 'max_runtime_seconds'}:
+        return None
+    if any(type(limits[k]) is not int or not lo <= limits[k] <= hi for k,(lo,hi) in bounds.items()):
+        return None
+    seconds = limits['max_runtime_seconds']
+    if type(seconds) not in (int,float) or not math.isfinite(seconds) or not 0.01 <= seconds <= 3600:
+        return None
+    mapping = {'turns':'max_turns','tool_calls':'max_tool_calls',
+               'model_calls':'max_model_calls','query_embeddings':'max_query_embeddings'}
+    if (not isinstance(usage,dict) or set(usage) != set(mapping)
+            or any(type(usage[k]) is not int or not 0 <= usage[k] <= limits[v] for k,v in mapping.items())):
+        return None
+    elapsed = value['elapsed_ms']
+    if value['stop_reason'] is not None and not isinstance(value['stop_reason'], str):
+        return None
+    if (type(value['schema_version']) is not int or value['schema_version'] != 1
+            or type(elapsed) not in (int,float) or not math.isfinite(elapsed) or not 0 <= elapsed <= 1e12
+            or value['stop_reason'] not in {None,'max_turns','budget_turns','budget_tools','budget_models',
+                                          'budget_embeddings','budget_time','execution_lost'}
+            or value['context_output_enforcement'] != 'reserved_for_a05c'
+            or value['transport_attempts'] != 'not_observed'):
+        return None
+    return json.loads(json.dumps(value))
 
 
 class ApplicationEventType(StrEnum):
@@ -167,6 +203,9 @@ _REQUIRED_PAYLOAD_FIELDS: dict[ApplicationEventType, set[str]] = {
 
 
 def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, Any]) -> None:
+    if 'harness_budget' in payload and (not isinstance(payload['harness_budget'], dict)
+            or public_harness_budget(payload['harness_budget']) != payload['harness_budget']):
+        raise ValueError('Invalid public execution budget')
     missing = _REQUIRED_PAYLOAD_FIELDS[event_type] - payload.keys()
     if missing:
         raise ValueError(f"Missing {event_type.value} payload fields: {sorted(missing)}")
@@ -175,6 +214,7 @@ def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, 
         ApplicationEventType.PLAN_CREATED: {"source", "fallback_used", "steps"},
         ApplicationEventType.CONTEXT_UPDATED: {
             "included_sections", "turn_index", "skipped_sections", "warnings", "retrieval", "question_preflight",
+            "harness_budget",
         },
         ApplicationEventType.LLM_STARTED: {"purpose", "turn_index", "model"},
         ApplicationEventType.LLM_FINISHED: {
@@ -189,9 +229,11 @@ def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, 
         },
         ApplicationEventType.RUN_COMPLETED: {
             "stop_reason", "has_result", "trace_complete", "duration_ms",
+            "harness_budget",
         },
         ApplicationEventType.RUN_FAILED: {
             "stage", "error", "trace_complete", "duration_ms",
+            "harness_budget",
         },
     }[event_type]
     unexpected = payload.keys() - allowed
@@ -220,6 +262,8 @@ def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, 
                 raise ValueError("Invalid plan reason.")
             _require_bool(step["required"], "required")
     elif event_type == ApplicationEventType.CONTEXT_UPDATED:
+        if 'harness_budget' in payload and public_harness_budget(payload['harness_budget']) != payload['harness_budget']:
+            raise ValueError('Invalid public execution budget')
         if 'question_preflight' in payload:
             from backend.app.core.run_metadata import PreflightMetadata
             if PreflightMetadata.model_validate(payload['question_preflight']).model_dump(mode='json') != payload['question_preflight']:
@@ -563,6 +607,7 @@ def sanitize_arguments(value: Any) -> dict[str, Any] | None:
 
 
 _ERROR_CATEGORY_MAP = {
+    "execution_stopped": PublicErrorCategory.AGENT_ERROR,
     "missing_config": PublicErrorCategory.CONFIGURATION,
     "unsupported_api_type": PublicErrorCategory.CONFIGURATION,
     "dependency_missing": PublicErrorCategory.CONFIGURATION,
@@ -663,6 +708,8 @@ class ApplicationTraceNormalizer:
                     plan_payload = self._plan_payload(kind, result)
                     drafts.append((ApplicationEventType.PLAN_CREATED, occurred, None, plan_payload))
                     plan_emitted = True
+                elif kind == "ExecutionBudget":
+                    continue  # Snapshot is attached to the existing terminal event below.
                 elif kind == "ContextAssembled":
                     if not isinstance(data.get("included_section_names"), list) or not isinstance(
                         data.get("skipped_section_names"), list
@@ -762,6 +809,12 @@ class ApplicationTraceNormalizer:
                 payload["duration_ms"] = duration
             drafts.append((ApplicationEventType.RUN_FAILED, terminal_at, None, payload))
 
+        budget = next((value for event in reversed(internal_events)
+                       if isinstance(data := getattr(event, 'data', None), dict)
+                       and (value := public_harness_budget(data.get('harness_budget'))) is not None), None)
+        if drafts and budget is not None and drafts[-1][0] in {
+                ApplicationEventType.RUN_COMPLETED, ApplicationEventType.RUN_FAILED}:
+            drafts[-1][3]['harness_budget'] = budget
         events: list[ApplicationTraceEvent] = []
         for event_type, occurred_at, tool_name, payload in drafts:
             try:
@@ -819,6 +872,9 @@ class ApplicationTraceNormalizer:
             if section not in included_set
         ]
         payload: dict[str, Any] = {"included_sections": included}
+        budget = public_harness_budget(data.get('harness_budget'))
+        if budget is not None:
+            payload['harness_budget'] = budget
         if isinstance(data.get("turn_index"), int):
             payload["turn_index"] = data["turn_index"]
         if skipped:
@@ -887,7 +943,7 @@ class ApplicationTraceNormalizer:
 
 
 _KEY_INTERNAL_EVENTS = {
-    "LLMPlanGenerated", "LLMPlanFallback", "PlannerSelected", "ContextAssembled",
+    "LLMPlanGenerated", "LLMPlanFallback", "PlannerSelected", "ContextAssembled", "ExecutionBudget",
     "LLMCallStarted", "LLMCallFinished", "PreToolUse", "PostToolUse",
 }
 

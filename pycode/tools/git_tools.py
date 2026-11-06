@@ -60,10 +60,13 @@ def get_changed_files(context: ToolContext, *, staged: bool = False):
 
 
 def _run_git(context: ToolContext, args: list[str]):
+    from pycode.agent.budget import current_budget
+    budget = current_budget()
     try:
         completed = subprocess.run(
             args,
             cwd=context.project_root,
+            **({'timeout': budget.remaining_seconds()} if budget is not None else {}),
             capture_output=True,
             text=True,
             encoding="utf-8",

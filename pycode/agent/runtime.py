@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
 from pycode.agent.hooks import (
@@ -41,9 +41,77 @@ from pycode.agent.types import (
 from pycode.llm_client import LLMClient, LLMError, classify_llm_error
 from pycode.tools import TOOLS, ToolContext, ToolResult, ToolSpec
 from pycode.tools.base import failure
+from pycode.agent.budget import (
+    BudgetedLLM, ExecutionBudget, ExecutionLimits, ExecutionStopped,
+    budget_event, current_budget,
+)
 
 
 def run_agent_runtime(
+    task: AgentTask, config: RuntimeConfig | None = None, *, tools=None,
+    llm_client=None, context=None, hook_registry=None, trace_observer=None,
+) -> AgentResult:
+    """Keep the original loop; scope all its phases under one execution budget."""
+    config = config or RuntimeConfig(max_turns=task.max_steps)
+    budget = current_budget() or ExecutionBudget(
+        config.execution_limits or ExecutionLimits(max_turns=config.max_turns),
+        binding=context.retrieval_context.binding if context and context.retrieval_context else None)
+    # max_turns remains the legacy input alias; the frozen limits govern execution.
+    config = replace(config, max_turns=budget.limits.max_turns)
+    if context is not None and context.retrieval_context is not None:
+        budget.validate_binding(context.retrieval_context.binding)
+    progress = {}
+    client = llm_client
+    if client is not None and not (isinstance(client, BudgetedLLM) and client.budget is budget):
+        client = BudgetedLLM(client, budget)
+    with budget.activate():
+        try:
+            result = _run_agent_runtime(task, config, tools=tools, llm_client=client,
+                context=context, hook_registry=hook_registry, trace_observer=trace_observer,
+                _progress=progress)
+            budget.check()
+        except ExecutionStopped as stopped:
+            recorder = progress.get('trace')
+            if recorder is not None:
+                for tool in list(recorder.trace.tools):
+                    if tool.ended_at is None:
+                        recorder.finish_tool(tool.turn_index, failure(tool.tool,
+                            'Tool invocation stopped before completion.', stopped.reason))
+                        recorder.record_event('PostToolUse', status='failed', data={
+                            'turn_index': tool.turn_index, 'tool': tool.tool})
+                # Close attempted phases without claiming a denied model request ran.
+                opened = {}
+                for event in list(recorder.trace.events):
+                    key = (event.data.get('purpose'), event.data.get('turn_index'))
+                    if event.event_type == 'LLMCallStarted':
+                        opened[key] = opened.get(key, 0) + 1
+                    elif event.event_type == 'LLMCallFinished':
+                        opened[key] = max(0, opened.get(key, 0) - 1)
+                for (purpose, turn), count in opened.items():
+                    for _ in range(count):
+                        recorder.finish_llm(purpose, turn_index=turn, success=False,
+                            fallback_used=False, error_category='execution_stopped',
+                            error_code=stopped.reason)
+                recorder.finish(stopped.reason, status='failed')
+            state = progress.get('state')
+            result = AgentResult(task, progress.get('steps', []),
+                list(state.tool_results) if state else [], '',
+                messages=progress.get('messages', []),
+                turns=list(state.turns) if state else [],
+                observations=list(state.observations) if state else [],
+                stop_reason=stopped.reason, trace=recorder.trace if recorder else None,
+                todos=list(progress['todos'].items) if progress.get('todos') else [],
+                memory=progress.get('memory'))
+        recorder = progress.get('trace')
+        event = budget_event(budget)
+        if recorder is not None:
+            recorder.trace.events.append(event)
+            recorder.observe('budget', event)
+        result.execution_budget = budget.snapshot()
+        return result
+
+
+def _run_agent_runtime(
     task: AgentTask,
     config: RuntimeConfig | None = None,
     *,
@@ -52,6 +120,7 @@ def run_agent_runtime(
     context: ToolContext | None = None,
     hook_registry: HookRegistry | None = None,
     trace_observer: Callable[[str, Any], None] | None = None,
+    _progress=None,
 ) -> AgentResult:
     """Run an observe-decide-act Agent loop over planned tool calls.
 
@@ -63,6 +132,13 @@ def run_agent_runtime(
         TraceRecorder(task, observer=trace_observer)
         if runtime_config.enable_trace else None
     )
+    _progress.update(trace=trace_recorder, messages=messages)
+    budget = current_budget()
+    if trace_recorder is not None:
+        event = budget_event(budget)
+        trace_recorder.trace.events.append(event)
+        trace_recorder.observe('budget', event)
+    budget.check()
     hooks = create_default_hook_registry()
     tool_registry = tools or TOOLS
     if hook_registry is not None:
@@ -93,7 +169,9 @@ def run_agent_runtime(
         relevant_memories=memory_info.relevant_memories if memory_info else [],
         trace_recorder=trace_recorder,
     )
+    budget.check()
     todo_manager = TodoManager.from_steps(steps)
+    _progress.update(steps=steps, todos=todo_manager, memory=memory_info)
     _record_todo_event(
         trace_recorder,
         "TodoListCreated",
@@ -152,6 +230,7 @@ def run_agent_runtime(
         tool_context,
         trace_recorder,
         llm_client,
+        progress=_progress,
     )
     tool_results = loop_result.tool_results
     turns = loop_result.turns
@@ -160,6 +239,9 @@ def run_agent_runtime(
     direct_answer = loop_result.answer
     loop_planner_source = loop_result.planner_source
     loop_planner_error = loop_result.planner_error
+    if stop_reason == AgentStopReason.MAX_TURNS:
+        budget.stop('max_turns')
+    budget.check()
 
     agent_context = build_agent_summary_context(
         task,
@@ -212,6 +294,7 @@ def run_agent_runtime(
         answer = None
     if answer:
         messages.append(AgentMessage(role="assistant", content=answer))
+    budget.check()
     _extract_memory_after_answer(
         task,
         messages,
@@ -282,10 +365,14 @@ def _run_observe_decide_act_loop(
     tool_context: ToolContext,
     trace_recorder: TraceRecorder | None,
     llm_client: LLMClient | None,
+    progress=None,
 ) -> _LoopOutcome:
     state = _LoopState()
+    if progress is not None:
+        progress['state'] = state
 
     for turn_index in range(1, config.max_turns + 1):
+        current_budget().consume('turns')
         _record_loop_event(
             trace_recorder,
             "TurnStarted",
@@ -351,6 +438,7 @@ def _run_observe_decide_act_loop(
             trace_recorder,
             turn_index,
         )
+        current_budget().check()
         if _should_stop_after_tool_turn(
             decision_info,
             state,

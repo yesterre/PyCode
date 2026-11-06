@@ -41,6 +41,10 @@ def execute_tool_call(
         )
 
     try:
+        from pycode.agent.budget import current_budget
+        budget = current_budget()
+        if budget is not None:
+            budget.consume('tool_calls')
         return spec.handler(tool_context, **tool_call.arguments)
     except Exception as exc:  # pragma: no cover - defensive boundary
         return failure(
@@ -94,6 +98,9 @@ def run_agent_task(
     from pycode.agent.runtime import run_agent_runtime
 
     seed = context.initial_evidence if context is not None else None
+    from pycode.agent.budget import current_budget
+    if (budget := current_budget()) is not None:
+        max_steps = budget.limits.max_turns
     if seed is not None:
         if context.project_root != Path(project_path).resolve() or context.project_root != seed.context.root:
             raise ValueError('Initial evidence belongs to another workspace')

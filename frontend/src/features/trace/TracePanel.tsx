@@ -1,7 +1,7 @@
 import { useCallback, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getAgentRun, getTrace } from '../../api/agentRuns'
-import type { TraceEvent, AgentRun, QuestionPreflight } from '../../api/types'
+import type { TraceEvent, AgentRun, QuestionPreflight, HarnessBudget } from '../../api/types'
 import { Badge, Button, Card, EmptyState, ErrorState, SectionHeading, Spinner, StatusBadge } from '../../components/ui'
 import { llmActivities, orderedEvents, toolActivities } from './model'
 import { useAgentTrace } from './useAgentTrace'
@@ -23,6 +23,7 @@ function TraceContents({events}: {events: TraceEvent[]}) {
   const llms = llmActivities(ordered)
   const tools = toolActivities(ordered)
   return <div className="mt-5 grid gap-5 xl:grid-cols-2">
+    <BudgetProgress events={ordered} />
     <Card><SectionHeading title="执行计划" />{plan ? <><p className="mb-3 text-sm text-slate-300">来源：<strong>{text(plan.payload.source)}</strong> · 回退：{String(plan.payload.fallback_used ?? false)}</p><ol className="space-y-3">{(Array.isArray(plan.payload.steps) ? plan.payload.steps : []).map((step: {step_index: number; tool: string | null; reason: string; required: boolean}) => <li key={step.step_index} className="rounded-lg bg-slate-800/80 p-3 text-sm"><div className="font-semibold">{step.step_index + 1}. {step.tool ?? '操作'} {step.required && <Badge>必需</Badge>}</div><p className="mt-1 text-slate-400">{step.reason}</p></li>)}</ol></> : <EmptyState title="暂无计划事件" />}</Card>
     <Card><SectionHeading title="时间线" /><div className="space-y-2">{ordered.length ? ordered.map(event => <div key={event.sequence} className="flex gap-3 border-l-2 border-cyan-500/40 py-1 pl-3 text-sm"><span className="w-8 shrink-0 font-mono text-slate-500">{event.sequence}</span><span className="min-w-0 flex-1 text-slate-200">{traceEventLabel(event.event_type)}{event.tool_name ? ` · ${event.tool_name}` : ''}</span><time className="text-xs text-slate-500">{new Date(event.occurred_at).toLocaleTimeString('zh-CN')}</time></div>) : <EmptyState title="正在等待轨迹事件" />}</div></Card>
     <Card><SectionHeading title="模型调用" />{llms.length ? <div className="space-y-3">{llms.map((activity, index) => <div key={index} className="rounded-lg bg-slate-800/80 p-3 text-sm"><div className="flex justify-between gap-2"><strong>{text((activity.start ?? activity.finish)?.payload.purpose) || 'LLM'}</strong><StatusBadge status={activity.finish ? (activity.finish.payload.success ? 'completed' : 'failed') : 'running'} /></div><p className="mt-2 text-slate-400">{activity.finish ? `成功：${String(activity.finish.payload.success)} · 回退：${String(activity.finish.payload.fallback_used)}` : '运行中 / 尚未完成'}</p>{Boolean(activity.finish?.payload.error) && <p className="mt-2 text-rose-300">{errorText(activity.finish?.payload.error)}</p>}</div>)}</div> : <EmptyState title="暂无模型调用" />}</Card>
@@ -46,6 +47,21 @@ export function QuestionProgress({run, events}: {run: AgentRun; events: TraceEve
     {typeof value.selected_count === 'number' && typeof value.discarded_count === 'number' && <p>选用 {value.selected_count} 条证据，舍弃 {value.discarded_count} 条。</p>}
     {value.budget != null && <p>证据预算估算：{value.estimated_tokens} / {value.budget}，不代表实际模型用量。</p>}
   </div>
+}
+
+export function BudgetProgress({events}: {events: TraceEvent[]}) {
+  const value = [...events].reverse().find(event => event.payload.harness_budget)?.payload.harness_budget as HarnessBudget | undefined
+  if (!value || value.schema_version !== 1) return null
+  const reasons: Record<string,string> = {max_turns:'达到轮次上限',budget_turns:'达到轮次预算',
+    budget_tools:'达到工具调用预算',budget_models:'达到模型调用预算',budget_embeddings:'达到查询向量预算',
+    budget_time:'达到运行时长预算',execution_lost:'执行所有权已丢失'}
+  return <Card><SectionHeading title="执行预算" /><div role="status" className="space-y-1 text-sm">
+    <p>轮次 {value.usage.turns} / {value.limits.max_turns} · 工具 {value.usage.tool_calls} / {value.limits.max_tool_calls}</p>
+    <p>模型调用 {value.usage.model_calls} / {value.limits.max_model_calls} · 查询向量 {value.usage.query_embeddings} / {value.limits.max_query_embeddings}</p>
+    <p>耗时 {(value.elapsed_ms / 1000).toFixed(2)} / {value.limits.max_runtime_seconds} 秒</p>
+    {value.stop_reason && <p>{reasons[value.stop_reason] ?? '执行已停止'}，已取得的证据仍可查看。</p>}
+    <p className="text-slate-400">统计为逻辑调用次数，不代表实际计费请求、Token 或完整上下文用量。</p>
+  </div></Card>
 }
 
 export function TracePanel({projectId, runId}: {projectId: string; runId: string}) {

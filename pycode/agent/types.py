@@ -126,6 +126,7 @@ class RuntimeConfig:
     enable_memory: bool = True
     enable_memory_extraction: bool = True
     max_relevant_memories: int = 5
+    execution_limits: object | None = None
 
 
 @dataclass
@@ -165,9 +166,13 @@ class AgentResult:
     context: AgentContext | None = None
     planner_source: str = "rule"
     planner_error: str | None = None
+    execution_budget: dict | None = None
 
     @property
     def ok(self) -> bool:
+        from pycode.agent.budget import STOP_REASONS
+        if self.stop_reason in STOP_REASONS:
+            return False
         if self.stop_reason == AgentStopReason.PLAN_ONLY:
             return True
         if self.stop_reason in {

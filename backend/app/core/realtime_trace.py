@@ -64,9 +64,12 @@ class RealtimeTraceSession:
             logger.warning("Realtime Trace publish skipped run_id=%s", self.run_id, exc_info=True)
 
     def observe(self, kind: str, value: Any) -> None:
-        self.observed = True
         try:
             normalizer = ApplicationTraceNormalizer
+            if kind == 'budget':
+                self._harness_budget = normalizer._context_payload(value.data).get('harness_budget')
+                return
+            self.observed = True
             if kind == "reason":
                 data = value.data
                 if data.get("tool"):
@@ -84,8 +87,11 @@ class RealtimeTraceSession:
                 data = value.data
                 if not isinstance(data.get("included_section_names"), list) or not isinstance(data.get("skipped_section_names"), list):
                     raise ValueError("Missing context identifiers")
+                payload = normalizer._context_payload(data)
+                if getattr(self, '_harness_budget', None) is not None:
+                    payload['harness_budget'] = self._harness_budget
                 self._append(ApplicationEventType.CONTEXT_UPDATED, value.timestamp, None,
-                             normalizer._context_payload(data), publish=True)
+                             payload, publish=True)
                 return
             if kind in {"llm_started", "llm_finished"}:
                 data = value.data
@@ -194,4 +200,6 @@ class RealtimeTraceSession:
             event_type = ApplicationEventType.RUN_FAILED
         if duration is not None:
             payload["duration_ms"] = duration
+        if getattr(self, '_harness_budget', None) is not None:
+            payload['harness_budget'] = self._harness_budget
         return self._append(event_type, run.finished_at, None, payload, publish=False)

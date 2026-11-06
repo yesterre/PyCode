@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from inspect import signature
 from pathlib import Path
+from contextlib import contextmanager
 from uuid import UUID
 
 from backend.app.core.errors import BackendError
@@ -15,6 +16,10 @@ from pycode.llm_client import (
 from pycode.storage import load_graph, load_index
 from pycode.chunks import SnapshotBinding, build_chunk_index, save_chunk_index
 from pycode.retrieval_evidence import RetrievalContext
+from pycode.agent.budget import (
+    ExecutionBudget, ExecutionLimits, ExecutionStopped,
+    budget_event, current_budget,
+)
 
 
 class PyCodeAdapter:
@@ -22,6 +27,37 @@ class PyCodeAdapter:
 
     index_artifact_path = f"{DEFAULT_ARTIFACT_DIR}/{DEFAULT_INDEX_FILE}"
     graph_artifact_path = f"{DEFAULT_ARTIFACT_DIR}/{DEFAULT_GRAPH_FILE}"
+
+    @contextmanager
+    def execution_scope(self, retrieval_context, checkpoint, observer=None):
+        budget = ExecutionBudget(ExecutionLimits.from_environment(),
+            binding=retrieval_context.binding, checkpoint=checkpoint)
+        def observe():
+            if observer is not None:
+                try:
+                    observer('budget', budget_event(budget))
+                except Exception:
+                    pass  # Observability is never the execution control channel.
+        with budget.activate():
+            try:
+                observe()
+                budget.check()
+                yield budget
+                if budget.ownership_error is not None:
+                    raise budget.ownership_error
+                if budget.stop_reason is None:
+                    budget.check()
+            except ExecutionStopped:
+                if isinstance(budget.ownership_error, BackendError):
+                    raise budget.ownership_error
+                raise BackendError('agent_run_failed', 'Agent execution stopped: ' + str(budget.stop_reason)) from None
+            finally:
+                observe()
+
+    @staticmethod
+    def record_budget(result):
+        if (budget := current_budget()) is not None and getattr(result, 'trace', None) is not None:
+            result.trace.events.append(budget_event(budget))
 
     def __init__(
         self, *, engine: PyCodeEngine | None = None, llm_client: LLMClient | None = None,
@@ -117,6 +153,10 @@ class PyCodeAdapter:
     def prepare_question(self, question, decision, retrieval_context):
         try:
             return self.engine.prepare_question(question, decision, retrieval_context)
+        except ExecutionStopped as exc:
+            if isinstance(current_budget().ownership_error, BackendError):
+                raise current_budget().ownership_error
+            raise BackendError('agent_run_failed', 'Question preflight stopped: ' + exc.reason) from None
         except (OSError, ValueError, TypeError, KeyError) as exc:
             raise BackendError('artifacts_unavailable', 'Question preflight inputs are unavailable.') from exc
 
@@ -191,9 +231,7 @@ class PyCodeAdapter:
         return index_path, graph_path
 
     def _llm_client(self, model: str | None) -> LLMClient | None:
-        if self.llm_client_factory is not None:
-            return self.llm_client_factory(model)
-        return self.llm_client
+        return self.llm_client_factory(model) if self.llm_client_factory is not None else self.llm_client
 
 
 def _analysis(result: AnswerResult) -> Analysis:

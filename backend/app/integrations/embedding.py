@@ -5,11 +5,29 @@ from contextvars import ContextVar
 import logging
 import time
 from typing import Sequence
+from dataclasses import replace
 
 from openai import OpenAI, APIConnectionError, APITimeoutError, APIStatusError
 
 from backend.app.config import EmbeddingSettings
 from pycode.embedding import EmbeddingError, EmbeddingResult, validate_result
+from pycode.agent.budget import current_budget
+
+
+def query_embedding_settings(settings):
+    budget = current_budget()
+    if budget is None:
+        return settings
+    budget.consume('query_embeddings')
+    return replace(settings, timeout_seconds=min(settings.timeout_seconds, budget.remaining_seconds()))
+
+
+def embed_query(provider, text):
+    try:
+        return provider.embed_query(text)
+    finally:
+        if (budget := current_budget()) is not None:
+            budget.check()
 
 MODEL_DIMENSIONS = {"kinfra-text-embedding-0.6b": 1024, "kinfra-text-embedding-4b": 2560}
 _request_active = ContextVar("embedding_request_active", default=False)
@@ -76,11 +94,16 @@ class TencentEmbeddingProvider:
     def _batch(self, texts: list[str]) -> EmbeddingResult:
         code = "embedding_failed"
         for attempt in range(self.settings.max_retries + 1):
+            budget = current_budget()
+            if budget is not None:
+                budget.check()
             retry = False
             token = _request_active.set(True)
             try:
                 response = self._sdk().embeddings.create(
                     model=self.model, input=texts, encoding_format="float",
+                    **({'timeout': min(self.settings.timeout_seconds, budget.remaining_seconds())}
+                       if budget is not None else {}),
                 )
                 data = response.data
                 indices = [item.index for item in data]
@@ -114,6 +137,7 @@ class TencentEmbeddingProvider:
                 _request_active.reset(token)
             if not retry or attempt == self.settings.max_retries:
                 break
-            self._sleep(min(2 ** attempt, 8))
+            self._sleep(min(2 ** attempt, 8, budget.remaining_seconds())
+                        if budget is not None else min(2 ** attempt, 8))
         # Raise outside except: no sensitive SDK exception in __context__ either.
         raise EmbeddingError(code)

@@ -71,6 +71,14 @@ export type TraceEvent = {
   schema_version: 1; sequence: number; event_type: EventType; occurred_at: string;
   tool_name: string | null; payload: Record<string, unknown>
 }
+export type HarnessBudget = {
+  schema_version: 1;
+  limits: {max_turns:number; max_tool_calls:number; max_model_calls:number; max_query_embeddings:number;
+    max_runtime_seconds:number; context_tokens:number; tool_output_chars:number};
+  usage: {turns:number; tool_calls:number; model_calls:number; query_embeddings:number};
+  elapsed_ms:number; stop_reason:string|null;
+  context_output_enforcement:'reserved_for_a05c'; transport_attempts:'not_observed';
+}
 export type TraceHistory = { run_id: string; events: TraceEvent[] }
 export type GraphNode = { id: string; type: string; name: string; path: string | null;
   symbol_key?: string | null; parent_id?: string | null; start_line?: number | null; end_line?: number | null }

@@ -8,7 +8,9 @@ from uuid import UUID
 
 from backend.app.config import EmbeddingSettings, RetrievalSettings
 from backend.app.core.errors import BackendError
-from backend.app.integrations.embedding import TencentEmbeddingProvider, MODEL_DIMENSIONS
+from backend.app.integrations.embedding import (
+    TencentEmbeddingProvider, MODEL_DIMENSIONS, query_embedding_settings, embed_query,
+)
 from backend.app.integrations.semantic_index import (
     SemanticIndexBuilder, EmbeddingError, identity, SnapshotBinding, SemanticIdentity, file_hash,
     VectorUnavailable, validate_result,
@@ -69,10 +71,10 @@ class SnapshotSemantics:
                 raise VectorUnavailable("vector_unavailable")
             provider = None
             try:
-                provider = self.provider_factory(settings)
+                provider = self.provider_factory(query_embedding_settings(settings))
                 if (provider.provider, provider.model, provider.dimension) != (target.provider, target.model, target.dimension):
                     raise VectorUnavailable("vector_configuration")
-                response = provider.embed_query(text)
+                response = embed_query(provider, text)
                 validate_result(response, 1, target.provider, target.model, target.dimension)
                 return index.search(response, limit)
             except VectorUnavailable:
