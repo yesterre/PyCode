@@ -32,3 +32,22 @@ it('displays failed evidence as supporting references rather than an answer', ()
     result_metadata:{...run.result_metadata!,outcome:'failed',diagnostics:['execution_failed']}}} />)
   expect(screen.getByText(/不能替代最终答案/)).toBeVisible()
 })
+
+it('shows v2 actual context coverage and distinguishes static and memory sources',()=>{
+  render(<RunEvidence run={{...run,result_metadata:{...run.result_metadata!,schema_version:2,
+    context:{schema_version:1,binding:run.result_metadata!.binding,selected_count:2,discarded_count:3,
+      estimated_tokens:3000,budget:8192,references:[{source:'static_graph'},{source:'memory_hint'}]},
+    verification:{schema_version:1,status:'limited',warnings:['relation_unknown'],natural_language_verified:false}} as never}} />)
+  expect(screen.getByText(/实际选用 2 条上下文单元，舍弃 3 条/)).toBeVisible()
+  expect(screen.getByText(/不是计费 Token/)).toBeVisible()
+  expect(screen.getByText(/记忆仅作为提示/)).toBeVisible()
+  expect(screen.getByText(/不证明自然语言结论正确/)).toBeVisible()
+})
+
+it('rejects a v2 context with foreign snapshot before showing source references',()=>{
+  render(<RunEvidence run={{...run,result_metadata:{...run.result_metadata!,schema_version:2,
+    context:{schema_version:1,binding:{project_id:'p',snapshot_id:'foreign'}},
+    verification:{schema_version:1}} as never}} />)
+  expect(screen.getByRole('status')).toHaveTextContent('原始文本结果仍保留')
+  expect(screen.queryByText(/main.py/)).not.toBeInTheDocument()
+})

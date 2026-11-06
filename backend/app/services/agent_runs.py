@@ -315,7 +315,8 @@ class AgentRunService:
                 raise BackendError(error_code, error_message)
 
             from backend.app.core.run_metadata import result_for,agent_retrievals
-            metadata=result_for(run,agent_retrievals(result), intent=getattr(getattr(result,'retrieval',None),'intent',None))
+            metadata=result_for(run,agent_retrievals(result), intent=getattr(getattr(result,'retrieval',None),'intent',None),
+                context_report=getattr(result,'context_report',None),verification=getattr(result,'verification',None))
             with self.unit_of_work.transaction():
                 if self.unit_of_work.background_tasks.guard_execution(
                     task_id, execution_token,
@@ -525,7 +526,8 @@ class AgentRunService:
                 if result is None and trace_session is not None:
                     retrievals = [event.payload['retrieval'] for event in trace_session.events
                                   if 'retrieval' in event.payload]
-                metadata=result_for(run,retrievals,failed=True)
+                metadata=result_for(run,retrievals,failed=True,
+                    context_report=getattr(result,'context_report',None),verification=getattr(result,'verification',None))
                 failed_run = self.unit_of_work.agent_runs.fail(run_id, error_message,result_metadata=metadata)
             except BackendError as exc:
                 if exc.code!='invalid_run_metadata':raise

@@ -168,6 +168,24 @@ class ResultMetadata(Versioned):
         return self
 
 
+class ResultMetadataV2(ResultMetadata):
+    schema_version: Literal[2]
+    context: dict
+    verification: dict
+    diagnostics: list[DIAGNOSTICS | Literal['context_budget_limited','answer_verification_limited']] = Field(max_length=16)
+
+    @model_validator(mode='after')
+    def controlled_input(self):
+        from pycode.agent.context_budget import public_context_report,public_verification
+        if (public_context_report(self.context)!=self.context
+            or public_verification(self.verification)!=self.verification
+            or self.context.get('binding')!=self.binding.model_dump(mode='json')
+            or (self.verification['status']=='rejected' and self.outcome!='failed')
+            or (self.quality=='evidence_available' and (self.context['discarded_count'] or self.verification['warnings']))):
+            raise ValueError('Invalid controlled input metadata')
+        return self
+
+
 MODELS = dict(request_metadata=RequestMetadata, execution_metadata=ExecutionMetadata,
               result_metadata=ResultMetadata)
 
@@ -186,7 +204,7 @@ def validated(name, value):
         model = MODELS[name]
         if isinstance(value, dict) and type(value.get('schema_version')) is int and value['schema_version'] == 2:
             model = {'request_metadata': QuestionRequestMetadata,
-                     'execution_metadata': QuestionExecutionMetadata}.get(name, model)
+                     'execution_metadata': QuestionExecutionMetadata,'result_metadata':ResultMetadataV2}.get(name, model)
         if name == 'execution_metadata' and isinstance(value, dict) and type(value.get('schema_version')) is int and value['schema_version'] == 3:
             model = QuestionExecutionMetadataV3
         return model.model_validate(value).model_dump(mode='json')
@@ -286,10 +304,12 @@ def require_quarantine(run,snapshot):
     raise BackendError('agent_run_state_conflict','Valid Run metadata cannot be quarantined.')
 
 
-def result_for(run, retrievals=(), *, intent=None, failed=False):
+def result_for(run, retrievals=(), *, intent=None, failed=False, context_report=None, verification=None):
     """Project structured summaries only. Never parse result/evidence strings."""
     if run.request_metadata is None:
         return None
+    if context_report is not None:
+        return controlled_result_for(run,context_report,verification,intent=intent,failed=failed)
     from backend.app.core.application_trace import public_retrieval_summary
     binding=validated('request_metadata',run.request_metadata)['binding']
     references=[];diagnostics=[];omitted=0;observed=False;seen=set()
@@ -333,6 +353,44 @@ def result_for(run, retrievals=(), *, intent=None, failed=False):
     # Unicode and JSON escaping can exceed a byte budget even with field caps.
     # Omit whole reference records explicitly; never silently crop an address.
     while len(json.dumps(metadata,ensure_ascii=False).encode('utf-8'))>LIMITS['result_metadata']:
+        metadata['references'].pop();metadata['references_omitted']+=1
+        metadata['quality']='partial' if metadata['references'] else 'unavailable'
+        if 'evidence_omitted' not in metadata['diagnostics']:metadata['diagnostics'].append('evidence_omitted')
+    return validated('result_metadata',metadata)
+
+
+def controlled_result_for(run,context,verification,*,intent=None,failed=False):
+    from pycode.agent.context_budget import public_context_report,public_verification
+    context=public_context_report(context);verification=public_verification(verification)
+    binding=validated('request_metadata',run.request_metadata)['binding']
+    if context is None or verification is None or context['binding']!=binding:
+        raise invalid_metadata()
+    refs=[];diagnostics=[]
+    for ref in context['references']:
+        if ref['source'] not in {'snapshot_source','static_graph'} or not ref.get('path'):
+            continue
+        value=dict(path=ref['path'],symbol=ref.get('symbol'),start_line=ref.get('start_line'),end_line=ref.get('end_line'),
+            chunk_ids=ref.get('chunk_ids',[]),chunk_ids_omitted=ref.get('chunk_ids_omitted',0),
+            source='graph' if ref['source']=='static_graph' else 'exact_symbol' if ref.get('symbol') else 'exact_path',
+            coverage=ref.get('coverage') if ref.get('coverage') in {'complete_symbol','complete_file'} else 'unavailable',
+            relation_resolution='static' if ref['source']=='static_graph' else None)
+        try:refs.append(EvidenceReference.model_validate(value).model_dump(mode='json'))
+        except (ValueError,TypeError):diagnostics.append('evidence_invalid')
+    if any(context['reason_counts'].get(k) for k in ('context_budget','tool_output_limit')):
+        diagnostics.append('context_budget_limited')
+    if context['references_omitted']:diagnostics.append('evidence_omitted')
+    if any(r['chunk_ids_omitted'] for r in refs):diagnostics.append('chunk_ids_omitted')
+    if any(r['source']=='graph' for r in refs):diagnostics.append('static_graph_only')
+    if verification['warnings']:diagnostics.append('answer_verification_limited')
+    if not refs:diagnostics.append('evidence_unavailable')
+    if failed:diagnostics.append('execution_failed')
+    quality=('partial' if diagnostics else 'evidence_available') if refs else 'unavailable'
+    metadata=dict(schema_version=2,binding=binding,outcome='failed' if failed else 'completed',quality=quality,
+        intent=intent if intent in {'general','explain','impact','onboard','entry','dependency'} else None,
+        references=refs,references_omitted=context['references_omitted'],diagnostics=list(dict.fromkeys(diagnostics)),
+        context=context,verification=verification)
+    # PostgreSQL JSONB textual form includes spaces; retain a conservative margin.
+    while len(json.dumps(metadata,ensure_ascii=False).encode('utf-8'))>14000 and metadata['references']:
         metadata['references'].pop();metadata['references_omitted']+=1
         metadata['quality']='partial' if metadata['references'] else 'unavailable'
         if 'evidence_omitted' not in metadata['diagnostics']:metadata['diagnostics'].append('evidence_omitted')

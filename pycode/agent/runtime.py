@@ -61,6 +61,7 @@ def run_agent_runtime(
     config = replace(config, max_turns=budget.limits.max_turns)
     if context is not None and context.retrieval_context is not None:
         budget.validate_binding(context.retrieval_context.binding)
+        budget.retrieval_context = context.retrieval_context
     progress = {}
     client = llm_client
     if client is not None and not (isinstance(client, BudgetedLLM) and client.budget is budget):
@@ -104,6 +105,10 @@ def run_agent_runtime(
                 todos=list(progress['todos'].items) if progress.get('todos') else [],
                 memory=progress.get('memory'))
         recorder = progress.get('trace')
+        from pycode.agent.evidence import verify_context_answer
+        result.context_report = budget.answer_context or (budget.context_reports[-1] if budget.context_reports else None)
+        result.verification = verify_context_answer(result.answer,result.context_report,
+            sorted(budget.verification_warnings),rejected=budget.evidence_rejected,references=budget.answer_references)
         result.execution_report = execution_report(result)
         if recorder is not None:
             from pycode.agent.trace import TraceEvent
@@ -111,6 +116,10 @@ def run_agent_runtime(
             event = TraceEvent('ExecutionOutcome',utc_now(),data={'harness_execution':result.execution_report})
             recorder.trace.events.append(event)
             recorder.observe('execution',event)
+            event = TraceEvent('ContextOutcome',utc_now(),data={
+                'harness_context':result.context_report,'verification':result.verification})
+            recorder.trace.events.append(event)
+            recorder.observe('context_budget',event)
         event = budget_event(budget)
         if recorder is not None:
             recorder.trace.events.append(event)
@@ -142,6 +151,14 @@ def _run_agent_runtime(
     )
     _progress.update(trace=trace_recorder, messages=messages)
     budget = current_budget()
+    if trace_recorder is not None:
+        def context_observer(report):
+            from pycode.agent.trace import TraceEvent
+            from pycode.agent._time_utils import utc_now
+            event=TraceEvent('ContextBudget',utc_now(),data={'harness_context':report})
+            trace_recorder.trace.events.append(event)
+            trace_recorder.observe('context_budget',event)
+        budget.context_observer=context_observer
     if trace_recorder is not None:
         event = budget_event(budget)
         trace_recorder.trace.events.append(event)
@@ -267,8 +284,13 @@ def _run_agent_runtime(
         trace=trace_recorder.trace if trace_recorder is not None else None,
         todos=list(todo_manager.items),
         tools=tool_registry,
+        turns=turns,
     )
+    observed_context,observed_references=budget.answer_context,budget.answer_references
     prompt = render_agent_prompt(agent_context)
+    if direct_answer is not None or stop_reason in {
+            AgentStopReason.ERROR,AgentStopReason.NO_PROGRESS,AgentStopReason.REQUIRED_TOOL_FAILED}:
+        budget.answer_context, budget.answer_references = observed_context,observed_references
     if direct_answer is not None:
         answer = direct_answer
     elif llm_client is not None and stop_reason not in {
@@ -518,6 +540,7 @@ def _build_turn_context(
         todos=list(todo_manager.items),
         tools=tool_registry,
         turn_index=turn_index,
+        turns=state.turns,
     )
 
 
@@ -1389,7 +1412,7 @@ def _extract_memory_after_answer(
         task.project_path,
         task_description=task.description,
         messages=messages,
-        tool_results=tool_results,
+        tool_results=[replace(r,summary=r.safe_summary,error=r.safe_error) for r in tool_results],
         answer=answer,
         llm_client=llm_client,
         trace_recorder=trace_recorder,

@@ -266,6 +266,14 @@ class TraceRecorder:
             status="ok" if success else "failed",
             data=data,
         )
+        from pycode.agent.budget import current_budget
+        from pycode.agent.context_budget import public_context_report
+        budget=current_budget()
+        if budget is not None and budget.context_reports:
+            report=public_context_report(budget.context_reports[-1])
+            if report is not None and (report['phase']==purpose or
+                    (report['phase']=='auxiliary' and purpose.startswith('memory_'))):
+                event.data['harness_context']=report
         self.observe("llm_finished", event)
         return event
 

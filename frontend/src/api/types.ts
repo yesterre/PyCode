@@ -58,13 +58,13 @@ export type QuestionExecution = {binding: RunBinding; entrypoint: 'question'; st
 export type QuestionPreflight = {status:'sufficient'|'insufficient'|'failed'; reasons:string[]; pack_digest:string|null;
   selected_count:number; discarded_count:number; budget:number|null; estimated_tokens:number|null}
 export type RunResultMetadata = {
-  schema_version: 1; binding: RunBinding; outcome: 'completed'|'failed'
+  binding: RunBinding; outcome: 'completed'|'failed'
   quality: 'evidence_available'|'partial'|'insufficient'|'unavailable'; intent: string | null
   references: {path: string; symbol: string | null; start_line: number | null; end_line: number | null;
     chunk_ids: string[]; chunk_ids_omitted: number; source: RetrievalSource;
     coverage: 'complete_symbol'|'complete_file'|'unavailable'; relation_resolution: 'static'|'declaration'|'legacy'|'unknown'|null}[]
   references_omitted: number; diagnostics: string[]
-}
+} & ({schema_version:1} | {schema_version:2;context:HarnessContext;verification:EvidenceVerification})
 export type EventType = 'run_started' | 'plan_created' | 'context_updated' | 'llm_started' |
   'llm_finished' | 'tool_started' | 'tool_finished' | 'run_completed' | 'run_failed'
 export type TraceEvent = {
@@ -87,8 +87,17 @@ export type HarnessBudget = {
     max_runtime_seconds:number; context_tokens:number; tool_output_chars:number};
   usage: {turns:number; tool_calls:number; model_calls:number; query_embeddings:number};
   elapsed_ms:number; stop_reason:string|null;
-  context_output_enforcement:'reserved_for_a05c'; transport_attempts:'not_observed';
+  context_output_enforcement:'reserved_for_a05c'|'enforced_v1'; transport_attempts:'not_observed';
 }
+export type ContextReference = {id:string;source:'snapshot_source'|'static_graph'|'memory_hint'|'tool_observation'|'unbound_source';
+  tool?:string;turn?:number|null;path?:string|null;symbol?:string|null;start_line?:number|null;end_line?:number|null;
+  chunk_ids?:string[];chunk_ids_omitted?:number;coverage?:'complete_file'|'complete_symbol'|'partial'|'unavailable';content_hash?:string}
+export type HarnessContext = {schema_version:1;binding:RunBinding|null;phase:'plan'|'next_action'|'summary'|'auxiliary';
+  delivered_to_model:boolean;budget:number;estimated_tokens:number;estimator:'utf8_bytes_upper_bound_v1';tool_output_chars:number;
+  selected_count:number;discarded_count:number;reason_counts:Record<string,number>;references:ContextReference[];
+  references_omitted:number;decisions:{id:string;reason:string;reference:Partial<ContextReference>}[];decisions_omitted:number;pack_digests:string[]}
+export type EvidenceVerification = {schema_version:1;status:'checked'|'limited'|'unavailable'|'rejected';
+  warnings:string[];natural_language_verified:false}
 export type TraceHistory = { run_id: string; events: TraceEvent[] }
 export type GraphNode = { id: string; type: string; name: string; path: string | null;
   symbol_key?: string | null; parent_id?: string | null; start_line?: number | null; end_line?: number | null }

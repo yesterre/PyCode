@@ -27,6 +27,7 @@ def build_agent_summary_context(
     tools: dict[str, "ToolSpec"] | None = None,
     load_tasks: bool = True,
     turn_index: int | None = None,
+    turns: list | None = None,
 ) -> AgentContext:
     """Build the structured context used by the Agent summary prompt."""
     return ContextAssembler(
@@ -41,6 +42,7 @@ def build_agent_summary_context(
         tools=tools,
         load_tasks=load_tasks,
         turn_index=turn_index,
+        turns=turns,
     ).assemble()
 
 
@@ -72,6 +74,11 @@ def build_agent_summary_prompt(
 
 
 def render_agent_prompt(context: AgentContext) -> str:
+    from pycode.agent.context_budget import fit_context
+    return fit_context(context,_render_agent_prompt)
+
+
+def _render_agent_prompt(context: AgentContext) -> str:
     static_sections = [
         section
         for section in context.sections
@@ -87,6 +94,8 @@ def render_agent_prompt(context: AgentContext) -> str:
     parts.append("--- Dynamic Context ---")
     parts.extend(_render_section(section) for section in dynamic_sections)
     if "tool_results" not in context.section_names():
+        note=(f'Tool bodies omitted by context selection; {context.observed_tool_count} observed calls exist.'
+              if context.observed_tool_count else 'No tools were executed.')
         parts.extend(
             [
                 "## Tool Results",
@@ -94,10 +103,10 @@ def render_agent_prompt(context: AgentContext) -> str:
                 "source: pycode.tools.ToolResult",
                 "priority: 200",
                 "included: false",
-                "reason: No tools were executed.",
+                "reason: "+note,
                 "",
                 "The following evidence came from Agent tool calls:",
-                "No tools were executed.",
+                note,
             ]
         )
     if context.warnings:
@@ -110,6 +119,9 @@ def render_agent_prompt(context: AgentContext) -> str:
                 "\n".join(f"- {warning}" for warning in context.warnings),
             ]
         )
+    if context.selection_notice:
+        import json
+        parts.extend(['## Context Selection',json.dumps(context.selection_notice,ensure_ascii=False,sort_keys=True)])
     return "\n\n".join(part for part in parts if part)
 
 

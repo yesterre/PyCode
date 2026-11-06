@@ -163,7 +163,10 @@ def test_context_and_output_limits_are_explicitly_reserved_not_silent_truncation
     result = run(tmp_path, ExecutionLimits(tool_output_chars=256), planner=False,
         tool=lambda *a, **k: success('retrieve_context','Synthetic', content=payload))
     assert result.tool_results[0].data['content'] == payload
-    assert result.execution_budget['context_output_enforcement'] == 'reserved_for_a05c'
+    assert result.execution_budget['context_output_enforcement'] == 'enforced_v1'
+    assert payload not in result.prompt
+    assert result.context_report['reason_counts']['tool_output_limit'] == 1
+    assert result.context_report['estimated_tokens'] <= result.context_report['budget']
 
 
 def test_public_trace_budget_refuses_private_extra_fields_and_impossible_usage():

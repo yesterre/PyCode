@@ -2,7 +2,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, expect, it, vi } from 'vitest'
 import { getAgentRun, getTrace } from '../../api/agentRuns'
-import { TracePanel, QuestionProgress, BudgetProgress, ExecutionProgress, ToolExecutionInfo } from './TracePanel'
+import { TracePanel, QuestionProgress, BudgetProgress, ExecutionProgress, ToolExecutionInfo, ContextProgress } from './TracePanel'
 
 vi.mock('../../api/agentRuns', () => ({getAgentRun: vi.fn(), getTrace: vi.fn(),
   eventsUrl: (id: string) => `/api/v1/agent-runs/${id}/events`}))
@@ -15,6 +15,26 @@ const baseRun = {id: 'r', project_id: 'p', task: 'Inspect code', status: 'comple
   error_message: null, snapshot_id: 's', run_type: 'agent', created_at: '', started_at: null,
   core_started_at: null, finished_at: null}
 afterEach(() => {vi.unstubAllGlobals(); vi.clearAllMocks()})
+
+it('shows explicit context omissions and estimated input without claiming billed tokens',()=>{
+  render(<ContextProgress events={[{schema_version:1,sequence:1,event_type:'run_completed',tool_name:null,
+    occurred_at:'2026-01-01T00:00:00Z',payload:{harness_context:{schema_version:1,budget:4096,estimated_tokens:3000,
+      selected_count:1,discarded_count:2,reason_counts:{tool_output_limit:1,duplicate:1},references_omitted:0},
+      verification:{schema_version:1,status:'limited',warnings:['context_omitted'],natural_language_verified:false}}}]} />)
+  expect(screen.getByRole('status')).toHaveTextContent('选用 1 条，舍弃 2 条')
+  expect(screen.getByRole('status')).toHaveTextContent('单次工具输出上限：1')
+  expect(screen.getByRole('status')).toHaveTextContent('不是计费 Token')
+  expect(screen.getByRole('status')).toHaveTextContent('不证明回答正确')
+})
+
+it('explains minimum input rejection and keeps old missing reports readable',()=>{
+  const {rerender,container}=render(<ContextProgress events={[]} />)
+  expect(container).toBeEmptyDOMElement()
+  rerender(<ContextProgress events={[{schema_version:1,sequence:1,event_type:'run_failed',tool_name:null,
+    occurred_at:'2026-01-01T00:00:00Z',payload:{harness_context:{schema_version:1,budget:4096,estimated_tokens:6000,
+      selected_count:0,discarded_count:0,reason_counts:{},references_omitted:0}}}]} />)
+  expect(screen.getByRole('status')).toHaveTextContent('本次输入未交给模型')
+})
 
 it('shows partial execution, required failure and no-progress without claiming answer verification',()=>{
   render(<ExecutionProgress events={[{schema_version:1,sequence:1,event_type:'run_failed',tool_name:null,

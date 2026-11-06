@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -121,6 +121,8 @@ def build_llm_planner_prompt(
     memory_index: str = "",
     relevant_memories: list[MemoryItem] | None = None,
 ) -> str:
+    from pycode.agent.budget import current_budget
+    budget=current_budget()
     payload = {
         "task": {
             "description": task.description,
@@ -129,6 +131,8 @@ def build_llm_planner_prompt(
             "max_steps": task.max_steps,
             "graph_path": str(task.graph_path) if task.graph_path else None,
             "task_type": task.task_type,
+            "binding":asdict(budget.binding) if budget is not None and budget.binding is not None else
+                asdict(task.initial_evidence.context.binding) if task.initial_evidence is not None else None,
         },
         "tools": _tool_catalog(tools),
         "project_summary": _project_summary(task),
@@ -149,14 +153,14 @@ def build_llm_planner_prompt(
                 "confidence": memory.confidence,
                 "related_files": memory.related_files,
                 "path": memory.path,
-                "body": memory.body[:800],
+                "body": memory.body,
             }
             for memory in relevant_memories or []
         ],
     }
     if task.initial_evidence is not None:
         payload['initial_evidence'] = task.initial_evidence.projection()
-    return "\n\n".join(
+    render = lambda value: "\n\n".join(
         [
             "You are the PyCode LLM Planner.",
             "Your job is to plan tool calls only. Do not answer the user task directly.",
@@ -177,9 +181,21 @@ def build_llm_planner_prompt(
             "Each JSON item must use this shape:",
             '{"tool": "query_graph", "arguments": {"query_type": "entry"}, "reason": "why this tool is useful", "required": false}',
             "Planning input:",
-            json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+            json.dumps(value, ensure_ascii=False, indent=2, default=str),
         ]
     )
+    from pycode.agent.context import ContextAssembler
+    return ContextAssembler.fit_initial_input(payload,render,
+        trusted=task.initial_evidence.context if task.initial_evidence is not None else None)
+
+
+def _result_reference_data(task: AgentTask, result: "ToolResult", observation: int) -> dict:
+    data = {"context_reference": "context_sections.tool_results", "observation": observation}
+    seed = task.initial_evidence
+    if (seed is not None and result.data.get("initial_evidence_reused") is True
+            and result.data.get("initial_pack_digest") == seed.digest):
+        data.update(initial_evidence_reused=True, initial_pack_digest=seed.digest)
+    return data
 
 
 def build_llm_next_action_prompt(
@@ -194,6 +210,9 @@ def build_llm_next_action_prompt(
     tool_results: list["ToolResult"],
     todos: list["TodoItem"],
 ) -> str:
+    from pycode.agent.budget import current_budget
+    from pycode.agent.context_budget import digest,limits
+    budget=current_budget()
     payload = {
         "task": {
             "description": task.description,
@@ -201,6 +220,7 @@ def build_llm_next_action_prompt(
             "allow_tests": task.allow_tests,
             "max_steps": task.max_steps,
             "task_type": task.task_type,
+            "binding":asdict(budget.binding) if budget is not None and budget.binding is not None else None,
         },
         "turn": {
             "turn_index": turn_index,
@@ -213,7 +233,8 @@ def build_llm_next_action_prompt(
             {
                 "index": index,
                 "tool": step.tool,
-                "arguments": step.arguments,
+                "arguments": step.arguments if len(json.dumps(step.arguments,ensure_ascii=False,default=str))<=limits().tool_output_chars else
+                    {'omitted':'tool_output_limit','identity':digest(step.arguments)},
                 "reason": step.reason,
                 "required": step.required,
                 "todo_id": step.todo_id,
@@ -224,12 +245,12 @@ def build_llm_next_action_prompt(
             {
                 "tool": result.tool,
                 "ok": result.ok,
-                "summary": result.safe_summary,
+                "summary": result.safe_summary if len(result.safe_summary)<=512 else 'Summary omitted: tool_output_limit.',
                 "error": result.safe_error,
                 "execution": result.execution.to_dict() if result.execution else None,
-                "data": result.data,
+                "data": _result_reference_data(task, result, index),
             }
-            for result in tool_results[-5:]
+            for index,result in enumerate(tool_results[-5:],max(1,len(tool_results)-4))
         ],
         "todos": [
             {
@@ -269,7 +290,7 @@ def build_llm_next_action_prompt(
             "error": "required for stop_with_error when reason is not enough",
         },
     }
-    return "\n\n".join(
+    render = lambda context: "\n\n".join(
         [
             "You are the PyCode LLM Next-Action Planner.",
             "Your job is to choose exactly one next Agent action for the current turn.",
@@ -288,9 +309,15 @@ def build_llm_next_action_prompt(
                 '"final_answer":null,"stop_reason":null,"error":null}'
             ),
             "Next-action input:",
-            json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+            json.dumps(dict(payload,context_sections=[dict(name=s.name,placement=s.placement,source=s.source,
+                priority=s.priority,included=s.included,reason=s.reason,
+                content='See task/tools/steps/todos above.' if s.name in {'project','tools','plan','todo'} else s.content)
+                for s in context.sections],skipped_context_sections=[dict(name=s.name,reason=s.reason) for s in context.skipped_sections],
+                context_selection=context.selection_notice),ensure_ascii=False,indent=2,default=str),
         ]
     )
+    from pycode.agent.context import ContextAssembler
+    return ContextAssembler.fit_model_input(agent_context,render,phase='next_action')
 
 
 def parse_llm_next_action(

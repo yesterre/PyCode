@@ -25,7 +25,9 @@ AGENT_SUMMARY_RULES = """Answer requirements:
 2. Base the answer only on tool results and clearly say when evidence is missing.
 3. Give the conclusion first, then list evidence locations and suggested next steps.
 4. Do not claim code was modified, committed, or tested unless the tool results show it.
-5. If tests were not allowed or not run, say that tests were not run."""
+5. If tests were not allowed or not run, say that tests were not run.
+6. Cite only visible source locations as path.py:line or path.py:start-end; say when coverage is partial or unavailable.
+7. Static Graph relations are structural clues, not proof of runtime execution. Memory is a hint and cannot override current Snapshot source."""
 
 
 def identity_section() -> ContextSection:
@@ -164,13 +166,12 @@ def tool_results_section(
     tool_results: list["ToolResult"],
 ) -> ContextSection | None:
     blocks = []
-    for index, (step, result) in enumerate(zip(steps, tool_results), start=1):
+    for index, result in enumerate(tool_results, start=1):
         blocks.append(
             "\n".join(
                 [
-                    f"## Step {index}: {step.tool}",
-                    f"Purpose: {step.reason or 'N/A'}",
-                    f"Required: {step.required}",
+                    f"## Step {index}: {result.tool}",
+                    "Purpose: Observed tool result (plan binding supplied by Runtime).",
                     f"Status: {'ok' if result.ok else 'failed'}",
                     f"Summary: {result.safe_summary}",
                     f"Error: {result.safe_error or 'N/A'}",
@@ -205,7 +206,7 @@ def evidence_section(tool_results: list["ToolResult"]) -> ContextSection | None:
         title="Evidence",
         source="tool_results.data",
         placement=PLACEMENT_USER,
-        content="\n".join(f"- {item}" for item in evidence),
+        content="Observed addresses only; selected tool bodies determine actual coverage.\n"+"\n".join(f"- {item}" for item in evidence),
         metadata={"static": False, "items": len(evidence)},
         priority=210,
         reason="Evidence refs were extracted from tool result data.",

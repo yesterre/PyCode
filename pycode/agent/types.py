@@ -172,6 +172,8 @@ class AgentResult:
     planner_error: str | None = None
     execution_budget: dict | None = None
     execution_report: dict | None = None
+    context_report: dict | None = None
+    verification: dict | None = None
 
     @property
     def required_failures(self) -> int:

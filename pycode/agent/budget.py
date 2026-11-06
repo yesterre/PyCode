@@ -8,7 +8,7 @@ from time import monotonic
 
 
 STOP_REASONS = frozenset({'max_turns', 'budget_turns', 'budget_tools', 'budget_models',
-                          'budget_embeddings', 'budget_time', 'execution_lost'})
+                          'budget_embeddings', 'budget_time', 'execution_lost','budget_context','evidence_invalid'})
 
 
 class ExecutionStopped(BaseException):
@@ -74,6 +74,14 @@ class ExecutionBudget:
         self.usage = dict(turns=0, tool_calls=0, model_calls=0, query_embeddings=0)
         self.stop_reason = None
         self.ownership_error = None
+        self.retrieval_context = None
+        self.context_reports = []
+        self.context_observer = None
+        self.prompt_digest = None
+        self.answer_context = None
+        self.answer_references = []
+        self.verification_warnings = set()
+        self.evidence_rejected = False
 
     def stop(self, reason):
         if reason not in STOP_REASONS:
@@ -125,7 +133,7 @@ class ExecutionBudget:
     def snapshot(self):
         return dict(schema_version=1, limits=asdict(self.limits), usage=dict(self.usage),
                     elapsed_ms=round(max(0, self._clock() - self._started) * 1000, 3),
-                    stop_reason=self.stop_reason, context_output_enforcement='reserved_for_a05c',
+                    stop_reason=self.stop_reason, context_output_enforcement='enforced_v1',
                     transport_attempts='not_observed')
 
 
@@ -134,7 +142,27 @@ class BudgetedLLM:
         self.client, self.budget = client, budget
 
     def generate(self, prompt):
+        from pycode.agent.context_budget import ContextUnit,digest,estimate,make_report,remember
+        self.budget.check()
+        if estimate(prompt)>self.budget.limits.context_tokens:
+            optional=prompt.startswith(('Select project memories relevant','Extract durable PyCode memories'))
+            discarded=[(ContextUnit('',{'source':'memory_hint'},id=digest(prompt)),'context_budget')] if optional else []
+            remember(make_report('auxiliary',prompt,[],discarded),prompt)
+            if optional:
+                from pycode.llm_client import LLMError
+                self.budget.verification_warnings.add('context_omitted')
+                raise LLMError('Optional memory input omitted: context_budget',category='invalid_response')
+            self.budget.stop('budget_context')
+        if self.budget.prompt_digest!=digest(prompt):
+            remember(make_report('auxiliary',prompt,[],[]),prompt)
         self.budget.consume('model_calls')
+        if self.budget.context_reports and self.budget.prompt_digest==digest(prompt):
+            report=self.budget.context_reports[-1]
+            report['delivered_to_model']=True
+            if report['phase'] in {'next_action','summary'}:
+                from copy import deepcopy
+                self.budget.answer_context=deepcopy(report)
+            if self.budget.context_observer is not None:self.budget.context_observer(report)
         bounded = getattr(self.client, 'generate_bounded', None)
         result = (bounded(prompt, timeout_seconds=self.budget.remaining_seconds())
                   if callable(bounded) else self.client.generate(prompt))

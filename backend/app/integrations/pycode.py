@@ -32,6 +32,7 @@ class PyCodeAdapter:
     def execution_scope(self, retrieval_context, checkpoint, observer=None):
         budget = ExecutionBudget(ExecutionLimits.from_environment(),
             binding=retrieval_context.binding, checkpoint=checkpoint)
+        budget.retrieval_context = retrieval_context
         def observe():
             if observer is not None:
                 try:
@@ -179,6 +180,13 @@ class PyCodeAdapter:
     def run_agent(self, root: Path, task: str, *, trace_observer=None, model=None,
                   retrieval_context: RetrievalContext | None = None, preflight=None) -> AgentResult:
         """Invoke the existing Agent facade without changing its runtime defaults."""
+        # Legacy adapter wrappers may not forward the optional context argument.
+        # The authorized execution scope remains the authoritative binding.
+        if (budget := current_budget()) is not None:
+            if retrieval_context is None:
+                retrieval_context = budget.retrieval_context
+            if retrieval_context is not None:
+                budget.validate_binding(retrieval_context.binding)
         try:
             kwargs = {"llm_client": self._llm_client(model)}
             if model is not None:

@@ -32,6 +32,7 @@ class ContextSection:
     size_estimate: int = 0
     included: bool = True
     reason: str = ""
+    units: list = field(default_factory=list,repr=False,compare=False)
 
     def __post_init__(self) -> None:
         if self.placement not in PLACEMENTS:
@@ -62,6 +63,13 @@ class AgentContext:
     sections: list[ContextSection] = field(default_factory=list)
     skipped_sections: list[ContextSection] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    report: dict | None = None
+    discarded_units: list = field(default_factory=list,repr=False)
+    verification_warnings: list[str] = field(default_factory=list)
+    rejected: bool = False
+    pack_digests: list[str] = field(default_factory=list)
+    selection_notice: dict = field(default_factory=dict)
+    observed_tool_count: int = 0
 
     def section_names(self) -> list[str]:
         return [section.name for section in self.sections]
@@ -109,6 +117,16 @@ class AgentContext:
 
 
 class ContextAssembler:
+    @staticmethod
+    def fit_initial_input(payload,renderer,*,trusted=None):
+        from pycode.agent.context_budget import fit_planner
+        return fit_planner(payload,renderer,trusted=trusted)
+
+    @staticmethod
+    def fit_model_input(context,renderer,*,phase):
+        from pycode.agent.context_budget import fit_context
+        return fit_context(context,renderer,phase=phase)
+
     def __init__(
         self,
         task: AgentTask,
@@ -123,6 +141,7 @@ class ContextAssembler:
         tools: dict[str, "ToolSpec"] | None = None,
         load_tasks: bool = True,
         turn_index: int | None = None,
+        turns: list | None = None,
     ) -> None:
         self.task = task
         self.steps = steps
@@ -135,6 +154,7 @@ class ContextAssembler:
         self.tools = tools
         self.load_tasks = load_tasks
         self.turn_index = turn_index
+        self.turns = turns or []
         self.warnings: list[str] = []
 
     def assemble(self) -> AgentContext:
@@ -142,7 +162,7 @@ class ContextAssembler:
         if tasks is None and self.load_tasks:
             tasks = self._load_task_dag_summary()
 
-        tool_registry = self.tools or self._default_tool_registry()
+        tool_registry = self.tools if self.tools is not None else self._default_tool_registry()
         candidates = self._build_section_candidates(tasks, tool_registry)
         sections: list[ContextSection] = []
         skipped_sections: list[ContextSection] = []
@@ -163,12 +183,48 @@ class ContextAssembler:
             sections.append(section)
         context = AgentContext(
             task=self.task,
+            observed_tool_count=len(self.tool_results),
             sections=sorted(sections, key=lambda section: section.priority),
             skipped_sections=sorted(
                 skipped_sections, key=lambda section: section.priority
             ),
             warnings=list(self.warnings),
         )
+        from pycode.agent.budget import current_budget
+        from pycode.agent.context_budget import ContextUnit, encoded, result_units, reference_for, limits
+        budget=current_budget()
+        trusted=getattr(budget,'retrieval_context',None)
+        if trusted is None and self.task.initial_evidence is not None:
+            trusted=self.task.initial_evidence.context
+        units,discarded,issues,rejected=result_units(self.steps,self.tool_results,self.turns,trusted=trusted)
+        context.discarded_units=discarded;context.verification_warnings=issues;context.rejected=rejected
+        for section in context.sections:
+            if section.name=='project' and trusted is not None and trusted.binding is not None:
+                from dataclasses import asdict
+                section.content+='\nTrusted server-owned Snapshot binding:\n'+encoded(asdict(trusted.binding))
+            elif section.name=='tool_results':
+                section.units=units
+                section.content='\n\n'.join(u.content for u in units) or 'No selected tool bodies; see context selection decisions.'
+            elif section.name=='memory':
+                from pycode.agent.memory import format_relevant_memories
+                section.units=[ContextUnit('Memory hint; current Snapshot code takes precedence.\n'+format_relevant_memories([item]),
+                    {'source':'memory_hint'}) for item in self.relevant_memories]
+            elif section.name=='memory_index':
+                section.units=[ContextUnit('Memory index hint; not current code evidence.\n'+section.content,
+                                           {'source':'memory_hint'})]
+            elif section.name=='initial_evidence':
+                seed=self.task.initial_evidence
+                context.pack_digests.append(seed.digest)
+                section.units=[ContextUnit(encoded(dict(origin='question_preflight',initial_pack_digest=seed.digest,
+                    item=item.to_dict(),coverage=item.coverage,selection='whole_item_from_original_pack')),
+                    reference_for(item.to_dict()),item.source in {'exact_path','exact_symbol'}) for item in seed.result.items]
+                keep=[];remaining=limits().tool_output_chars
+                for unit in section.units:
+                    if len(unit.content)>remaining:context.discarded_units.append((unit,'tool_output_limit'))
+                    else:keep.append(unit);remaining-=len(unit.content)
+                section.units=keep
+        if self.task.initial_evidence is not None and self.task.initial_evidence.digest not in context.pack_digests:
+            context.pack_digests.append(self.task.initial_evidence.digest)
         return context
 
     def _build_section_candidates(

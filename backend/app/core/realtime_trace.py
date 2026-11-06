@@ -66,6 +66,13 @@ class RealtimeTraceSession:
     def observe(self, kind: str, value: Any) -> None:
         try:
             normalizer = ApplicationTraceNormalizer
+            if kind=='context_budget':
+                from backend.app.core.application_trace import public_context_report,public_verification
+                context=public_context_report(value.data.get('harness_context'))
+                verification=public_verification(value.data.get('verification'))
+                if context is not None:self._harness_context=context
+                if verification is not None:self._verification=verification
+                return
             if kind == 'execution':
                 from backend.app.core.application_trace import public_harness_execution
                 self._harness_execution = public_harness_execution(value.data.get('harness_execution'))
@@ -110,6 +117,9 @@ class RealtimeTraceSession:
                 else:
                     success = bool(data.get("success"))
                     payload.update(success=success, fallback_used=bool(data.get("fallback_used", False)))
+                    from backend.app.core.application_trace import public_context_report
+                    context=public_context_report(data.get('harness_context'))
+                    if context is not None:payload['harness_context']=context
                     if not success:
                         payload["error"] = normalize_error(
                             data.get("error_category"), code=data.get("error_code"),
@@ -208,4 +218,6 @@ class RealtimeTraceSession:
             payload['harness_budget'] = self._harness_budget
         if getattr(self, '_harness_execution', None) is not None:
             payload['harness_execution'] = self._harness_execution
+        if getattr(self,'_harness_context',None) is not None:payload['harness_context']=self._harness_context
+        if getattr(self,'_verification',None) is not None:payload['verification']=self._verification
         return self._append(event_type, run.finished_at, None, payload, publish=False)

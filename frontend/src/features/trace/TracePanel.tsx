@@ -1,7 +1,7 @@
 import { useCallback, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getAgentRun, getTrace } from '../../api/agentRuns'
-import type { TraceEvent, AgentRun, QuestionPreflight, HarnessBudget, HarnessExecution, ToolExecution } from '../../api/types'
+import type { TraceEvent, AgentRun, QuestionPreflight, HarnessBudget, HarnessExecution, ToolExecution, HarnessContext, EvidenceVerification } from '../../api/types'
 import { Badge, Button, Card, EmptyState, ErrorState, SectionHeading, Spinner, StatusBadge } from '../../components/ui'
 import { llmActivities, orderedEvents, toolActivities } from './model'
 import { useAgentTrace } from './useAgentTrace'
@@ -25,6 +25,7 @@ function TraceContents({events}: {events: TraceEvent[]}) {
   return <div className="mt-5 grid gap-5 xl:grid-cols-2">
     <BudgetProgress events={ordered} />
     <ExecutionProgress events={ordered} />
+    <ContextProgress events={ordered} />
     <Card><SectionHeading title="执行计划" />{plan ? <><p className="mb-3 text-sm text-slate-300">来源：<strong>{text(plan.payload.source)}</strong> · 回退：{String(plan.payload.fallback_used ?? false)}</p><ol className="space-y-3">{(Array.isArray(plan.payload.steps) ? plan.payload.steps : []).map((step: {step_index: number; tool: string | null; reason: string; required: boolean}) => <li key={step.step_index} className="rounded-lg bg-slate-800/80 p-3 text-sm"><div className="font-semibold">{step.step_index + 1}. {step.tool ?? '操作'} {step.required && <Badge>必需</Badge>}</div><p className="mt-1 text-slate-400">{step.reason}</p></li>)}</ol></> : <EmptyState title="暂无计划事件" />}</Card>
     <Card><SectionHeading title="时间线" /><div className="space-y-2">{ordered.length ? ordered.map(event => <div key={event.sequence} className="flex gap-3 border-l-2 border-cyan-500/40 py-1 pl-3 text-sm"><span className="w-8 shrink-0 font-mono text-slate-500">{event.sequence}</span><span className="min-w-0 flex-1 text-slate-200">{traceEventLabel(event.event_type)}{event.tool_name ? ` · ${event.tool_name}` : ''}</span><time className="text-xs text-slate-500">{new Date(event.occurred_at).toLocaleTimeString('zh-CN')}</time></div>) : <EmptyState title="正在等待轨迹事件" />}</div></Card>
     <Card><SectionHeading title="模型调用" />{llms.length ? <div className="space-y-3">{llms.map((activity, index) => <div key={index} className="rounded-lg bg-slate-800/80 p-3 text-sm"><div className="flex justify-between gap-2"><strong>{text((activity.start ?? activity.finish)?.payload.purpose) || 'LLM'}</strong><StatusBadge status={activity.finish ? (activity.finish.payload.success ? 'completed' : 'failed') : 'running'} /></div><p className="mt-2 text-slate-400">{activity.finish ? `成功：${String(activity.finish.payload.success)} · 回退：${String(activity.finish.payload.fallback_used)}` : '运行中 / 尚未完成'}</p>{Boolean(activity.finish?.payload.error) && <p className="mt-2 text-rose-300">{errorText(activity.finish?.payload.error)}</p>}</div>)}</div> : <EmptyState title="暂无模型调用" />}</Card>
@@ -48,6 +49,23 @@ export function QuestionProgress({run, events}: {run: AgentRun; events: TraceEve
     {typeof value.selected_count === 'number' && typeof value.discarded_count === 'number' && <p>选用 {value.selected_count} 条证据，舍弃 {value.discarded_count} 条。</p>}
     {value.budget != null && <p>证据预算估算：{value.estimated_tokens} / {value.budget}，不代表实际模型用量。</p>}
   </div>
+}
+
+export function ContextProgress({events}: {events:TraceEvent[]}) {
+  const latest=[...events].reverse().find(event=>event.payload.harness_context)
+  const context=latest?.payload.harness_context as HarnessContext|undefined
+  const verification=latest?.payload.verification as EvidenceVerification|undefined
+  if (!context || context.schema_version!==1) return null
+  const reasons:Record<string,string>={context_budget:'总体输入预算',tool_output_limit:'单次工具输出上限',
+    duplicate:'重复证据',invalid_evidence:'证据校验失败',auxiliary_context:'辅助上下文'}
+  return <Card><SectionHeading title="上下文与证据覆盖" /><div role="status" className="space-y-1 text-sm">
+    <p>输入估算 {context.estimated_tokens} / {context.budget}；不是计费 Token。</p>
+    <p>选用 {context.selected_count} 条，舍弃 {context.discarded_count} 条。</p>
+    {Object.entries(context.reason_counts).map(([reason,count])=><p key={reason}>{reasons[reason]??'其他限制'}：{count}</p>)}
+    {context.estimated_tokens>context.budget && <p>最小输入仍超过预算，本次输入未交给模型。</p>}
+    {context.references_omitted>0 && <p>另有 {context.references_omitted} 条选用引用未展示于此摘要。</p>}
+    {verification && <p>{verification.status==='rejected'?'证据校验被拒绝。':'仅检查引用与来源，不证明回答正确。'}</p>}
+  </div></Card>
 }
 
 export function ToolExecutionInfo({value}: {value: unknown}) {
@@ -78,7 +96,7 @@ export function BudgetProgress({events}: {events: TraceEvent[]}) {
   if (!value || value.schema_version !== 1) return null
   const reasons: Record<string,string> = {max_turns:'达到轮次上限',budget_turns:'达到轮次预算',
     budget_tools:'达到工具调用预算',budget_models:'达到模型调用预算',budget_embeddings:'达到查询向量预算',
-    budget_time:'达到运行时长预算',execution_lost:'执行所有权已丢失'}
+    budget_time:'达到运行时长预算',execution_lost:'执行所有权已丢失',budget_context:'达到整体上下文预算',evidence_invalid:'证据校验被拒绝'}
   return <Card><SectionHeading title="执行预算" /><div role="status" className="space-y-1 text-sm">
     <p>轮次 {value.usage.turns} / {value.limits.max_turns} · 工具 {value.usage.tool_calls} / {value.limits.max_tool_calls}</p>
     <p>模型调用 {value.usage.model_calls} / {value.limits.max_model_calls} · 查询向量 {value.usage.query_embeddings} / {value.limits.max_query_embeddings}</p>
