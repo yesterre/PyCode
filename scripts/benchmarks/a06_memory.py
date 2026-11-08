@@ -23,9 +23,9 @@ import subprocess
 import time
 from unittest.mock import patch
 
-from pycode.agent.budget import ExecutionBudget, ExecutionLimits
-from pycode.agent.context_budget import estimate
-from pycode.agent.memory import MemoryStore
+from pycode.agent.budget import ExecutionBudget, ExecutionLimits, current_budget
+from pycode.agent.context_budget import ContextUnit, estimate
+from pycode.agent.memory import MemoryStore, format_relevant_memories
 from pycode.agent.memory_record import MemoryScope
 from pycode.agent.runtime import run_agent_runtime
 from pycode.agent.types import AgentTask, RuntimeConfig
@@ -80,6 +80,7 @@ class FakeModel:
     def __init__(self, case, dataset):
         self.case,self.dataset=case,dataset
         self.calls=[]
+        self.source_priority_observations=[]
 
     def generate(self, prompt):
         purpose=('selection' if prompt.startswith('Select project memories') else
@@ -97,7 +98,24 @@ class FakeModel:
         if prompt.startswith('You are the PyCode LLM Planner.'):
             return json.dumps([dict(tool='retrieve_context',arguments={'question':'entry'},required=True)])
         if prompt.startswith('You are the PyCode LLM Next-Action Planner.'):
-            turn=json.loads(prompt.split('Next-action input:\n')[-1])['turn']['turn_index']
+            payload=json.loads(prompt.split('Next-action input:\n')[-1])
+            turn=payload['turn']['turn_index']
+            if self.case['id']=='source_priority' and payload['turn']['tool_results']:
+                report=current_budget().context_reports[-1]
+                sections=payload['context_sections']
+                items=[json.loads(s['content'].split('\nData:\n',1)[1])['item']
+                       for s in sections if s['name']=='tool_results']
+                snippet='\n'.join(f'{n}: {line}' for n,line in enumerate(self.dataset['source'].splitlines(),1))
+                self.source_priority_observations.append(dict(
+                    delivered=report['delivered_to_model'],
+                    binding_matches=report['binding']==payload['task']['binding']==self.dataset['binding'],
+                    whole_source_present=any(item.get('snippet')==snippet and item.get('path')=='entry.py'
+                        and item.get('start_line')==1 and item.get('end_line')==2 and item.get('chunk_ids')
+                        and all(item.get(k)==v for k,v in self.dataset['binding'].items()) for item in items),
+                    memory_section_absent=all(s['name']!='memory' for s in sections),
+                    memory_fragment_absent='OLD_HINT' not in prompt,
+                    budget_discard_ids=[d['id'] for d in report['decisions']
+                        if d['reason']=='context_budget' and d['reference'].get('source')=='memory_hint']))
             if turn==1:
                 return json.dumps(dict(action_type='tool_call',tool_name='retrieve_context',arguments={'question':'entry'}))
             return json.dumps(dict(action_type='final_answer',final_answer='entry.py returns CURRENT_SOURCE.'))
@@ -189,6 +207,9 @@ def run_case(dataset, case, root, mode):
         memory_decisions=Counter(d['reason'] for r in budget.context_reports for d in r['decisions']
                                  if d['reference'].get('source')=='memory_hint')
         analysis=[c for c in model.calls if c['purpose']=='analysis']
+        memory_unit_ids=[ContextUnit('Memory hint; current Snapshot code takes precedence.\n'+format_relevant_memories([m]),
+                                    {'source':'memory_hint'}).id for m in info.relevant_memories] if info and case['id']=='source_priority' else []
+        priority=model.source_priority_observations
         row=dict(case_id=case['id'],mode=mode,binding=dataset['binding'],synthetic_binding=True,
             runtime_ok=result.ok,stop_reason=str(result.stop_reason),selected_ids=selected,created_count=created,
             available_ids=available,reason_counts=summary['reason_counts'] if summary else {},
@@ -200,6 +221,10 @@ def run_case(dataset, case, root, mode):
             memory_estimated_input_tokens=sum(c['estimated_tokens'] for c in model.calls if c['purpose']!='analysis'),
             peak_estimated_input_tokens=max((c['estimated_tokens'] for c in model.calls),default=0),
             context_budget=limits.context_tokens,memory_context_decisions=dict(memory_decisions),
+            source_priority_observations=priority,
+            memory_whole_omission_proved=bool(memory_unit_ids and priority) and all(
+                set(memory_unit_ids)<=set(o['budget_discard_ids']) and o['memory_section_absent']
+                and o['memory_fragment_absent'] for o in priority),
             current_source_delivered=any(c['current_source_present'] for c in analysis),
             context_source_references=sum(ref.get('source')=='snapshot_source'
                 for report in budget.context_reports for ref in report['references']),
@@ -225,6 +250,9 @@ def check_contract(row,case):
     require(row['preserved_existing_records'],'old_record_modified')
     require(row['peak_estimated_input_tokens']<=row['context_budget'],'prompt_over_budget')
     require(row['model_calls']==row['execution_model_calls'],'model_accounting')
+    if case['id']=='source_priority':
+        require(bool(row['source_priority_observations']) and all(o['delivered'] and o['binding_matches']
+            and o['whole_source_present'] for o in row['source_priority_observations']),'bound_source_not_delivered')
     if row['mode']=='disabled':
         require(not row['selected_ids'] and not row['created_count'],'disabled_memory_used')
         require(not row['calls'].get('selection') and not row['calls'].get('extraction'),'disabled_memory_called')
@@ -237,7 +265,9 @@ def check_contract(row,case):
         for code in expected.get('diagnostics',[]):require(code in row['diagnostics'],'missing_diagnostic_'+code)
         require(row['extraction_error']==expected.get('extraction_error',False),'extraction_error_mismatch')
         if 'origin' in expected:require(row['source_counts']=={expected['origin']:len(row['selected_ids'])},'origin_mismatch')
-        if expected.get('memory_context_omitted'):require(bool(row['memory_context_decisions']),'memory_not_omitted')
+        if expected.get('memory_context_omitted'):
+            require(row['memory_context_decisions'].get('context_budget',0)>0,'memory_not_omitted_by_context_budget')
+            require(row['memory_whole_omission_proved'],'whole_memory_omission_not_proved')
         if case.get('recover'):require(row['recovered'],'recovery_failed')
     return errors
 

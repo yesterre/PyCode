@@ -45,6 +45,15 @@ def test_fixed_runtime_memory_contracts(measured,case_id,mode):
     assert row['model_calls']==row['execution_model_calls']
     assert row['preserved_existing_records']
     assert row['real_model_calls']==0 and row['billed_tokens'] is row['real_cost'] is row['natural_language_quality'] is None
+    if case_id=='source_priority':
+        assert row['source_priority_observations']
+        assert all(o['delivered'] and o['binding_matches'] and o['whole_source_present']
+                   for o in row['source_priority_observations'])
+        if mode=='enabled':
+            assert row['memory_context_decisions'].get('context_budget',0)>0
+            assert row['memory_whole_omission_proved']
+            assert all(o['memory_section_absent'] and o['memory_fragment_absent']
+                       for o in row['source_priority_observations'])
     if mode=='disabled':
         assert not row['calls'].get('selection') and not row['calls'].get('extraction')
         assert row['selected_ids']==[] and row['created_count']==0 and row['disabled_store_unchanged']
