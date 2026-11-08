@@ -2,7 +2,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, expect, it, vi } from 'vitest'
 import { getAgentRun, getTrace } from '../../api/agentRuns'
-import { TracePanel, QuestionProgress, BudgetProgress, ExecutionProgress, ToolExecutionInfo, ContextProgress } from './TracePanel'
+import { TracePanel, QuestionProgress, BudgetProgress, ExecutionProgress, ToolExecutionInfo, ContextProgress, MemoryProgress } from './TracePanel'
 
 vi.mock('../../api/agentRuns', () => ({getAgentRun: vi.fn(), getTrace: vi.fn(),
   eventsUrl: (id: string) => `/api/v1/agent-runs/${id}/events`}))
@@ -15,6 +15,22 @@ const baseRun = {id: 'r', project_id: 'p', task: 'Inspect code', status: 'comple
   error_message: null, snapshot_id: 's', run_type: 'agent', created_at: '', started_at: null,
   core_started_at: null, finished_at: null}
 afterEach(() => {vi.unstubAllGlobals(); vi.clearAllMocks()})
+
+it('shows memory counts and fixed provenance labels without rendering private references',()=>{
+  render(<MemoryProgress events={[{schema_version:1,sequence:1,event_type:'run_completed',tool_name:null,
+    occurred_at:'2026-11-08T00:00:00Z',payload:{memory:{schema_version:1,selected_count:1,created_count:2,
+      reason_counts:{snapshot_mismatch:3,duplicate:1},source_counts:{model_inference:1},
+      references:[{record_id:'PRIVATE_HASH',origin:'model_inference',reason:'keyword_fallback'}]}}}]} />)
+  expect(screen.getByText('选用 1 条，保存 2 条。')).toBeInTheDocument()
+  expect(screen.getByText('未验证推断：1')).toBeInTheDocument()
+  expect(screen.getByText('不适用当前快照：3')).toBeInTheDocument()
+  expect(screen.queryByText('PRIVATE_HASH')).not.toBeInTheDocument()
+})
+
+it('keeps traces without memory lifecycle summary unchanged',()=>{
+  const {container}=render(<MemoryProgress events={[]} />)
+  expect(container).toBeEmptyDOMElement()
+})
 
 it('shows explicit context omissions and estimated input without claiming billed tokens',()=>{
   render(<ContextProgress events={[{schema_version:1,sequence:1,event_type:'run_completed',tool_name:null,

@@ -170,6 +170,16 @@ class ApplicationTraceEvent:
             raise ValueError("Application Trace payload must be an object.")
         object.__setattr__(self, 'payload', _memory_public_payload(
             self.event_type, self.tool_name, self.payload))
+        if 'memory' in self.payload:
+            from pycode.agent.memory_policy import public_summary
+            if (self.event_type in {ApplicationEventType.RUN_COMPLETED,ApplicationEventType.RUN_FAILED}
+                    and public_summary(self.payload['memory']) is not None
+                    and len(json.dumps(self.payload,ensure_ascii=False,allow_nan=False).encode('utf-8')) > MAX_PUBLIC_PAYLOAD_BYTES):
+                # Optional diagnostics must not break an otherwise valid v1
+                # terminal payload. Code evidence itself is never truncated.
+                payload=dict(self.payload)
+                payload.pop('memory')
+                object.__setattr__(self,'payload',payload)
         validate_event_payload(self.event_type, self.payload)
 
     def database_payload(self) -> dict[str, Any]:
@@ -238,6 +248,11 @@ _REQUIRED_PAYLOAD_FIELDS: dict[ApplicationEventType, set[str]] = {
 
 
 def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, Any]) -> None:
+    if 'memory' in payload:
+        from pycode.agent.memory_policy import public_summary
+        if (event_type not in {ApplicationEventType.RUN_COMPLETED,ApplicationEventType.RUN_FAILED}
+                or public_summary(payload['memory']) is None):
+            raise ValueError('Invalid public Memory summary')
     for key,validator in (('execution',public_tool_execution),('harness_execution',public_harness_execution),
                           ('harness_context',public_context_report),('verification',public_verification)):
         if key in payload and (not isinstance(payload[key],dict) or validator(payload[key]) != payload[key]):
@@ -282,6 +297,8 @@ def validate_event_payload(event_type: ApplicationEventType, payload: dict[str, 
             "harness_context", "verification",
         },
     }[event_type]
+    if event_type in {ApplicationEventType.RUN_COMPLETED,ApplicationEventType.RUN_FAILED}:
+        allowed = allowed | {'memory'}
     unexpected = payload.keys() - allowed
     if unexpected:
         raise ValueError(f"Unexpected {event_type.value} payload fields: {sorted(unexpected)}")
@@ -898,6 +915,11 @@ class ApplicationTraceNormalizer:
         budget = next((value for event in reversed(internal_events)
                        if isinstance(data := getattr(event, 'data', None), dict)
                        and (value := public_harness_budget(data.get('harness_budget'))) is not None), None)
+        if result is not None and callable(getattr(getattr(result,'memory',None),'public_summary',None)) and drafts:
+            from pycode.agent.memory_policy import public_summary
+            summary=public_summary(result.memory.public_summary())
+            if summary is not None and drafts[-1][0] in {ApplicationEventType.RUN_COMPLETED,ApplicationEventType.RUN_FAILED}:
+                drafts[-1][3]['memory']=summary
         if drafts and budget is not None and drafts[-1][0] in {
                 ApplicationEventType.RUN_COMPLETED, ApplicationEventType.RUN_FAILED}:
             drafts[-1][3]['harness_budget'] = budget
@@ -1135,9 +1157,9 @@ def _llm_observation_counts(
             elif kind == "LLMSummaryFailed":
                 expected[LLMPurpose.SUMMARY.value] += 1
             elif kind == "MemoryRelevantLoaded":
-                expected[LLMPurpose.MEMORY_SELECTION.value] += 1
+                expected[LLMPurpose.MEMORY_SELECTION.value] += int(data.get('model_attempted',True))
             elif kind == "MemoryExtracted":
-                expected[LLMPurpose.MEMORY_EXTRACTION.value] += 1
+                expected[LLMPurpose.MEMORY_EXTRACTION.value] += int(data.get('model_attempted',True))
         except Exception:
             valid = False
     return starts, finishes, expected, valid

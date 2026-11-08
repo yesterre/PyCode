@@ -74,7 +74,7 @@ def _memory(context, *, operation, id, memory_type, title, summary, body, tags,
             )
         return success(
             TOOL_NAME,
-            f"Memory {item.id} created.",
+            f"Memory {item.id} {store.last_write}.",
             memory=item.to_dict(),
             diagnostics=list(store.diagnostics),
             evidence=[f"{DEFAULT_MEMORY_DIR}/{item.path}"],

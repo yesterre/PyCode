@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import dataclass, field
+from collections import Counter
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 from pycode.agent._time_utils import format_timestamp, utc_now
+from pycode.agent import memory_policy as policy
 from pycode.agent.memory_record import (
     MAX_DIAGNOSTICS, MAX_RECORD_BYTES, MAX_RECORDS, MAX_TOTAL_BYTES,
     SCHEMA_VERSION, MemoryScope, atomic_write, check_path, digest,
@@ -63,6 +65,7 @@ class MemoryIndexEntry:
     schema_version: int = 1
     provenance: dict[str, Any] | None = None
     record_id: str | None = None
+    lifecycle: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -77,6 +80,7 @@ class MemoryIndexEntry:
             "schema_version": self.schema_version,
             "provenance": self.provenance,
             "record_id": self.record_id,
+            "lifecycle": self.lifecycle,
         }
 
 
@@ -97,6 +101,7 @@ class MemoryItem:
     schema_version: int = 1
     provenance: dict[str, Any] | None = None
     record_id: str | None = None
+    lifecycle: dict[str, Any] | None = None
 
     def to_index_entry(self) -> MemoryIndexEntry:
         return MemoryIndexEntry(
@@ -111,6 +116,7 @@ class MemoryItem:
             schema_version=self.schema_version,
             provenance=self.provenance,
             record_id=self.record_id,
+            lifecycle=self.lifecycle,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -130,6 +136,7 @@ class MemoryItem:
             "schema_version": self.schema_version,
             "provenance": self.provenance,
             "record_id": self.record_id,
+            "lifecycle": self.lifecycle,
         }
 
 
@@ -140,6 +147,18 @@ class MemoryRunInfo:
     extracted_memories: list[MemoryItem] = field(default_factory=list)
     selection_error: str | None = None
     extraction_error: str | None = None
+    reason_counts: dict[str, int] = field(default_factory=dict)
+    selection_reasons: dict[str, str] = field(default_factory=dict)
+    selection_attempted: bool = False
+    extraction_attempted: bool = False
+
+    def public_summary(self):
+        return dict(schema_version=1,selected_count=len(self.relevant_memories),
+            created_count=len(self.extracted_memories),reason_counts=dict(self.reason_counts),
+            source_counts=dict(Counter(m.provenance['origin'] for m in self.relevant_memories if m.provenance)),
+            references=[dict(record_id=m.record_id,origin=m.provenance['origin'],
+                reason=self.selection_reasons.get(m.id,'keyword_fallback'))
+                for m in self.relevant_memories[:5] if m.record_id and m.provenance])
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -170,6 +189,7 @@ class MemoryStore:
         origin: str = "local_unknown",
         evidence: tuple[dict, ...] = (),
         retrieval_context: Any = None,
+        clock=None,
     ) -> None:
         self.project_path = Path(project_path).resolve()
         if memory_dir is None:
@@ -185,6 +205,9 @@ class MemoryStore:
         self.origin, self.evidence = origin, evidence
         self.retrieval_context = retrieval_context
         self.diagnostics: list[str] = []
+        self.reason_counts = Counter()
+        self.last_write = 'created'
+        self._now = clock or utc_now
 
     def _check(self):
         execution_check()
@@ -193,16 +216,13 @@ class MemoryStore:
         check_path(self.memory_dir, self.project_path)
 
     def _diagnose(self, code):
+        if code in policy.PUBLIC_REASONS:
+            self.reason_counts[code] += 1
         if code not in self.diagnostics and len(self.diagnostics) < MAX_DIAGNOSTICS:
             self.diagnostics.append(code)
 
     def _applicable(self, item):
-        if self.scope is None:
-            return True  # Explicit local inspection, never promotion to a fact.
-        p = item.provenance
-        binding = self.scope.binding
-        return bool(p and all(p.get(k) == getattr(binding, k)
-                             for k in ('project_id', 'snapshot_id', 'commit_sha')))
+        return policy.scope_rejection(item,self.scope) is None
 
     @property
     def index_path(self) -> Path:
@@ -221,32 +241,43 @@ class MemoryStore:
         confidence: float = 1.0,
         related_files: list[str] | None = None,
         allow_existing: bool = False,
+        _state: str = 'active',
     ) -> MemoryItem:
         self._check()
         with write_lock(self.memory_dir, self.project_path):
             return self._add_memory(memory_id=memory_id, memory_type=memory_type,
                 title=title, summary=summary, body=body, tags=tags, source=source,
-                confidence=confidence, related_files=related_files, allow_existing=allow_existing)
+                confidence=confidence, related_files=related_files, allow_existing=allow_existing,
+                _state=_state)
 
     def _add_memory(self, *, memory_id, memory_type, title, summary, body, tags,
-                    source, confidence, related_files, allow_existing):
+                    source, confidence, related_files, allow_existing, _state):
         if not memory_id:
             raise ValueError("Memory id is required.")
         if not body:
             raise ValueError("Memory body is required.")
         self._validate_memory_type(memory_type)
+        # Check before id normalization, which would erase credential syntax
+        # while leaving its value in a filename (e.g. token=... -> token-...).
+        if policy.sensitive('\n'.join([memory_id,title,summary,body,
+                                      *[str(v) for v in tags or []],
+                                      *[str(v) for v in related_files or []]])):
+            raise ValueError('memory_sensitive_content')
 
         actual_id = self._slugify(memory_id)
-        if not allow_existing:
-            actual_id = self._unique_name(actual_id)
-
         existing = self._memory_path(actual_id)
         created_at = format_timestamp(utc_now())
+        old = None
         if allow_existing and existing.exists():
-            old = self.load_memory(actual_id)
-            if old.schema_version != SCHEMA_VERSION or old.provenance != self._new_provenance(source):
+            from pycode.agent.budget import current_budget
+            if current_budget() is not None:
+                raise PermissionError('Agent cannot revise or delete project memories')
+            old = self._load_memory(existing)
+            if (old.schema_version != SCHEMA_VERSION or not self._applicable(old)
+                    or old.provenance['origin'] != self._new_provenance(source)['origin']):
                 raise ValueError("Cannot implicitly upgrade or rebind Memory")
-            created_at = old.created_at
+
+        actual_id = self._unique_name(actual_id)
 
         item = MemoryItem(
             id=actual_id,
@@ -265,6 +296,44 @@ class MemoryStore:
             provenance=self._new_provenance(source),
         )
         item.record_id = record_identity(item.id, item.provenance)
+        item.lifecycle = policy.lifecycle_for(item,self._now())
+        if old is not None and policy.namespace(old)!=policy.namespace(item):
+            raise ValueError('Cannot implicitly upgrade or rebind Memory')
+        policy.validate_content(item)
+        raw = self._scan_items()
+        peers = [m for m in raw if m.lifecycle and policy.namespace(m)==policy.namespace(item)]
+        active = policy.eligible(peers,self.scope,self._now())
+        parent_ids={parent for m in peers for parent in m.lifecycle['parents']}
+        heads=[m for m in peers if m.record_id not in parent_ids]
+        if old is None:
+            duplicate = next((m for m in active if policy.content_key(m)==policy.content_key(item)),None)
+            if duplicate is not None:
+                self.last_write='duplicate'
+                self._diagnose('duplicate')
+                return duplicate
+            conflicts=[m for m in heads if m.lifecycle['target']==item.lifecycle['target']
+                       and m.lifecycle['state'] in {'active','conflict'}]
+            if conflicts:
+                item.lifecycle.update(state='conflict',reason='conflicting_content',
+                    parents=[m.record_id for m in conflicts[:8]],
+                    revision=max(m.lifecycle['revision'] for m in conflicts)+1)
+                self._diagnose('conflict')
+            elif any(policy.near_duplicate(item,m) for m in active[:policy.MAX_NEAR_CHECKS]):
+                self._diagnose('near_duplicate_candidate')
+        else:
+            if _state not in {'active','invalidated','deleted'}:
+                raise ValueError('Invalid explicit Memory action')
+            item.lifecycle.update(target=old.lifecycle['target'],state=_state,
+                reason={'active':'explicit_revision','invalidated':'explicit_invalidation','deleted':'explicit_delete'}[_state],
+                parents=list(dict.fromkeys([old.record_id,*[m.record_id for m in heads
+                    if m.lifecycle['target']==old.lifecycle['target']]])),
+                revision=max([old.lifecycle['revision'],*[m.lifecycle['revision'] for m in heads
+                    if m.lifecycle['target']==old.lifecycle['target']]])+1)
+        policy.validate_lifecycle(item.lifecycle)
+        self.last_write=item.lifecycle['state']
+        return self._publish_memory(item)
+
+    def _publish_memory(self,item):
         self._save_memory(item)
         try:
             # Persist the complete index, never a view filtered to one Snapshot.
@@ -290,6 +359,16 @@ class MemoryStore:
         return self._list_memories(applicable_only=True)
 
     def _list_memories(self, *, applicable_only):
+        items=self._scan_items()
+        if applicable_only:
+            counts=Counter()
+            items=policy.eligible(items,self.scope,self._now(),counts)
+            for reason,count in counts.items():
+                self.reason_counts[reason]=max(self.reason_counts[reason],count)
+                if reason not in self.diagnostics:self.diagnostics.append(reason)
+        return sorted((m.to_index_entry() for m in items),key=lambda e:(e.type,e.id))
+
+    def _scan_items(self):
         self._check()
         if not self.memory_dir.exists():
             return []
@@ -310,13 +389,10 @@ class MemoryStore:
                     continue
                 total += size
                 item = self._load_memory(path)
-                if applicable_only and not self._applicable(item):
-                    self._diagnose('record_not_applicable')
-                    continue
-                entries.append(item.to_index_entry())
+                entries.append(item)
             except (OSError, ValueError, UnicodeError, TypeError, KeyError):
                 self._diagnose('record_unreadable')
-        return sorted(entries, key=lambda entry: (entry.type, entry.id))
+        return entries
 
     def search_memories(
         self,
@@ -363,9 +439,51 @@ class MemoryStore:
         if not path.exists():
             raise FileNotFoundError(f"Memory does not exist: {name}")
         item = self._load_memory(path)
-        if not self._applicable(item):
+        if item.lifecycle is None and self.scope is None:
+            return item  # Retain the existing local reader; no lifecycle upgrade.
+        available=policy.eligible(self._scan_items(),self.scope,self._now())
+        if not any(m.record_id==item.record_id for m in available):
             raise PermissionError('Memory is not applicable to this Snapshot')
         return item
+
+    def manage_memory(self, name, operation, *, body=None):
+        """Explicit local revision/soft deletion; never exposed to a model Tool."""
+        from pycode.agent.budget import current_budget
+        if current_budget() is not None:
+            raise PermissionError('Agent cannot manage Memory lifecycle')
+        self._check()
+        if operation not in {'revise','invalidate','delete'}:
+            raise ValueError('Invalid Memory action')
+        with write_lock(self.memory_dir,self.project_path):
+            old=self._load_memory(self._memory_path(self._slugify(name)))
+            if not old.lifecycle or not self._applicable(old):
+                raise PermissionError('Memory scope mismatch')
+            if operation in {'invalidate','delete'}:
+                # An explicit local tombstone retracts existing knowledge; it
+                # does not assert new facts against an unverified checkout.
+                # Preserve the original namespace, clear the producing Run.
+                raw=self._scan_items()
+                peers=[m for m in raw if m.lifecycle and policy.namespace(m)==policy.namespace(old)
+                       and m.lifecycle['target']==old.lifecycle['target']]
+                parent_ids={p for m in peers for p in m.lifecycle['parents']}
+                parents=list(dict.fromkeys([old.record_id,*[m.record_id for m in peers if m.record_id not in parent_ids]]))
+                name=self._unique_name(old.id)
+                life=dict(old.lifecycle,state='invalidated' if operation=='invalidate' else 'deleted',
+                    expires_at=None,reason='explicit_invalidation' if operation=='invalidate' else 'explicit_delete',
+                    parents=parents,revision=max(m.lifecycle['revision'] for m in peers)+1)
+                policy.validate_lifecycle(life)
+                item=replace(old,id=name,path=name+'.md',title='Explicit local lifecycle action',summary='',
+                    body='Memory explicitly retracted by local operator.',source='local_cli',
+                    provenance=dict(old.provenance,run_id=None),lifecycle=life,
+                    created_at=format_timestamp(self._now()),updated_at=format_timestamp(self._now()))
+                item.record_id=record_identity(item.id,item.provenance)
+                self.last_write=life['state']
+                return self._publish_memory(item)
+            return self._add_memory(memory_id=old.id,memory_type=old.type,title=old.title,
+                summary=old.summary,body=body if operation=='revise' else 'Memory explicitly '+operation+'d.',
+                tags=old.tags,source=old.source,confidence=old.confidence,
+                related_files=old.related_files,allow_existing=True,
+                _state={'revise':'active','invalidate':'invalidated','delete':'deleted'}[operation])
 
     def rebuild_index(self) -> list[MemoryIndexEntry]:
         self._check()
@@ -432,16 +550,18 @@ class MemoryStore:
     def _decode_memory(self, path: Path) -> MemoryItem:
         metadata, body = _parse_memory_file(read_bounded(path, self.project_path))
         version = metadata.get('schema_version', 1)
-        if type(version) is not int or version not in (1, SCHEMA_VERSION):
+        if type(version) is not int or version not in (1, 2, SCHEMA_VERSION):
             raise ValueError('Unsupported Memory schema version')
         if version == 1:
             # Escaped lone surrogates are not valid logical UTF-8 text, even
             # when the physical legacy file contains only ASCII bytes.
             json.dumps(metadata, ensure_ascii=False).encode('utf-8')
-        if version == SCHEMA_VERSION:
-            if set(metadata) != {'id', 'type', 'title', 'summary', 'tags', 'source', 'confidence',
+        if version >= 2:
+            fields = {'id', 'type', 'title', 'summary', 'tags', 'source', 'confidence',
                                   'related_files', 'created_at', 'updated_at', 'schema_version',
-                                  'provenance', 'record_id', 'record_hash'}:
+                                  'provenance', 'record_id', 'record_hash'}
+            if version==SCHEMA_VERSION:fields.add('lifecycle')
+            if set(metadata) != fields:
                 raise ValueError('Invalid Memory record fields')
             validate_provenance(metadata.get('provenance'))
             if metadata.get('record_id') != record_identity(metadata.get('id'), metadata['provenance']):
@@ -450,18 +570,20 @@ class MemoryStore:
             if expected != digest(dict(metadata=metadata, body=body)):
                 raise ValueError('Memory integrity check failed')
             _validate_record_fields(metadata)
+            if version==SCHEMA_VERSION:
+                policy.validate_lifecycle(metadata['lifecycle'])
         memory_type = str(metadata.get("type", ""))
         self._validate_memory_type(memory_type)
         memory_id = str(metadata.get("id") or path.stem)
         self._validate_memory_name(memory_id)
         if memory_id != path.stem:
             raise ValueError('Memory id and filename differ')
-        return MemoryItem(
+        item = MemoryItem(
             id=memory_id,
             type=memory_type,
             title=str(metadata.get("title") or ""),
             summary=str(metadata.get("summary") or ""),
-            body=body if version == SCHEMA_VERSION else body.strip(),
+            body=body if version >= 2 else body.strip(),
             tags=[str(tag) for tag in metadata.get("tags", [])],
             source=str(metadata.get("source") or "legacy_unknown"),
             confidence=_normalize_confidence(metadata.get("confidence", 1.0)),
@@ -470,13 +592,21 @@ class MemoryStore:
             updated_at=str(metadata.get("updated_at") or ""),
             path=path.name,
             schema_version=version,
-            provenance=metadata.get('provenance') if version == SCHEMA_VERSION else None,
-            record_id=metadata.get('record_id') if version == SCHEMA_VERSION else None,
+            provenance=metadata.get('provenance') if version >= 2 else None,
+            record_id=metadata.get('record_id') if version >= 2 else None,
+            lifecycle=metadata.get('lifecycle') if version==SCHEMA_VERSION else None,
         )
+        if item.lifecycle:
+            expected=policy.lifecycle_for(item,self._now())
+            if any(item.lifecycle[k]!=expected[k] for k in ('category','scope')):
+                raise ValueError('Memory authority/lifecycle mismatch')
+        return item
 
     def _save_memory(self, item: MemoryItem) -> None:
         self._validate_memory_name(item.id)
         self._validate_memory_type(item.type)
+        policy.validate_content(item)
+        policy.validate_lifecycle(item.lifecycle)
         text = _format_memory_file(item)
         _validate_record_fields(item.to_dict())
         size = len(text.encode('utf-8'))
@@ -552,6 +682,7 @@ def load_relevant_memories(
     llm_client: Any | None = None,
     max_memories: int = MAX_RELEVANT_MEMORIES,
     trace_recorder: Any | None = None,
+    info: MemoryRunInfo | None = None,
 ) -> tuple[list[MemoryItem], str | None]:
     try:
         store = MemoryStore(project_path)
@@ -559,11 +690,21 @@ def load_relevant_memories(
     except (OSError, ValueError, UnicodeError, TypeError, KeyError):
         return [], 'memory_storage_unavailable'
     if not entries or max_memories <= 0:
+        if info is not None:info.reason_counts.update(store.reason_counts)
         return [], None
+
+    ranked=store.search_memories(_recent_message_text(task_description,messages),
+                                limit=policy.MAX_SELECTION_CANDIDATES)
+    order={item.id:n for n,item in enumerate(ranked)}
+    entries=sorted(entries,key=lambda e:(order.get(e.id,len(order)),e.id))
+    if len(entries)>policy.MAX_SELECTION_CANDIDATES:store._diagnose('candidate_limit')
+    entries=entries[:policy.MAX_SELECTION_CANDIDATES]
+    max_memories=min(max_memories,MAX_RELEVANT_MEMORIES)
 
     selected_names: list[str] = []
     selection_error: str | None = None
     if llm_client is not None:
+        if info is not None:info.selection_attempted=True
         if trace_recorder is not None:
             trace_recorder.start_llm("memory_selection")
         try:
@@ -597,6 +738,10 @@ def load_relevant_memories(
             _recent_message_text(task_description, messages),
             limit=max_memories,
         )
+        if info is not None:
+            info.reason_counts.update(store.reason_counts)
+            info.selection_reasons.update({m.id:'keyword_fallback' for m in selected})
+            info.reason_counts['keyword_fallback']=len(selected)
         return selected, selection_error
 
     memories: list[MemoryItem] = []
@@ -604,12 +749,18 @@ def load_relevant_memories(
     for memory_id in selected_names:
         if memory_id not in known_ids:
             continue
+        if any(m.id==memory_id for m in memories):
+            continue
         try:
             memories.append(store.load_memory(memory_id))
         except (OSError, ValueError, UnicodeError, TypeError, KeyError):
             selection_error = selection_error or 'memory_storage_unavailable'
         if len(memories) >= max_memories:
             break
+    if info is not None:
+        info.reason_counts.update(store.reason_counts)
+        info.selection_reasons.update({m.id:'llm_selection' for m in memories})
+        info.reason_counts['llm_selection']=len(memories)
     return memories, selection_error
 
 
@@ -623,12 +774,19 @@ def extract_memories(
     llm_client: Any,
     max_existing_entries: int = 50,
     trace_recorder: Any | None = None,
+    info: MemoryRunInfo | None = None,
 ) -> tuple[list[MemoryItem], str | None]:
+    def reason(code,count=1):
+        if info is not None:info.reason_counts[code]=info.reason_counts.get(code,0)+count
+    if blocked:=policy.extraction_gate(task_description,messages,answer):
+        reason(blocked)
+        return [],None
     try:
         store = MemoryStore(project_path)
         entries = store.list_memories()
     except (OSError, ValueError, UnicodeError, TypeError, KeyError):
         return [], 'memory_storage_unavailable'
+    if info is not None:info.extraction_attempted=True
     if trace_recorder is not None:
         trace_recorder.start_llm("memory_extraction")
     try:
@@ -641,6 +799,8 @@ def extract_memories(
                 entries=entries[:max_existing_entries],
             )
         )
+        if len(response)>65536:
+            raise ValueError('Memory proposal capacity exceeded')
         proposals = _parse_extracted_memory_items(response)
     except Exception as exc:
         if trace_recorder is not None:
@@ -654,6 +814,7 @@ def extract_memories(
                     "schema_parse_failed" if isinstance(exc, ValueError) else None
                 ),
             )
+        reason('model_failed')
         return [], 'memory_extraction_failed'
     if trace_recorder is not None:
         trace_recorder.finish_llm(
@@ -662,21 +823,32 @@ def extract_memories(
 
     created: list[MemoryItem] = []
     extraction_error = None
-    existing_fingerprints = _memory_fingerprints(store)
-    for proposal in proposals:
+    total_bytes=0
+    if len(proposals)>policy.MAX_PROPOSALS:reason('proposal_limit',len(proposals)-policy.MAX_PROPOSALS)
+    for proposal in proposals[:policy.MAX_PROPOSALS]:
         try:
+            execution_check()
+            if len(created)>=policy.MAX_EXTRACTED:
+                reason('proposal_limit')
+                break
+            if proposal.get('purpose')=='working' or proposal.get('temporary') is True:
+                reason('temporary')
+                continue
             memory_type = str(proposal["type"])
             memory_id = str(proposal["id"])
             title = str(proposal.get("title") or memory_id)
             summary = str(proposal.get("summary") or "")
             body = str(proposal["body"])
+            if len(body)>policy.MAX_EXTRACT_BODY_CHARS or total_bytes+len(body.encode('utf-8'))>policy.MAX_EXTRACT_TOTAL_BYTES:
+                reason('capacity')
+                continue
             tags = [str(tag) for tag in proposal.get("tags", [])]
             confidence = _normalize_confidence(proposal.get("confidence", 1.0))
             related_files = [
                 str(path) for path in proposal.get("related_files", [])
             ]
-            fingerprint = _fingerprint(memory_type, title, summary, body)
-            if fingerprint in existing_fingerprints:
+            if policy.sensitive('\n'.join([memory_id,title,summary,body,*tags,*related_files])):
+                reason('sensitive_content')
                 continue
             item = store.add_memory(
                 memory_id=memory_id,
@@ -689,12 +861,17 @@ def extract_memories(
                 related_files=related_files,
                 source="auto",
             )
-            existing_fingerprints.add(fingerprint)
-            created.append(item)
+            if store.last_write!='duplicate':
+                total_bytes+=len(body.encode('utf-8'))
+                created.append(item)
         except (KeyError, TypeError, ValueError, OSError, UnicodeError, RecursionError):
+            reason('invalid_proposal')
             extraction_error = 'memory_proposal_not_saved'
             continue
-    return created, extraction_error or (','.join(store.diagnostics) if store.diagnostics else None)
+    if info is not None:
+        for code,count in store.reason_counts.items():info.reason_counts[code]=info.reason_counts.get(code,0)+count
+    return created, extraction_error or ('memory_index_unavailable'
+        if 'index_write_failed_body_committed' in store.diagnostics else None)
 
 
 def build_memory_selection_prompt(
@@ -765,6 +942,8 @@ def build_memory_extraction_prompt(
             "Return only a JSON array. Each item must contain id, type, title, summary, body, confidence, related_files, and optional tags.",
             f"Allowed types: {sorted(MemoryType.ALL)}",
             "Only include genuinely new long-lived knowledge. Do not duplicate existing memories.",
+            "At most 4 items, each body at most 2048 characters. Do not extract temporary working state, credentials, tokens or personal contact data.",
+            "All proposals remain unverified model hints; never claim user authority or current code evidence.",
             "Use project for codebase facts, workflow for commands or process, analysis for reusable conclusions, preference for user preferences, limitation for constraints or known risks.",
             f"Task: {task_description}",
             "Recent messages:",
@@ -794,6 +973,7 @@ def format_relevant_memories(memories: list[MemoryItem]) -> str:
                     f"related_files: {', '.join(memory.related_files) or 'N/A'}",
                     f"path: {memory.path}",
                     f"provenance: {json.dumps(memory.provenance, ensure_ascii=False)}",
+                    f"lifecycle: {json.dumps(memory.lifecycle, ensure_ascii=False)}",
                     "This memory is a hint; verify claims against current Snapshot code.",
                     memory.body,
                 ]
@@ -818,6 +998,7 @@ def _format_memory_file(item: MemoryItem) -> str:
         "schema_version": item.schema_version,
         "provenance": item.provenance,
         "record_id": item.record_id,
+        "lifecycle": item.lifecycle,
     }
     metadata['record_hash'] = digest(dict(metadata=metadata, body=item.body))
     lines = ["---"]
@@ -922,10 +1103,7 @@ def _memory_fingerprints(store: MemoryStore) -> set[str]:
 
 
 def _fingerprint(memory_type: str, title: str, summary: str, body: str) -> str:
-    normalized = " ".join(
-        f"{memory_type} {title} {summary} {body}".lower().split()
-    )
-    return normalized[:500]
+    return digest(dict(type=memory_type,title=title,summary=summary,body=body))
 
 
 def _normalize_confidence(value: Any) -> float:

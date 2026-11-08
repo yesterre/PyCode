@@ -246,6 +246,16 @@ def memory_project(
             _print_memory_entry(entry)
         return entries
 
+    if operation in {"revise", "invalidate", "delete"}:
+        if not memory_id:
+            raise ValueError('Memory lifecycle operation requires an id.')
+        if operation == 'revise' and not body:
+            raise ValueError('Memory revision requires --content.')
+        item = store.manage_memory(memory_id,operation,body=body)
+        _print_memory_header('Memory '+operation,project_path,store)
+        _print_memory_item(item,include_body=False)
+        return item
+
     raise ValueError(f"Unsupported memory operation: {operation}")
 
 
@@ -912,7 +922,7 @@ def _add_memory_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
     memory_parser.add_argument(
         "operation",
-        choices=["add", "list", "search", "load", "rebuild"],
+        choices=["add", "list", "search", "load", "rebuild", "revise", "invalidate", "delete"],
         help="Memory operation to run.",
     )
     memory_parser.add_argument(

@@ -54,7 +54,8 @@ def test_versioned_roundtrip_preserves_all_text_and_identity(tmp_path, body):
     item = add(s, title='left---right ☃ : "\n', summary='---\n摘要', body=body, confidence=.4)
     loaded = s.load_memory(item.id)
     assert loaded.to_dict() == item.to_dict()
-    assert loaded.body == body and loaded.confidence == .4 and loaded.schema_version == 2
+    assert loaded.body == body and loaded.confidence == .4 and loaded.schema_version == 3
+    assert loaded.lifecycle['state']=='active' and loaded.lifecycle['scope']=='local'
     assert loaded.provenance['origin'] == 'local_unknown'
     assert loaded.record_id == record_identity(loaded.id, loaded.provenance)
     assert s.list_memories()[0].provenance == loaded.provenance
@@ -91,7 +92,7 @@ def test_reserved_names_cannot_damage_index(tmp_path, name):
 
 @pytest.mark.parametrize('damage', ['version', 'hash', 'identity', 'provenance', 'fields', 'json', 'utf8', 'oversize', 'deep_json', 'unicode_json'])
 def test_one_bad_record_is_isolated_and_retained(tmp_path, damage):
-    s = MemoryStore(tmp_path); add(s); add(s, memory_id='broken')
+    s = MemoryStore(tmp_path); add(s); add(s, memory_id='broken',title='Broken target')
     path = s.memory_dir / 'broken.md'
     if damage == 'version': rewrite(path, lambda m: m.update(schema_version=99))
     elif damage == 'identity': rewrite(path, lambda m: m.update(record_id='0'*64))
@@ -129,7 +130,7 @@ def test_atomic_failure_preserves_old_file_and_reports_commit_boundary(tmp_path,
     path = s.memory_dir / 'note.md'; before, index = path.read_bytes(), s.index_path.read_bytes()
     original = records.os.replace
     def fail(src, dst):
-        if Path(dst).name == ('note.md' if target == 'body' else 'MEMORY.md'):
+        if Path(dst).name == ('note-2.md' if target == 'body' else 'MEMORY.md'):
             raise PermissionError('PRIVATE_FAKE_FAILURE')
         return original(src, dst)
     monkeypatch.setattr(records.os, 'replace', fail)
@@ -138,16 +139,18 @@ def test_atomic_failure_preserves_old_file_and_reports_commit_boundary(tmp_path,
         assert path.read_bytes() == before and s.index_path.read_bytes() == index
     else:
         item = add(s, body='new body', allow_existing=True)
-        assert s.load_memory('note').body == item.body == 'new body'
+        assert s.load_memory(item.id).body == item.body == 'new body'
+        assert path.read_bytes()==before  # A revision never destroys its parent.
+        with pytest.raises(PermissionError):s.load_memory('note')
         assert 'index_write_failed_body_committed' in s.diagnostics
         assert s.index_path.read_bytes() == index
     assert not list(s.memory_dir.glob('.memory-*.tmp'))
     monkeypatch.setattr(records.os, 'replace', original)
-    assert s.rebuild_index()[0].id == 'note'
+    assert s.rebuild_index()[0].id == ('note' if target=='body' else 'note-2')
 
 
 def test_concurrent_stores_allocate_unique_ids_without_lost_records(tmp_path):
-    def write(i): return add(MemoryStore(tmp_path), body=str(i)).id
+    def write(i): return add(MemoryStore(tmp_path),title='Independent target '+str(i), body=str(i)).id
     with ThreadPoolExecutor(max_workers=8) as pool: ids = list(pool.map(write, range(12)))
     s = MemoryStore(tmp_path)
     assert len(set(ids)) == 12 and len(s.list_memories()) == 12
@@ -198,7 +201,7 @@ def test_cli_explicit_and_auto_extraction_do_not_trust_model_provenance(tmp_path
     item = memory_project(tmp_path, 'add', memory_id='explicit', memory_type='preference', body='User text')
     assert item.provenance['origin'] == 'user_explicit'
     printed=capsys.readouterr().out
-    assert 'schema=2' in printed and 'origin=user_explicit' in printed and 'status=declared' in printed
+    assert 'schema=3' in printed and 'origin=user_explicit' in printed and 'status=declared' in printed
     path=tmp_path/'.pclens/memory/legacy.md'
     path.write_text('---\nid: "legacy"\ntype: "project"\nsource: "manual"\n---\nOld hint',encoding='utf-8')
     old=memory_project(tmp_path,'load',memory_id='legacy')
@@ -212,7 +215,7 @@ def test_cli_explicit_and_auto_extraction_do_not_trust_model_provenance(tmp_path
     trusted = scope(tmp_path)
     with trusted.activate():
         created, error = extract_memories(tmp_path, task_description='entry', messages=[],tool_results=[],answer='Answer',llm_client=Model())
-    assert error == 'record_not_applicable' and len(created)==1
+    assert error is None and len(created)==1
     assert created[0].provenance == provenance_for(trusted,'model_inference')
 
 

@@ -66,6 +66,10 @@ class RealtimeTraceSession:
     def observe(self, kind: str, value: Any) -> None:
         try:
             normalizer = ApplicationTraceNormalizer
+            if kind=='memory':
+                from pycode.agent.memory_policy import public_summary
+                self._memory=public_summary(value)
+                return
             if kind=='context_budget':
                 from backend.app.core.application_trace import public_context_report,public_verification
                 context=public_context_report(value.data.get('harness_context'))
@@ -220,4 +224,5 @@ class RealtimeTraceSession:
             payload['harness_execution'] = self._harness_execution
         if getattr(self,'_harness_context',None) is not None:payload['harness_context']=self._harness_context
         if getattr(self,'_verification',None) is not None:payload['verification']=self._verification
+        if getattr(self,'_memory',None) is not None:payload['memory']=self._memory
         return self._append(event_type, run.finished_at, None, payload, publish=False)

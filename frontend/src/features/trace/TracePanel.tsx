@@ -7,6 +7,7 @@ import { llmActivities, orderedEvents, toolActivities } from './model'
 import { useAgentTrace } from './useAgentTrace'
 import { RunEvidence } from '../agent/RunEvidence'
 import { traceEventLabel } from '../../presentation'
+import type { MemorySummary } from '../../api/types'
 
 const terminal = (status?: string) => status === 'completed' || status === 'failed'
 const text = (value: unknown) => typeof value === 'string' ? value : ''
@@ -26,6 +27,7 @@ function TraceContents({events}: {events: TraceEvent[]}) {
     <BudgetProgress events={ordered} />
     <ExecutionProgress events={ordered} />
     <ContextProgress events={ordered} />
+    <MemoryProgress events={ordered} />
     <Card><SectionHeading title="执行计划" />{plan ? <><p className="mb-3 text-sm text-slate-300">来源：<strong>{text(plan.payload.source)}</strong> · 回退：{String(plan.payload.fallback_used ?? false)}</p><ol className="space-y-3">{(Array.isArray(plan.payload.steps) ? plan.payload.steps : []).map((step: {step_index: number; tool: string | null; reason: string; required: boolean}) => <li key={step.step_index} className="rounded-lg bg-slate-800/80 p-3 text-sm"><div className="font-semibold">{step.step_index + 1}. {step.tool ?? '操作'} {step.required && <Badge>必需</Badge>}</div><p className="mt-1 text-slate-400">{step.reason}</p></li>)}</ol></> : <EmptyState title="暂无计划事件" />}</Card>
     <Card><SectionHeading title="时间线" /><div className="space-y-2">{ordered.length ? ordered.map(event => <div key={event.sequence} className="flex gap-3 border-l-2 border-cyan-500/40 py-1 pl-3 text-sm"><span className="w-8 shrink-0 font-mono text-slate-500">{event.sequence}</span><span className="min-w-0 flex-1 text-slate-200">{traceEventLabel(event.event_type)}{event.tool_name ? ` · ${event.tool_name}` : ''}</span><time className="text-xs text-slate-500">{new Date(event.occurred_at).toLocaleTimeString('zh-CN')}</time></div>) : <EmptyState title="正在等待轨迹事件" />}</div></Card>
     <Card><SectionHeading title="模型调用" />{llms.length ? <div className="space-y-3">{llms.map((activity, index) => <div key={index} className="rounded-lg bg-slate-800/80 p-3 text-sm"><div className="flex justify-between gap-2"><strong>{text((activity.start ?? activity.finish)?.payload.purpose) || 'LLM'}</strong><StatusBadge status={activity.finish ? (activity.finish.payload.success ? 'completed' : 'failed') : 'running'} /></div><p className="mt-2 text-slate-400">{activity.finish ? `成功：${String(activity.finish.payload.success)} · 回退：${String(activity.finish.payload.fallback_used)}` : '运行中 / 尚未完成'}</p>{Boolean(activity.finish?.payload.error) && <p className="mt-2 text-rose-300">{errorText(activity.finish?.payload.error)}</p>}</div>)}</div> : <EmptyState title="暂无模型调用" />}</Card>
@@ -49,6 +51,22 @@ export function QuestionProgress({run, events}: {run: AgentRun; events: TraceEve
     {typeof value.selected_count === 'number' && typeof value.discarded_count === 'number' && <p>选用 {value.selected_count} 条证据，舍弃 {value.discarded_count} 条。</p>}
     {value.budget != null && <p>证据预算估算：{value.estimated_tokens} / {value.budget}，不代表实际模型用量。</p>}
   </div>
+}
+
+export function MemoryProgress({events}:{events:TraceEvent[]}) {
+  const value=[...events].reverse().find(event=>event.payload.memory)?.payload.memory as MemorySummary|undefined
+  if (!value || value.schema_version!==1) return null
+  const labels:Record<string,string>={expired:'已过期',snapshot_mismatch:'不适用当前快照',
+    project_mismatch:'项目不匹配',conflict:'存在冲突',superseded:'已有修订',inactive:'已失效或删除',
+    sensitive_content:'敏感内容已拒绝',duplicate:'重复记忆',temporary:'临时信息未保存',
+    proposal_limit:'提取数量限制',capacity:'容量限制',input_limit:'输入限制',invalid_proposal:'无效提案',
+    keyword_fallback:'关键词选择',llm_selection:'模型选择',unknown_source:'来源不可用'}
+  const sources:Record<string,string>={user_explicit:'用户声明',code_derived:'代码引用',model_inference:'未验证推断',local_unknown:'未知来源'}
+  return <Card><SectionHeading title="项目记忆" subtitle="记忆仅作提示，当前源码证据优先。" />
+    <p>选用 {value.selected_count} 条，保存 {value.created_count} 条。</p>
+    {Object.entries(value.source_counts).map(([key,count])=><p key={key}>{sources[key]??'其他来源'}：{count}</p>)}
+    {Object.entries(value.reason_counts).map(([key,count])=><p key={key}>{labels[key]??'其他限制'}：{count}</p>)}
+  </Card>
 }
 
 export function ContextProgress({events}: {events:TraceEvent[]}) {

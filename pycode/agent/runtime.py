@@ -1348,6 +1348,7 @@ def _prepare_memory_context(
         store = MemoryStore(task.project_path)
         memory_index = store.read_index_text()
         memory_info.index_entries = store.list_memories()
+        memory_info.reason_counts.update(store.reason_counts)
         _record_memory_event(
             trace_recorder,
             "MemoryIndexLoaded",
@@ -1363,6 +1364,7 @@ def _prepare_memory_context(
                 llm_client=llm_client,
                 max_memories=config.max_relevant_memories,
                 trace_recorder=trace_recorder,
+                info=memory_info,
             )
             memory_info.relevant_memories = relevant
             memory_info.selection_error = selection_error
@@ -1373,6 +1375,7 @@ def _prepare_memory_context(
                 status="ok" if selection_error is None else "warning",
                 data={
                     "loaded": len(relevant),
+                    "model_attempted": memory_info.selection_attempted,
                     "selection_error": selection_error,
                     "memories": [item.id for item in relevant],
                 },
@@ -1388,6 +1391,7 @@ def _prepare_memory_context(
             status="failed",
             data={"error": memory_info.selection_error},
         )
+    if trace_recorder is not None:trace_recorder.observe('memory',memory_info.public_summary())
     return memory_info, memory_index
 
 
@@ -1419,11 +1423,13 @@ def _extract_memory_after_answer(
             answer=answer,
             llm_client=llm_client,
             trace_recorder=trace_recorder,
+            info=memory_info,
         )
     except (OSError, ValueError, UnicodeError, TypeError, KeyError):
         created, error = [], "memory_storage_unavailable"
     memory_info.extracted_memories = created
     memory_info.extraction_error = error
+    if trace_recorder is not None:trace_recorder.observe('memory',memory_info.public_summary())
     status = "ok" if error is None else "failed"
     _record_memory_event(
         trace_recorder,
@@ -1432,6 +1438,7 @@ def _extract_memory_after_answer(
         status=status,
         data={
             "created": len(created),
+            "model_attempted": memory_info.extraction_attempted,
             "memories": [item.id for item in created],
             "error": error,
         },

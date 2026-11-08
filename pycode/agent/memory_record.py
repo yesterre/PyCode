@@ -19,7 +19,7 @@ from uuid import UUID
 from pycode.chunks import SnapshotBinding
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MAX_RECORD_BYTES = 65536
 MAX_RECORDS = 256
 MAX_TOTAL_BYTES = 8 * 1024 * 1024

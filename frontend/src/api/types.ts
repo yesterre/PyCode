@@ -99,6 +99,9 @@ export type HarnessContext = {schema_version:1;binding:RunBinding|null;phase:'pl
 export type EvidenceVerification = {schema_version:1;status:'checked'|'limited'|'unavailable'|'rejected';
   warnings:string[];natural_language_verified:false}
 export type TraceHistory = { run_id: string; events: TraceEvent[] }
+export type MemorySummary = {schema_version:1;selected_count:number;created_count:number;
+  reason_counts:Record<string,number>;source_counts:Record<string,number>;
+  references:{record_id:string;origin:string;reason:string}[]}
 export type GraphNode = { id: string; type: string; name: string; path: string | null;
   symbol_key?: string | null; parent_id?: string | null; start_line?: number | null; end_line?: number | null }
 export type GraphEdge = { source: string; target: string; type: string; resolution?: string | null;
