@@ -226,3 +226,130 @@ def test_secret_admission_covers_metadata_before_slug_normalization(tmp_path,fie
     with pytest.raises(ValueError) as error:add(s,**{field:value})
     assert secret not in str(error.value)
     assert not list(s.memory_dir.glob('*.md'))
+
+
+@pytest.mark.parametrize('operation',['delete','invalidate'])
+@pytest.mark.parametrize('origin',['model_inference','user_explicit'])
+@pytest.mark.parametrize('replay',['same_target','same_body'])
+def test_automatic_extraction_cannot_revive_retracted_memory(tmp_path,operation,origin,replay):
+    original=scope(tmp_path)
+    store=MemoryStore(tmp_path,scope=original,origin=origin)
+    item=add(store,memory_type='preference')
+    store.manage_memory(item.id,operation)
+    before={p.name:p.read_bytes() for p in store.memory_dir.glob('*.md')}
+    proposal=dict(id='renamed',type=item.type,title=item.title if replay=='same_target' else 'Another title',
+                  body='A changed assertion' if replay=='same_target' else item.body)
+    class Model:
+        def generate(self,prompt):return json.dumps([proposal])
+    info=MemoryRunInfo()
+    with original.activate():
+        created,error=extract_memories(tmp_path,task_description='entry',messages=[],tool_results=[],
+            answer='Completed',llm_client=Model(),info=info)
+        result=memory(ToolContext(tmp_path),operation='add',id=proposal['id'],memory_type=proposal['type'],
+                      title=proposal['title'],body=proposal['body'])
+    assert created==[] and error is None and not result.ok
+    assert info.reason_counts['inactive']>=1 and not store.list_memories()
+    assert before=={p.name:p.read_bytes() for p in store.memory_dir.glob('*.md')}
+
+
+@pytest.mark.parametrize('operation',['delete','invalidate'])
+@pytest.mark.parametrize('action',['redeclare','revise'])
+def test_trusted_user_can_explicitly_restore_retracted_memory(tmp_path,operation,action):
+    original=scope(tmp_path)
+    store=MemoryStore(tmp_path,scope=original,origin='user_explicit')
+    item=add(store,memory_type='preference')
+    tombstone=store.manage_memory(item.id,operation)
+    restored=(add(store,memory_type='preference') if action=='redeclare'
+              else store.manage_memory(item.id,'revise',body='Explicitly restored assertion'))
+    assert restored.lifecycle['state']=='active'
+    assert tombstone.record_id in restored.lifecycle['parents']
+    assert {e.id for e in store.list_memories()}=={restored.id}
+    assert store.load_memory(restored.id).body==restored.body
+
+
+@pytest.mark.parametrize('change',['snapshot','commit','project'])
+def test_snapshot_retraction_cannot_deny_another_binding(tmp_path,change):
+    original=scope(tmp_path)
+    store=MemoryStore(tmp_path,scope=original,origin='model_inference');item=add(store)
+    store.manage_memory(item.id,'delete')
+    binding=replace(original.binding,**{'snapshot_id':str(uuid4())} if change=='snapshot'
+                    else {'commit_sha':'b'*40} if change=='commit' else {'project_id':str(uuid4())})
+    with MemoryScope(tmp_path,binding,str(uuid4())).activate():
+        fresh=add(MemoryStore(tmp_path,origin='model_inference'))
+        assert fresh.lifecycle['state']=='active'
+        assert MemoryStore(tmp_path).load_memory(fresh.id).record_id==fresh.record_id
+
+
+def test_project_declaration_retraction_blocks_model_replay_after_snapshot_switch(tmp_path):
+    original=scope(tmp_path)
+    store=MemoryStore(tmp_path,scope=original,origin='user_explicit')
+    item=add(store,memory_type='preference');store.manage_memory(item.id,'invalidate')
+    newer=MemoryScope(tmp_path,replace(original.binding,snapshot_id=str(uuid4()),commit_sha='b'*40),str(uuid4()))
+    with newer.activate(),pytest.raises(ValueError,match='memory_retracted'):
+        add(MemoryStore(tmp_path),memory_type='preference',source='auto')
+
+
+@pytest.mark.parametrize('operation',['delete','invalidate'])
+def test_retracted_revision_blocks_ancestor_body_and_allows_explicit_revision(tmp_path,operation):
+    original=scope(tmp_path)
+    store=MemoryStore(tmp_path,scope=original,origin='model_inference');first=add(store)
+    second=store.manage_memory(first.id,'revise',body='Revised assertion')
+    store.manage_memory(second.id,operation)
+    with original.activate(),pytest.raises(ValueError,match='memory_retracted'):
+        add(MemoryStore(tmp_path),title='Renamed old assertion',body=first.body,source='auto')
+    restored=store.manage_memory(second.id,'revise',body='Operator restored assertion')
+    assert restored.lifecycle['state']=='active' and store.load_memory(restored.id).body==restored.body
+
+
+@pytest.mark.parametrize('field',['tool','summary','error'])
+def test_extraction_checks_every_tool_prompt_field_before_model_call(tmp_path,field):
+    from pycode.tools.base import ToolResult
+    values=dict(tool='read_file',ok=False,summary='Read failed',error=None)
+    values[field]='token=FAKE_TOOL_SECRET'
+    class Forbidden:
+        def generate(self,prompt):pytest.fail('Sensitive tool summary reached extraction model')
+    info=MemoryRunInfo()
+    created,error=extract_memories(tmp_path,task_description='entry',messages=[],
+        tool_results=[ToolResult(**values)],answer='Completed',llm_client=Forbidden(),info=info)
+    assert created==[] and error is None and info.reason_counts=={'input_sensitive':1}
+    assert not info.extraction_attempted and not list((tmp_path/'.pclens/memory').glob('*.md'))
+
+
+@pytest.mark.parametrize('excess',[0,1])
+def test_extraction_budget_covers_entire_serialized_prompt_including_tools(tmp_path,excess):
+    from pycode.agent.memory import build_memory_extraction_prompt
+    from pycode.tools.base import ToolResult
+    from pycode.agent.types import AgentMessage
+    inputs=dict(task_description='entry',messages=[AgentMessage('user','ordinary context')],
+                tool_results=[ToolResult('read_file',True,'')],answer='Completed')
+    base=build_memory_extraction_prompt(**inputs,entries=[])
+    inputs['tool_results'][0].summary='x'*(policy.MAX_EXTRACTION_INPUT_CHARS-len(base)+excess)
+    calls=[]
+    class Model:
+        def generate(self,prompt):
+            assert len(prompt)==policy.MAX_EXTRACTION_INPUT_CHARS
+            calls.append(prompt)
+            return '[]'
+    info=MemoryRunInfo()
+    assert extract_memories(tmp_path,**inputs,llm_client=Model(),info=info)==([],None)
+    assert len(calls)==(0 if excess else 1)
+    assert info.extraction_attempted is (not excess)
+    assert info.reason_counts==({'input_limit':1} if excess else {})
+
+
+def test_extraction_tool_projection_excludes_raw_data_and_preserves_summaries(tmp_path):
+    from pycode.tools.base import ToolResult
+    result=ToolResult('read_file',False,'Visible tool summary',error='Visible tool error',
+                      data={'content':'token=FAKE_RAW_DATA_SECRET'+'x'*25000})
+    calls=[]
+    class Model:
+        def generate(self,prompt):
+            calls.append(prompt)
+            assert 'Visible tool summary' in prompt and 'Visible tool error' in prompt
+            assert 'FAKE_RAW_DATA_SECRET' not in prompt
+            projected=json.loads(prompt.split('Tool result summaries:\n\n')[1].split('\n\nFinal answer:')[0])
+            assert projected==[dict(tool=result.tool,ok=False,summary=result.summary,error=result.error)]
+            return '[]'
+    assert extract_memories(tmp_path,task_description='entry',messages=[],tool_results=[result],
+                            answer='Completed',llm_client=Model())==([],None)
+    assert len(calls)==1

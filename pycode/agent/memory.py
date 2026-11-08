@@ -305,6 +305,14 @@ class MemoryStore:
         active = policy.eligible(peers,self.scope,self._now())
         parent_ids={parent for m in peers for parent in m.lifecycle['parents']}
         heads=[m for m in peers if m.record_id not in parent_ids]
+        if old is None and policy.auto_retracted(item,raw):
+            self._diagnose('inactive')
+            raise ValueError('memory_retracted')
+        if old is None and item.provenance['origin']=='user_explicit':
+            # A trusted redeclaration explicitly supersedes the same-namespace
+            # tombstone, just as a local revision does. Models cannot do this.
+            old=next((m for m in heads if m.lifecycle['target']==item.lifecycle['target']
+                      and m.lifecycle['state'] in {'deleted','invalidated'}),None)
         if old is None:
             duplicate = next((m for m in active if policy.content_key(m)==policy.content_key(item)),None)
             if duplicate is not None:
@@ -784,21 +792,21 @@ def extract_memories(
     try:
         store = MemoryStore(project_path)
         entries = store.list_memories()
+        prompt=build_memory_extraction_prompt(
+            task_description=task_description,messages=messages,tool_results=tool_results,
+            answer=answer,entries=entries[:max_existing_entries])
     except (OSError, ValueError, UnicodeError, TypeError, KeyError):
         return [], 'memory_storage_unavailable'
+    # Validate the exact serialized input, including projected Tool fields,
+    # catalog, repeated task text and framing, before any model observation/call.
+    if blocked:=policy.extraction_gate(task_description,messages,answer,prompt=prompt):
+        reason(blocked)
+        return [],None
     if info is not None:info.extraction_attempted=True
     if trace_recorder is not None:
         trace_recorder.start_llm("memory_extraction")
     try:
-        response = llm_client.generate(
-            build_memory_extraction_prompt(
-                task_description=task_description,
-                messages=messages,
-                tool_results=tool_results,
-                answer=answer,
-                entries=entries[:max_existing_entries],
-            )
-        )
+        response = llm_client.generate(prompt)
         if len(response)>65536:
             raise ValueError('Memory proposal capacity exceeded')
         proposals = _parse_extracted_memory_items(response)
@@ -864,7 +872,9 @@ def extract_memories(
             if store.last_write!='duplicate':
                 total_bytes+=len(body.encode('utf-8'))
                 created.append(item)
-        except (KeyError, TypeError, ValueError, OSError, UnicodeError, RecursionError):
+        except (KeyError, TypeError, ValueError, OSError, UnicodeError, RecursionError) as exc:
+            if isinstance(exc,ValueError) and str(exc)=='memory_retracted':
+                continue  # A normal policy rejection, already counted by Store.
             reason('invalid_proposal')
             extraction_error = 'memory_proposal_not_saved'
             continue

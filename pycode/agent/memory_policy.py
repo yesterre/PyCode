@@ -115,6 +115,40 @@ def content_key(item):
                        tags=sorted(item.tags),related_files=sorted(item.related_files)))
 
 
+def auto_retracted(item, records):
+    """A model cannot undo an applicable explicit retraction by renaming it.
+
+    Tombstones keep their original namespace; their bounded parent graph holds
+    the withdrawn bodies. Explicit revisions supersede a tombstone normally.
+    Matching crosses origins, never Projects. Only project-scoped declarations
+    carry their retractions across Snapshots.
+    """
+    if item.provenance['origin'] != 'model_inference':
+        return False
+    binding=item.provenance
+    scoped=[m for m in records if m.lifecycle and m.provenance['project_id']==binding['project_id']
+            and (m.lifecycle['scope']=='project' or all(m.provenance[k]==binding[k]
+                 for k in ('snapshot_id','commit_sha')))]
+    by_id={m.record_id:m for m in scoped}
+    superseded={parent for m in scoped for parent in m.lifecycle['parents']
+                if parent in by_id and namespace(m)==namespace(by_id[parent])}
+    pending=[m for m in scoped if m.lifecycle['state'] in {'deleted','invalidated'}
+             and m.record_id not in superseded]
+    visited=set()
+    while pending:
+        withdrawn=pending.pop()
+        if withdrawn.record_id in visited:
+            continue
+        visited.add(withdrawn.record_id)
+        if (withdrawn.lifecycle['target']==item.lifecycle['target']
+                or (withdrawn.lifecycle['state'] not in {'deleted','invalidated'}
+                    and withdrawn.body==item.body)):
+            return True
+        pending.extend(by_id[p] for p in withdrawn.lifecycle['parents']
+                       if p in by_id and namespace(withdrawn)==namespace(by_id[p]))
+    return False
+
+
 def near_duplicate(a, b):
     left, right = set(re.findall(r'\w+',a.body.casefold())),set(re.findall(r'\w+',b.body.casefold()))
     return bool(left and right and len(left & right)/len(left | right) >= .85)
@@ -165,9 +199,10 @@ def eligible(items, scope, now, counts=None):
     return result
 
 
-def extraction_gate(task, messages, answer):
+def extraction_gate(task, messages, answer, *, prompt=None):
     if not answer or not answer.strip(): return 'empty_answer'
-    parts=[task,answer,*[getattr(m,'content','') for m in messages[-10:]]]
+    parts=([prompt] if prompt is not None else
+           [task,answer,*[getattr(m,'content','') for m in messages[-10:]]])
     if any(not isinstance(v,str) for v in parts): return 'invalid_proposal'
     if sum(map(len,parts))>MAX_EXTRACTION_INPUT_CHARS: return 'input_limit'
     if sensitive('\n'.join(parts)): return 'input_sensitive'

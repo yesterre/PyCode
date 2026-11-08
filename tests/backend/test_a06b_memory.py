@@ -21,7 +21,7 @@ from test_b04_project_derived_auth import resources
 from test_postgresql import postgresql_engine
 
 
-@pytest.mark.parametrize('failure',[False,True,'gated'])
+@pytest.mark.parametrize('failure',[False,True,'gated','deleted','invalidated'])
 def test_worker_uses_original_snapshot_and_project_declarations_with_safe_memory_trace(vector_env,monkeypatch,failure):
     env=vector_env;ids=submit(env,'agent');root=env.app.state.workspace.path_for(env.r.own)
     old=MemoryScope(root,SnapshotBinding(str(env.r.own),str(uuid4()),'a'*40),str(uuid4()))
@@ -30,6 +30,12 @@ def test_worker_uses_original_snapshot_and_project_declarations_with_safe_memory
     with old.activate():
         MemoryStore(root,origin='model_inference').add_memory(memory_id='stale',memory_type='analysis',
             title='Old code fact',summary='Old',body='PRIVATE_STALE_CODE')
+    if failure in {'deleted','invalidated'}:
+        bound=MemoryScope(root,SnapshotBinding(str(env.r.own),str(env.snapshot_id),'a'*40),str(uuid4()))
+        store=MemoryStore(root,scope=bound,origin='model_inference')
+        withdrawn=store.add_memory(memory_id='withdrawn',memory_type='analysis',title='New inference',
+                                   summary='',body='PRIVATE_NEW_HINT')
+        store.manage_memory(withdrawn.id,'delete' if failure=='deleted' else 'invalidate')
     newer=switch_current(env);calls=[]
     def generate(prompt):
         assert not env.active_transactions and not env.memory_transactions
@@ -66,6 +72,7 @@ def test_worker_uses_original_snapshot_and_project_declarations_with_safe_memory
     terminal=application_event_from_record(rows[-1]);summary=terminal.payload['memory']
     assert terminal.payload['trace_complete'] is True
     if failure=='gated':assert summary['reason_counts']['input_sensitive']==1
+    if failure in {'deleted','invalidated'}:assert summary['reason_counts']['inactive']>=1
     assert summary['selected_count']==1
     assert summary['source_counts']=={'user_explicit':1}
     assert summary['references'][0]['record_id']==declared.record_id
