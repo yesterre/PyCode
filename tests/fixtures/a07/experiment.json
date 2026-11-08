@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "kind": "retrieval_and_build_engineering_not_answer_quality",
+  "question_fixture": "tests/fixtures/a00/questions.json",
+  "question_sha256": "8083244fe8a5b61b600835ca15a378ec5413e4feb931a5ce49d5d0512dc8bb74",
+  "corpus_commit": "5925bb30fb674451b1c9d08360ca83d00f64780a",
+  "question_count": 16,
+  "positive_count": 15,
+  "top_k": 6,
+  "candidate_limit": 20,
+  "structured_graph": true,
+  "graph_schema_version": 4,
+  "graph": {"graph_depth": 2, "graph_nodes": 32, "graph_edge_checks": 128, "graph_direction": "both"},
+  "embedding": {"provider": "fake", "model": "sha256-token-hash-v1", "dimension": 64, "lifecycle_build_batch_size": 64, "retrieval_build_batching": "single_bulk_fake_call_existing_a02"},
+  "llm": {"status": "not_run", "model": null, "temperature": "not_applicable_no_llm", "seed": "not_applicable_no_llm"},
+  "legacy_retriever_sha256": "498b9fab9b878a94de08b54210c0176fa30d9c3d3ebec2def5afc00df484eee2",
+  "historical_receipts": {
+    "a00": "c3fa30ad0bacf6c27bf9e43ef63ef66f2848fab3ab006406255f3a3bdc7a632f",
+    "a02_budget12000": "dcc63f8aedc5c90659cea9b64d0848682556c65c4da249cde747cf48e7dc1efc",
+    "a02_budget131072": "e7e3ea46ad49bbc6789baba356950aeacd4883a4a46a5bfe84a22d7243ed2622",
+    "a01_scale": "ab3a3de5081efa582dada53dae6e379b4818a4e91ff8d4491bd380830e08261c"
+  },
+  "profiles": {
+    "acceptance": {"budgets": [12000, 131072], "repeats": 3, "warmup": 1, "build_rounds": 3, "repository_scale": true},
+    "test": {"budgets": [12000], "repeats": 1, "warmup": 0, "build_rounds": 2, "repository_scale": false}
+  },
+  "policy": {
+    "historical_a00": "archive_only_no_exact_retriever_reproduction",
+    "historical_lines": "aggregate_cached_scores_only_snippets_not_archived",
+    "current_metrics": "reuse_a02_evidence_position_and_a00_distinct_file_metrics_separately",
+    "unknown": "retain_and_exclude_from_positive_denominator",
+    "scale": "fixed_old_git_corpus_and_current_complete_python_inventory_not_large_repo_slo",
+    "incremental_indexing": "not_implemented",
+    "real_model_quality": "not_run"
+  }
+}

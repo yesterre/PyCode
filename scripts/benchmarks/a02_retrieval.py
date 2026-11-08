@@ -233,12 +233,13 @@ def _offline(*args, **kwargs):
 
 
 def run_benchmark(repo, dataset_path, output_dir, *, repeats=3, warmup=1,
-                  candidate_limit=20, top_k=6, budget=12000):
+                  candidate_limit=20, top_k=6, budget=12000, structured_graph=False):
     run_started = perf_counter()
     if (type(repeats) is not int or repeats < 1 or type(warmup) is not int or warmup < 0
             or type(candidate_limit) is not int or type(top_k) is not int
             or not 1 <= top_k <= candidate_limit <= 20
-            or type(budget) is not int or not 4096 <= budget <= 1048576):
+            or type(budget) is not int or not 4096 <= budget <= 1048576
+            or type(structured_graph) is not bool):
         raise ValueError('Invalid benchmark configuration')
     # Validate Git and Ground Truth BEFORE creating or writing output.
     data = Path(dataset_path).read_bytes()
@@ -254,14 +255,15 @@ def run_benchmark(repo, dataset_path, output_dir, *, repeats=3, warmup=1,
     materialize(corpus, root)
     with patch.object(socket.socket, 'connect', _offline), patch.object(socket, 'getaddrinfo', _offline):
         started = perf_counter()
-        index = PyCodeEngine().build_index(root, include_chunk_metadata=True)
+        index = PyCodeEngine().build_index(root, include_chunk_metadata=True,
+            **({'include_graph_metadata': True} if structured_graph else {}))
         # Git corpus paths are POSIX. Canonicalize the host's FileInfo separators
         # in this offline harness, before building either Graph or Chunk IDs.
         for file in index.files:
             file.path = normalize_path(file.path)
-        graph = build_code_graph(index)
         binding = SnapshotBinding(str(uuid5(NAMESPACE_URL, 'pycode-a02-offline')),
                                   str(uuid5(NAMESPACE_URL, dataset['commit'] + corpus_hash)), dataset['commit'])
+        graph = build_code_graph(index, **({'binding': binding} if structured_graph else {}))
         chunks = build_chunk_index(index, binding)
         chunk_path = output_dir / 'chunks.json'
         save_chunk_index(chunks, chunk_path)
@@ -320,6 +322,7 @@ def run_benchmark(repo, dataset_path, output_dir, *, repeats=3, warmup=1,
         'environment': {'python': platform.python_version(), 'os': platform.platform(), 'network_calls': 0,
                         'provider': provider.provider, 'model': provider.model, 'dimension': provider.dimension},
         'configuration': {'repeats': repeats, 'warmup': warmup, 'candidate_limit_per_channel_and_ablation_pool': candidate_limit,
+                          'structured_graph': structured_graph, 'graph_schema_version': graph.schema_version,
                           'top_k': top_k, 'ks': ks, 'budget': budget, 'graph_depth': context.graph_depth,
                           'graph_nodes': context.graph_nodes, 'graph_edge_checks': context.graph_edge_checks,
                           'graph_direction': context.graph_direction, 'order': 'cyclic rotation, no query cache',
@@ -355,9 +358,11 @@ def main():
     parser.add_argument('--candidate-limit', type=int, default=20)
     parser.add_argument('--top-k', type=int, default=6)
     parser.add_argument('--budget', type=int, default=12000)
+    parser.add_argument('--structured-graph', action='store_true', help='Explicitly evaluate current bound structural Graph; legacy default retained')
     args = parser.parse_args()
     result = run_benchmark(ROOT, args.dataset, args.output_dir, repeats=args.repeats, warmup=args.warmup,
-                           candidate_limit=args.candidate_limit, top_k=args.top_k, budget=args.budget)
+                           candidate_limit=args.candidate_limit, top_k=args.top_k, budget=args.budget,
+                           structured_graph=args.structured_graph)
     print(json.dumps({'output': str(args.output_dir), 'commit': result['commit'],
                       'scored_cases': result['scored_cases'], 'paid_requests': result['paid_requests']}))
 
