@@ -29,7 +29,10 @@ class PyCodeAdapter:
     graph_artifact_path = f"{DEFAULT_ARTIFACT_DIR}/{DEFAULT_GRAPH_FILE}"
 
     @contextmanager
-    def execution_scope(self, retrieval_context, checkpoint, observer=None):
+    def execution_scope(self, retrieval_context, checkpoint, observer=None, *, run_id=None):
+        from pycode.agent.memory_record import MemoryScope
+        memory_scope = MemoryScope(retrieval_context.root, retrieval_context.binding,
+                                   str(run_id) if run_id is not None else None)
         budget = ExecutionBudget(ExecutionLimits.from_environment(),
             binding=retrieval_context.binding, checkpoint=checkpoint)
         budget.retrieval_context = retrieval_context
@@ -39,7 +42,7 @@ class PyCodeAdapter:
                     observer('budget', budget_event(budget))
                 except Exception:
                     pass  # Observability is never the execution control channel.
-        with budget.activate():
+        with budget.activate(), memory_scope.activate():
             try:
                 observe()
                 budget.check()

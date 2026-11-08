@@ -446,7 +446,7 @@ class AgentRunService:
         except Exception:
             logger.warning("Realtime Trace activation degraded run_id=%s", run_id, exc_info=True)
         with self.adapter.execution_scope(retrieval_context, ownership.ensure_owned,
-                trace_session.observe if trace_session is not None else None):
+                trace_session.observe if trace_session is not None else None, run_id=marked.run.id):
             return self._execute_strategy(marked.run, task_id, execution_token,
                 repository, retrieval_context, trace_session)
 

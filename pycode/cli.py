@@ -183,7 +183,7 @@ def memory_project(
     limit: int = 5,
 ) -> list[MemoryIndexEntry] | list[MemoryItem] | MemoryItem:
     """Manage project-local persistent memory files under .pclens/memory."""
-    store = MemoryStore(project_path)
+    store = MemoryStore(project_path, origin="user_explicit")
 
     if operation == "add":
         if not memory_id:
@@ -205,6 +205,8 @@ def memory_project(
         )
         _print_memory_header("Memory created", project_path, store)
         _print_memory_item(item, include_body=False)
+        if store.diagnostics:
+            _safe_print('Memory warnings: ' + ', '.join(store.diagnostics))
         return item
 
     if operation == "list":
@@ -345,6 +347,7 @@ def _print_memory_header(label: str, project_path: Path, store: MemoryStore) -> 
 
 
 def _print_memory_entry(entry: MemoryIndexEntry) -> None:
+    provenance = entry.provenance or {}
     tags = f", tags={','.join(entry.tags)}" if entry.tags else ""
     related = (
         f", related_files={','.join(entry.related_files)}"
@@ -353,11 +356,14 @@ def _print_memory_entry(entry: MemoryIndexEntry) -> None:
     )
     _safe_print(
         f"- {entry.id}: {entry.type} - {entry.title}: {entry.summary} "
-        f"(path={entry.path}, confidence={entry.confidence}{tags}{related})"
+        f"(path={entry.path}, confidence={entry.confidence}{tags}{related}, "
+        f"schema={entry.schema_version}, origin={provenance.get('origin', 'legacy_unknown')}, "
+        f"status={provenance.get('status', 'unknown')})"
     )
 
 
 def _print_memory_item(item: MemoryItem, *, include_body: bool) -> None:
+    provenance = item.provenance or {}
     tags = f", tags={','.join(item.tags)}" if item.tags else ""
     related = (
         f", related_files={','.join(item.related_files)}"
@@ -367,7 +373,9 @@ def _print_memory_item(item: MemoryItem, *, include_body: bool) -> None:
     _safe_print(
         f"- {item.id}: {item.type} - {item.title}: {item.summary} "
         f"(path={item.path}, source={item.source}, "
-        f"confidence={item.confidence}{tags}{related})"
+        f"confidence={item.confidence}{tags}{related}, schema={item.schema_version}, "
+        f"origin={provenance.get('origin', 'legacy_unknown')}, "
+        f"status={provenance.get('status', 'unknown')})"
     )
     if include_body:
         _safe_print(item.body or "N/A")

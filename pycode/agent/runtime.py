@@ -1377,8 +1377,10 @@ def _prepare_memory_context(
                     "memories": [item.id for item in relevant],
                 },
             )
-    except (PermissionError, ValueError, OSError) as exc:
-        memory_info.selection_error = f"{type(exc).__name__}: {exc}"
+        if store.diagnostics:
+            memory_info.selection_error = memory_info.selection_error or ','.join(store.diagnostics)
+    except (OSError, ValueError, UnicodeError, TypeError, KeyError):
+        memory_info.selection_error = "memory_storage_unavailable"
         _record_memory_event(
             trace_recorder,
             "MemoryLoadFailed",
@@ -1408,15 +1410,18 @@ def _extract_memory_after_answer(
     ):
         return
 
-    created, error = extract_memories(
-        task.project_path,
-        task_description=task.description,
-        messages=messages,
-        tool_results=[replace(r,summary=r.safe_summary,error=r.safe_error) for r in tool_results],
-        answer=answer,
-        llm_client=llm_client,
-        trace_recorder=trace_recorder,
-    )
+    try:
+        created, error = extract_memories(
+            task.project_path,
+            task_description=task.description,
+            messages=messages,
+            tool_results=[replace(r,summary=r.safe_summary,error=r.safe_error) for r in tool_results],
+            answer=answer,
+            llm_client=llm_client,
+            trace_recorder=trace_recorder,
+        )
+    except (OSError, ValueError, UnicodeError, TypeError, KeyError):
+        created, error = [], "memory_storage_unavailable"
     memory_info.extracted_memories = created
     memory_info.extraction_error = error
     status = "ok" if error is None else "failed"

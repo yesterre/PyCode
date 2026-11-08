@@ -168,6 +168,8 @@ class ApplicationTraceEvent:
             raise ValueError("Non-tool Application Events require null tool_name.")
         if not isinstance(self.payload, dict):
             raise ValueError("Application Trace payload must be an object.")
+        object.__setattr__(self, 'payload', _memory_public_payload(
+            self.event_type, self.tool_name, self.payload))
         validate_event_payload(self.event_type, self.payload)
 
     def database_payload(self) -> dict[str, Any]:
@@ -637,6 +639,44 @@ def sanitize_public_value(value: Any, *, depth: int = 0) -> Any:
             for item in value[:MAX_PUBLIC_LIST_ITEMS]
         ]
     return sanitize_text(value)
+
+
+def _memory_public_payload(event_type, tool_name, payload):
+    """One code/content-free projection for live, stored and legacy replay events.
+
+    Keep the v1 envelope/optional fields. Never rewrite historical database rows.
+    Memory ids, titles, bodies, queries and model reasons are private content.
+    """
+    if event_type == ApplicationEventType.PLAN_CREATED:
+        steps = payload.get('steps')
+        if isinstance(steps, list):
+            return dict(payload, steps=[dict(step, reason='Project memory operation.')
+                if isinstance(step, dict) and step.get('tool') == 'memory' else step for step in steps])
+    if tool_name != 'memory':
+        return payload
+    result = dict(payload)
+    if event_type == ApplicationEventType.TOOL_STARTED:
+        arguments = payload.get('arguments')
+        if isinstance(arguments, dict):
+            safe = {}
+            for key, allowed in (('operation', {'add','list','search','load','rebuild'}),
+                                 ('memory_type', {'project','workflow','analysis','preference','limitation'})):
+                value = arguments.get(key)
+                if isinstance(value, str) and value in allowed:
+                    safe[key] = value
+            if type(arguments.get('limit')) is int and 0 <= arguments['limit'] <= 50:
+                safe['limit'] = arguments['limit']
+            result['arguments'] = safe
+        if 'reason' in result:
+            result['reason'] = 'Project memory operation.'
+    if event_type == ApplicationEventType.TOOL_FINISHED:
+        for key in ('summary','result_summary'):
+            if key in result:
+                result[key] = ('Memory operation completed.' if result.get('outcome') == 'success'
+                               else 'Memory operation unavailable.')
+        if isinstance(result.get('error'), dict):
+            result['error'] = normalize_error(result['error'].get('category')).to_dict()
+    return result
 
 
 def sanitize_arguments(value: Any) -> dict[str, Any] | None:

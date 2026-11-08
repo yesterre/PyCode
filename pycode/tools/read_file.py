@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pycode.constants import DEFAULT_MEMORY_DIR
 from pycode.tools.base import ToolContext, failure, success, truncate_text, normalize_tool_result
 
 
@@ -17,6 +18,16 @@ def read_file(
     except PermissionError as exc:
         return normalize_tool_result(failure("read_file", "File read denied.", str(exc)),
             'read_file',attempts=0,category='permission_denied')
+
+    if path.is_relative_to(context.project_root / DEFAULT_MEMORY_DIR):
+        from pycode.agent.memory_record import effective_scope
+        bound = context.retrieval_context is not None and context.retrieval_context.binding is not None
+        if bound or effective_scope(context.project_root) is not None:
+            # Internal Memory (including its unfiltered disk index) must use
+            # the original Store's provenance and applicability checks.
+            return normalize_tool_result(failure('read_file', 'Memory file read denied.',
+                'Use the scoped memory tool to read project memories.'),
+                'read_file', attempts=0, category='permission_denied')
 
     if not path.exists():
         return normalize_tool_result(failure("read_file", "File does not exist.", f"Missing file: {file_path}"),
