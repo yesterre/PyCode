@@ -120,7 +120,9 @@ jobs:
         working-directory: frontend
         run: npx playwright install --with-deps chromium
       - name: Verify clean browser server initialization
-        run: .venv/bin/python -m pytest tests/test_phase8_browser_server.py --basetemp=.tmp/e2e-init -o cache_dir=.tmp/e2e-pytest-cache --tb=short
+        run: |
+          mkdir -p .tmp
+          .venv/bin/python -m pytest tests/test_phase8_browser_server.py --basetemp=.tmp/e2e-init -o cache_dir=.tmp/e2e-pytest-cache --tb=short
       - name: Run browser workflows
         working-directory: frontend
         run: npm run e2e
