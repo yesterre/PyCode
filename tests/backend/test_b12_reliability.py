@@ -32,6 +32,7 @@ from test_b04_project_derived_auth import resources
 from test_b05_async_auth import counts, submit
 from test_b07_worker_isolation import accept_index, mutate, ready, workers
 from test_postgresql import postgresql_engine
+from b12_probe_diagnostics import DiagnosedWorker
 
 
 def prepared(r):
@@ -329,25 +330,28 @@ def test_killed_worker_process_recovers_only_before_core(
     environment["PYTHONPATH"] = os.pathsep.join([*site.getsitepackages(), environment.get("PYTHONPATH", "")])
     key = ProjectOperationLocks.key_for(r.own)
     real_redis.keys.add(key)
-    child = subprocess.Popen([
+    diagnostic_root = Path(os.environ.get("PYCODE_TEST_REPORT_DIR", tmp_path)) / "worker-probes"
+    diagnostic_directory = diagnostic_root / f"{checkpoint}-{task_id}"
+    child = DiagnosedWorker([
         interpreter, str(Path(__file__).with_name("b12_worker_probe.py")),
         "--task", str(task_id), "--checkpoint", checkpoint,
         "--workspace", str(r.context.app.state.workspace.root), "--source", str(source_repository),
         "--signal", str(signal), "--effect", str(effect),
+        "--diagnostics", str(diagnostic_directory),
     ], cwd=Path(__file__).resolve().parents[2], env=environment,
-       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+       directory=diagnostic_directory,
+       metadata={"requested_interpreter": interpreter, "parent_interpreter": sys.executable,
+                 "requested_cwd": str(Path(__file__).resolve().parents[2]),
+                 "pythonpath_entries": environment["PYTHONPATH"].split(os.pathsep),
+                 "requested_checkpoint": checkpoint, "task_id": str(task_id)},
        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     try:
         def reached():
             assert child.poll() is None, child.communicate(timeout=5)
-            if not signal.exists():
-                return False
-            try:
-                return json.loads(signal.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                return False
+            return child.read_checkpoint(signal)
         handshake = eventually(reached, timeout=30)
         assert handshake == {"stage": checkpoint, "pid": child.pid, "task": str(task_id)}
+        child.record("checkpoint_handshake_verified")
         owned = task_state(r, task_id)
         assert owned.status == "running" and owned.worker_id == f"b12-probe:{child.pid}"
         with r.context.uow_factory() as uow, uow.transaction():
@@ -361,6 +365,7 @@ def test_killed_worker_process_recovers_only_before_core(
         child.communicate(timeout=10)
         assert child.returncode != 0
     finally:
+        child.record("parent_finally_entered", exception_type=sys.exc_info()[0].__name__ if sys.exc_info()[0] else None)
         if child.poll() is None:
             child.kill()
         child.communicate(timeout=10)
@@ -403,3 +408,4 @@ def test_killed_worker_process_recovers_only_before_core(
         assert effect.read_text(encoding="utf-8") == "entered-core\n"
     else:
         assert not effect.exists()
+    child.record("recovery_assertions_completed")
