@@ -89,6 +89,52 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: "true"
+      PYTHON_DOTENV_DISABLED: "1"
+      PYCODE_EMBEDDING_ENABLED: "false"
+      PYCODE_RETRIEVAL_MODE: keyword
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Create root virtual environment and install backend dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -r requirements.txt
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Install Chromium and system dependencies
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - name: Verify clean browser server initialization
+        run: .venv/bin/python -m pytest tests/test_phase8_browser_server.py --basetemp=.tmp/e2e-init -o cache_dir=.tmp/e2e-pytest-cache --tb=short
+      - name: Run browser workflows
+        working-directory: frontend
+        run: npm run e2e
+      - name: Upload browser diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-diagnostics
+          path: |
+            frontend/test-results/
+            frontend/playwright-report/
+          if-no-files-found: warn
+          retention-days: 7
+
   docker:
     runs-on: ubuntu-latest
     steps:

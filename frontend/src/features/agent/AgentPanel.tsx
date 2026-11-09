@@ -12,8 +12,9 @@ export function validTarget(value: string) {
     !value.split('/').some(part => part === '..' || part === '.' || part === '')
 }
 
-export function AgentPanel({projectId, snapshotId, disabledReason, runId = null, onRun}: {
-  projectId: string; snapshotId?: string | null; disabledReason?: string; runId?: string | null; onRun: (runId: string) => void
+export function AgentPanel({projectId, snapshotId, disabledReason, runId = null, onRun, onClearRun}: {
+  projectId: string; snapshotId?: string | null; disabledReason?: string; runId?: string | null; onRun: (runId: string) => void;
+  onClearRun?: () => void
 }) {
   const client = useQueryClient()
   const [input, setInput] = useState('')
@@ -23,17 +24,20 @@ export function AgentPanel({projectId, snapshotId, disabledReason, runId = null,
   const lock = useRef(false)
   const submittedRun = useRef<string | null>(null)
   const attempt = useRef<{projectId: string; question: string; target?: string; snapshot_id?: string; key: string} | null>(null)
-  const run = useQuery({queryKey: ['run', runId], queryFn: () => getAgentRun(runId!), enabled: !!runId})
-  const active = !!runId && run.data?.status !== 'completed' && run.data?.status !== 'failed'
+  const run = useQuery({queryKey: ['run', runId], queryFn: () => getAgentRun(runId!), enabled: !!runId, retry: false})
+  const loadingRun = !!runId && run.isPending
+  const belongs = run.data?.project_id === projectId
+  const active = !!runId && belongs && (run.data?.status === 'queued' || run.data?.status === 'running')
+  const mismatch = !!runId && !!run.data && !belongs
   useEffect(() => {
     if (runId && submittedRun.current === runId) {
       lock.current = false; submittedRun.current = null; setSubmitting(false)
     }
   }, [runId])
   useEffect(() => {
-    if (run.data?.status === 'completed' && run.data.result != null)
+    if (belongs && run.data?.status === 'completed' && run.data.result != null)
       void client.invalidateQueries({queryKey: analysisHistoryKey(projectId)})
-  }, [projectId, client, run.data?.result, run.data?.status])
+  }, [projectId, client, belongs, run.data?.result, run.data?.status])
   const mutation = useMutation({mutationFn: ({question, key, target, snapshot_id}: {question: string; key: string; target?: string; snapshot_id?: string}) =>
     submitQuestion(projectId, question, key, {...(target ? {target} : {}), ...(snapshot_id ? {snapshot_id} : {})}),
     onSuccess: result => {attempt.current = null; submittedRun.current = result.run_id; onRun(result.run_id)},
@@ -42,7 +46,7 @@ export function AgentPanel({projectId, snapshotId, disabledReason, runId = null,
   function submit(event: FormEvent) {
     event.preventDefault()
     const question = input.trim()
-    if (!question || disabledReason || lock.current || active || mutation.isPending) return
+    if (!question || disabledReason || lock.current || loadingRun || active || mutation.isPending) return
     const selectedTarget = target.trim() || undefined
     setValidation(null)
     if (selectedTarget && !validTarget(selectedTarget)) {
@@ -63,9 +67,13 @@ export function AgentPanel({projectId, snapshotId, disabledReason, runId = null,
       {validation != null && <ErrorState error={validation} />}
       {mutation.error && <ErrorState error={mutation.error} />}
       {submitting && <Spinner label="正在提交分析…" />}
+      {loadingRun && <Spinner label="正在检查当前分析状态…" />}
       {active && <p className="text-sm text-amber-200">当前分析状态：{statusLabel(run.data?.status ?? 'running')}。请等待本次分析结束后再提交。</p>}
       {run.error && <ErrorState error={run.error} />}
-      <Button type="submit" disabled={!!disabledReason || submitting || active || !input.trim()}>{submitting ? '正在提交…' : active ? '分析进行中' : '开始分析'}</Button>
+      {mismatch && <ErrorState error={new ApiError(null, 'run_project_mismatch', '该运行记录不属于当前项目，请清除当前 Run 选择。')} />}
+      {runId && run.isError && <Button type="button" variant="secondary" disabled={run.isFetching} onClick={() => void run.refetch()}>重新检查 Run</Button>}
+      {runId && onClearRun && (loadingRun || run.isError || mismatch) && <Button type="button" variant="quiet" onClick={onClearRun}>清除当前 Run 选择</Button>}
+      <Button type="submit" disabled={!!disabledReason || submitting || loadingRun || active || !input.trim()}>{submitting ? '正在提交…' : loadingRun ? '正在检查分析…' : active ? '分析进行中' : '开始分析'}</Button>
     </form>
   </Card>
 }

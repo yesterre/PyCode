@@ -10,6 +10,11 @@ import os
 from pathlib import Path
 from uuid import UUID
 
+# Set isolation before importing the default backend application, which loads configuration.
+os.environ['PYTHON_DOTENV_DISABLED'] = '1'
+os.environ['PYCODE_EMBEDDING_ENABLED'] = 'false'
+os.environ['PYCODE_RETRIEVAL_MODE'] = 'keyword'
+
 from backend.app.core.application_trace import ApplicationEventType, ApplicationTraceEvent
 from backend.app.config import AuthSettings
 from backend.app.auth import hash_password
@@ -147,14 +152,14 @@ class Dispatcher:
         service.execute(task_id)
 
 
-_root = Path(tempfile.mkdtemp(prefix="phase8-browser-", dir=Path(".tmp").resolve()))
+_temporary_root = Path(".tmp").resolve()
+_temporary_root.mkdir(parents=True, exist_ok=True)
+_root = Path(tempfile.mkdtemp(prefix="phase8-browser-", dir=_temporary_root))
 _source = _root / "source"
 _source.mkdir()
 (_source / "main.py").write_text("from service import answer\ndef main():\n    return answer()\n", encoding="utf-8")
 (_source / "service.py").write_text("def answer():\n    return 42\n", encoding="utf-8")
 _dispatcher = Dispatcher()
-os.environ['PYTHON_DOTENV_DISABLED'] = '1'
-os.environ['PYCODE_EMBEDDING_ENABLED'] = 'false'
 app = create_app(adapter=PyCodeAdapter(llm_client=ControlledLLM()),
     workspace=RepositoryWorkspace(_root / "workspaces", CopySource(_source)),
     persistence=InMemoryPersistence(), task_dispatcher=_dispatcher,

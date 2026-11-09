@@ -10,7 +10,9 @@ const frontendPort = process.env.PYCODE_E2E_FRONTEND_PORT ?? '15173'
 export default defineConfig({
   testDir: './e2e',
   timeout: 60000,
-  use: {baseURL: `http://127.0.0.1:${frontendPort}`, browserName: 'chromium', headless: true},
+  reporter: [['list'], ['html', {open: 'never'}]],
+  use: {baseURL: `http://127.0.0.1:${frontendPort}`, browserName: 'chromium', headless: true,
+    trace: 'retain-on-failure', screenshot: 'only-on-failure', video: 'retain-on-failure'},
   webServer: [
     {command: `${python} -m uvicorn phase8_browser_server:app --app-dir tests --host 127.0.0.1 --port ${backendPort}`,
       cwd: root, url: `http://127.0.0.1:${backendPort}/health`, reuseExistingServer: false, timeout: 30000},
