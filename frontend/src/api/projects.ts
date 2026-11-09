@@ -3,8 +3,13 @@ import type { Analysis, AnalysisHistoryResponse, Project } from './types'
 
 export const analysisHistoryKey = (projectId: string) => ['analysis-history', projectId] as const
 
-export const listProjects = (limit = 50, offset = 0) =>
-  request<{projects: Project[]; has_more: boolean}>(`/projects?limit=${limit}&offset=${offset}`)
+export type ArchiveStatus = 'active' | 'archived' | 'all'
+export const listProjects = (limit = 50, offset = 0, archiveStatus: ArchiveStatus = 'active') =>
+  request<{projects: Project[]; has_more: boolean}>(`/projects?limit=${limit}&offset=${offset}&archive_status=${archiveStatus}`)
+export const archiveProject = (id: string) =>
+  request<Project>(`/projects/${encodeURIComponent(id)}/archive`, {method: 'POST'})
+export const restoreProject = (id: string) =>
+  request<Project>(`/projects/${encodeURIComponent(id)}/restore`, {method: 'POST'})
 export const getProject = (id: string) => request<Project>(`/projects/${encodeURIComponent(id)}`)
 export const createProject = (body: {name: string; repo_url: string; branch: string | null}) =>
   request<Project>('/projects', { method: 'POST', body: JSON.stringify(body) })

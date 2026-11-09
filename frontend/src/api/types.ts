@@ -4,7 +4,8 @@ export type IndexSummary = { file_count: number; node_count: number; edge_count:
 export type Project = {
   id: string; name: string; repo_url: string; branch: string | null;
   status: ProjectStatus; current_snapshot_id: string | null;
-  created_at: string; updated_at: string; index_summary: IndexSummary | null; last_error: string | null
+  created_at: string; updated_at: string; index_summary: IndexSummary | null; last_error: string | null;
+  archived_at: string | null
 }
 export type Snapshot = {
   id: string; project_id: string; commit_sha: string; status: 'indexing' | 'ready' | 'failed';
@@ -16,6 +17,20 @@ export type BackgroundTask = {
   snapshot_id: string | null; agent_run_id: string | null; error_code: string | null;
   error_message: string | null; created_at: string; started_at: string | null; finished_at: string | null
 }
+export type User = {id: string; account_name: string; created_at: string; status: 'active' | 'disabled'}
+export type SemanticArtifact = {
+  format_version: number; dimension_source: 'validated_response' | 'model_spec_empty'; dtype: string;
+  byte_order: string; vector_count: number; byte_count: number; sha256: string
+}
+export type SemanticVersion = {provider: string; model: string; dimension: number; fingerprint: string;
+  artifact: SemanticArtifact; built_at: string}
+export type SemanticIndex = {
+  status: 'disabled' | 'not_built' | 'queued' | 'building' | 'ready' | 'failed' | 'unavailable';
+  provider: string | null; model: string | null; dimension: number | null; fingerprint: string | null;
+  artifact: SemanticArtifact | null; built_at: string | null; error_code: string | null;
+  error_message: string | null; versions: SemanticVersion[]
+}
+export type SnapshotDetail = Snapshot & {semantic_index: SemanticIndex}
 export type RetrievalSource = 'exact_path' | 'exact_symbol' | 'keyword' | 'graph' | 'entry' | 'vector' | 'hybrid'
 export type SourceScore = { source: 'keyword' | 'vector' | 'graph'; score: number; rank: number; contribution: number }
 export type EvidencePack = { budget: number; estimated_tokens: number; estimator: string; selected_count: number;
@@ -36,6 +51,16 @@ export type RetrievalSummary = {
 }
 export type Analysis = { project_id: string; answer: string; intent: string; evidence: string[];
   retrieval?: RetrievalSummary | null }
+// The public Trace projection intentionally omits snippets, raw graph paths and discarded bodies.
+export type PublicRetrievalSummary = {
+  strategy: string; status: string; binding: RunBinding | null; duration_ms: number; evidence_count: number;
+  diagnostics: string[]; references_omitted: number; mode?: 'keyword' | 'vector' | 'hybrid'; graph_schema_version?: number;
+  references: {path: string; symbol: string | null; start_line: number | null; end_line: number | null;
+    chunk_ids: string[]; chunk_ids_omitted: number; source: RetrievalSource; coverage: string;
+    source_scores?: SourceScore[]; graph_distance?: number; relation_confidence?: string; relation_resolution?: string}[];
+  pack?: Pick<EvidencePack, 'budget' | 'estimated_tokens' | 'estimator' | 'selected_count' | 'discarded_count' | 'reason_counts'>;
+  graph_stats?: Record<string, number | boolean>
+}
 export type AnalysisHistoryMode = 'repository' | 'impact' | 'agent'
 export type AnalysisHistoryItem = {
   id: string; created_at: string; mode: AnalysisHistoryMode; question: string; answer: string

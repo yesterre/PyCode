@@ -51,3 +51,18 @@ it('rejects a v2 context with foreign snapshot before showing source references'
   expect(screen.getByRole('status')).toHaveTextContent('原始文本结果仍保留')
   expect(screen.queryByText(/main.py/)).not.toBeInTheDocument()
 })
+
+it.each(['exact_path', 'exact_symbol', 'keyword', 'graph', 'entry', 'vector', 'hybrid'] as const)('displays %s source, coverage, chunk count and unknown relation honestly', source => {
+  render(<RunEvidence run={{...run, result_metadata: {...run.result_metadata!,
+    references: [{...run.result_metadata!.references[0], source, relation_resolution: 'unknown', chunk_ids: ['chunk-1']}]}}} />)
+  expect(screen.getByText(/Evidence Source：/)).toHaveTextContent(source)
+  expect(screen.getByText(/Coverage：完整符号/)).toBeVisible()
+  expect(screen.getByText('Chunk 引用数量：1')).toBeVisible()
+  expect(screen.getByText(/未知，关系未确认/)).toBeVisible()
+})
+
+it('shows metadata warning codes without exposing rejected references', () => {
+  render(<RunEvidence run={{...run, metadata_warnings: ['invalid_result_metadata']}} />)
+  expect(screen.getByText('元数据警告：invalid_result_metadata')).toBeVisible()
+  expect(screen.queryByText(/main.py/)).not.toBeInTheDocument()
+})

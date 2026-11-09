@@ -1,4 +1,5 @@
 import type { AgentRun } from '../../api/types'
+import { evidenceCoverage, evidenceResolution, evidenceSource, HarnessContextDetails } from './EvidenceDetails'
 
 const qualityLabel = {
   evidence_available: '结构化证据可用', partial: '证据部分可用',
@@ -11,7 +12,7 @@ export function RunEvidence({run}: {run: AgentRun}) {
     value.binding.project_id !== run.project_id || value.binding.snapshot_id !== run.snapshot_id ||
     (value.schema_version===2 && (value.context?.schema_version!==1 || value.verification?.schema_version!==1 ||
       value.context.binding?.snapshot_id!==run.snapshot_id || value.context.binding?.project_id!==run.project_id)))
-  if (unsupported || run.metadata_warnings?.length) return <p role="status">此记录的结构化元数据暂不可用，原始文本结果仍保留。</p>
+  if (unsupported || run.metadata_warnings?.length) return <div role="status"><p>此记录的结构化元数据暂不可用，原始文本结果仍保留。</p>{run.metadata_warnings?.map((warning, index) => <p key={index}>元数据警告：{warning}</p>)}</div>
   if (!value) return null
   return <div className="mt-4 space-y-2 border-t border-slate-700 pt-3 text-sm text-slate-300">
     <p>{qualityLabel[value.quality]}。此状态不评价回答正确性。</p>
@@ -25,16 +26,21 @@ export function RunEvidence({run}: {run: AgentRun}) {
       {value.context.references.some(ref=>ref.source==='static_graph') && <p>包含静态结构线索，不保证运行时调用。</p>}
       {value.context.references.some(ref=>ref.source==='memory_hint') && <p>记忆仅作为提示，不能替代当前 Snapshot 源码。</p>}
       {value.context.references.some(ref=>ref.coverage==='partial') && <p>部分源码片段仅覆盖所列行，不代表完整定义或文件。</p>}
+      {value.verification.warnings.map((warning, index) => <p key={index}>证据校验提示：{warning}</p>)}
+      <HarnessContextDetails context={value.context} />
     </>}
     <p className="break-all font-mono text-xs">Snapshot {value.binding.snapshot_id} · Commit {value.binding.commit_sha}</p>
     {value.references.length > 0 && <ul aria-label="持久化代码证据" className="space-y-2">
       {value.references.map((ref, index) => <li key={index} className="break-all font-mono text-xs">
         {ref.path}{ref.start_line != null && `:${ref.start_line}–${ref.end_line}`} {ref.symbol}
+        <p>Evidence Source：{evidenceSource(ref.source)}（{ref.source}） · Coverage：{evidenceCoverage(ref.coverage)}</p>
+        <p>Chunk 引用数量：{ref.chunk_ids.length}</p>
         {ref.chunk_ids_omitted > 0 && <span>（另有 {ref.chunk_ids_omitted} 个 Chunk 引用未展示）</span>}
-        {ref.relation_resolution != null && <span>（静态关系，不保证运行时调用）</span>}
+        {ref.relation_resolution != null && <span>Relation Resolution：{evidenceResolution(ref.relation_resolution)}（{ref.relation_resolution}）；静态关系，不保证运行时调用</span>}
       </li>)}
     </ul>}
     {value.references_omitted > 0 && <p>另有 {value.references_omitted} 条证据引用未保存于此摘要。</p>}
     {value.diagnostics.includes('execution_failed') && <p>执行失败；已有代码引用不能替代最终答案。</p>}
+    {value.diagnostics.length > 0 && <p>证据诊断：{value.diagnostics.join('、')}</p>}
   </div>
 }

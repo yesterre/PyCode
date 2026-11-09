@@ -6,6 +6,8 @@ import { Badge, Button, Card, EmptyState, ErrorState, SectionHeading, Spinner, S
 import { llmActivities, orderedEvents, toolActivities } from './model'
 import { useAgentTrace } from './useAgentTrace'
 import { RunEvidence } from '../agent/RunEvidence'
+import { HarnessContextDetails } from '../agent/EvidenceDetails'
+import { RetrievalDetails } from './RetrievalDetails'
 import { traceEventLabel } from '../../presentation'
 import type { MemorySummary } from '../../api/types'
 
@@ -28,6 +30,7 @@ function TraceContents({events}: {events: TraceEvent[]}) {
     <ExecutionProgress events={ordered} />
     <ContextProgress events={ordered} />
     <MemoryProgress events={ordered} />
+    <RetrievalDetails events={ordered} />
     <Card><SectionHeading title="执行计划" />{plan ? <><p className="mb-3 text-sm text-slate-300">来源：<strong>{text(plan.payload.source)}</strong> · 回退：{String(plan.payload.fallback_used ?? false)}</p><ol className="space-y-3">{(Array.isArray(plan.payload.steps) ? plan.payload.steps : []).map((step: {step_index: number; tool: string | null; reason: string; required: boolean}) => <li key={step.step_index} className="rounded-lg bg-slate-800/80 p-3 text-sm"><div className="font-semibold">{step.step_index + 1}. {step.tool ?? '操作'} {step.required && <Badge>必需</Badge>}</div><p className="mt-1 text-slate-400">{step.reason}</p></li>)}</ol></> : <EmptyState title="暂无计划事件" />}</Card>
     <Card><SectionHeading title="时间线" /><div className="space-y-2">{ordered.length ? ordered.map(event => <div key={event.sequence} className="flex gap-3 border-l-2 border-cyan-500/40 py-1 pl-3 text-sm"><span className="w-8 shrink-0 font-mono text-slate-500">{event.sequence}</span><span className="min-w-0 flex-1 text-slate-200">{traceEventLabel(event.event_type)}{event.tool_name ? ` · ${event.tool_name}` : ''}</span><time className="text-xs text-slate-500">{new Date(event.occurred_at).toLocaleTimeString('zh-CN')}</time></div>) : <EmptyState title="正在等待轨迹事件" />}</div></Card>
     <Card><SectionHeading title="模型调用" />{llms.length ? <div className="space-y-3">{llms.map((activity, index) => <div key={index} className="rounded-lg bg-slate-800/80 p-3 text-sm"><div className="flex justify-between gap-2"><strong>{text((activity.start ?? activity.finish)?.payload.purpose) || 'LLM'}</strong><StatusBadge status={activity.finish ? (activity.finish.payload.success ? 'completed' : 'failed') : 'running'} /></div><p className="mt-2 text-slate-400">{activity.finish ? `成功：${String(activity.finish.payload.success)} · 回退：${String(activity.finish.payload.fallback_used)}` : '运行中 / 尚未完成'}</p>{Boolean(activity.finish?.payload.error) && <p className="mt-2 text-rose-300">{errorText(activity.finish?.payload.error)}</p>}</div>)}</div> : <EmptyState title="暂无模型调用" />}</Card>
@@ -83,6 +86,7 @@ export function ContextProgress({events}: {events:TraceEvent[]}) {
     {context.estimated_tokens>context.budget && <p>最小输入仍超过预算，本次输入未交给模型。</p>}
     {context.references_omitted>0 && <p>另有 {context.references_omitted} 条选用引用未展示于此摘要。</p>}
     {verification && <p>{verification.status==='rejected'?'证据校验被拒绝。':'仅检查引用与来源，不证明回答正确。'}</p>}
+    <HarnessContextDetails context={context} />
   </div></Card>
 }
 

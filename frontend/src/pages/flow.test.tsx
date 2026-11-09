@@ -43,14 +43,14 @@ describe('project UI', () => {
 })
 
 describe('Unified questions', () => {
-  it('has one input, no mode selector, and sends an idempotent question', async () => {
+  it('keeps one question flow with an optional target and sends an idempotent question', async () => {
     const fetchMock = vi.fn().mockResolvedValue(response({run_id: 'run-1', task_id: 'task-1', status: 'queued'}))
     vi.stubGlobal('fetch', fetchMock)
     const onRun = vi.fn()
     render(wrapper(<AgentPanel projectId="p" onRun={onRun} />))
     expect(screen.queryByRole('tablist')).not.toBeInTheDocument()
-    expect(screen.getAllByRole('textbox')).toHaveLength(1)
-    await userEvent.type(screen.getByRole('textbox'), 'impact of main.py')
+    expect(screen.getAllByRole('textbox')).toHaveLength(2)
+    await userEvent.type(screen.getByLabelText('提问'), 'impact of main.py')
     await userEvent.click(screen.getByRole('button'))
     await waitFor(() => expect(onRun).toHaveBeenCalledWith('run-1'))
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/projects/p/questions', expect.objectContaining({method: 'POST', body: JSON.stringify({question: 'impact of main.py'})}))
