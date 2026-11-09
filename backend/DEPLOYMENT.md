@@ -71,7 +71,7 @@ python -m backend.check_config --role worker --exec -- python -m celery -A backe
 
 1. 记录当前镜像的不可变标签/ID、Compose 文件和安全配置；备份 PostgreSQL 与 Workspace，保留 Redis 持久化数据。备份与恢复应在匹配的静默边界进行，不能仅复制部分 Artifact 目录。
 2. 暂停新任务入口，等待 queued/running 工作完成或按既有 lease/恢复规则静默服务；不要强杀 post-Core Agent 再人为重放。
-3. 为新版本设置新的镜像标签，构建或拉取已验证镜像；先预检，再执行 `docker compose run --rm migrate`。B15 没有新增 schema，既有迁移仍是唯一升级路径。
+3. 为新版本设置新的镜像标签，构建或拉取已验证镜像；先预检，再执行 `docker compose run --rm migrate`。当前迁移到 `20261104_0010`（Run 的可空、受限元数据），仍沿既有迁移路径，不重建表或清空历史结果。
 4. 更新服务并等待 `/ready`，然后重建 Frontend 以刷新 Nginx 的 Backend DNS：
 
 ```bash
@@ -81,13 +81,28 @@ docker compose up -d --no-deps --no-build --force-recreate --wait frontend
 
 若需回滚，静默新工作后使用保存的旧镜像、**匹配该镜像的旧 Compose 文件和配置**，保留同一 project name/volumes。B15 前镜像没有 `/ready`，不能直接套用新健康检查。不要只改旧镜像 tag 却继续用不匹配的命令/健康检查。
 
-同 schema 兼容回滚不自动降级数据库。跨 schema 回滚需先验证迁移 downgrade 条件并验证备份；users/归属和 archive 迁移会拒绝不安全降级，不通过清空数据、转移归属或关闭约束绕过。当前阶段不提供自动生产回滚执行器。
+同 schema 兼容回滚不自动降级数据库。跨 schema 回滚需先验证迁移 downgrade 条件并验证备份；users/归属、archive 和 Run 元数据迁移会拒绝不安全降级。0010 的新字段已有数据时会拒绝直接删列；不要通过清空字段、清空数据、转移归属或关闭约束绕过。当前阶段不提供自动生产回滚执行器。
 
 `docker compose down` 保留数据卷；`down -v` 删除数据，只用于已确认属于自己的临时测试项目。服务健康检查失败不会自动修复配置，也不是重启生产数据库的指令。
 
+## Agent 检索与现有数据
+
+- Web 使用 `POST /api/v1/projects/{id}/questions`，返回202及Run/Task标识；Worker按服务端持久化路由执行Fast或Agent。证据不足可升级一次并复用初始Pack。客户端不提供强制策略，旧同步`/ask`、`/impact`和旧异步`/agent-runs`继续兼容。
+- 所有新提交先授权再固定ready Snapshot。已接受任务使用原Snapshot/Commit，不跟随Project后来切换的当前Snapshot；软归档不会清空Memory或改变已接受任务的执行语义。Provider调用在数据库事务外，任务失去执行权时不能转成Memory降级继续运行。
+- 基础Index/Graph/Chunk与语义索引分别发布。启用Embedding可在基础索引成功后触发既有`snapshot_embedding`任务；语义任务或Provider失败不会撤销基础ready。Snapshot详情`GET /api/v1/projects/{id}/snapshots/{snapshot_id}`的`semantic_index`记录语义状态。查询只读已发布向量，不负责建索引或修复。
+- `PYCODE_EMBEDDING_*`独立于LLM配置，默认关闭；启用后文档构建会向所配Provider发送片段，查询也可能发送问题文本并产生费用。以配置模板及已实现Provider/模型校验为准，不把LLM key自动当作Embedding key，不把密钥放入前端变量。`PYCODE_RETRIEVAL_MODE`未设置时代码默认keyword，模板为hybrid；不可用Vector带诊断降级到可用的Keyword/静态Graph。
+- Artifact必须校验Project/Snapshot/Commit、Chunk内容哈希、模型、维度及向量格式；同Commit不等于可跨Project/Snapshot共享。保留整个Workspace及原Manifest，继续沿staging/发布/恢复机制处理失败，不手动删除旧ready目录来“升级”。
+- Graph Schema与Snapshot Manifest分别版本化，旧Graph按原能力兼容读取，不因为服务升级就变成最新Graph。相同Project/Commit复用旧ready时，可按现有流程补缺失Chunk；Graph不会因此自动升级，语义产物是否构建/复用取决于独立配置和任务。当前没有独立的Graph原地升级系统；需要新能力时先确认实际Schema与生命周期，另行设计显式升级，不能改Commit唯一约束或篡改Manifest绕过。
+- Agent逻辑调用/轮数/时长预算在一次执行内共享；完整请求使用`PYCODE_AGENT_CONTEXT_TOKENS`保守估算上限，工具输出进入模型前按完整单元选择或明确舍弃。保留原ToolResult/Pack，Trace只保存受限安全投影。此估算与逻辑调用数不等于模型账单或传输重试次数。
+- Memory继续使用项目Workspace内`.pclens/memory`及可信Scope，来源Run/证据不能由模型声明。用户项目背景/偏好、Snapshot代码事实、模型未验证提示的适用性不同；跨Snapshot保留文件不等于代码事实跨版本适用。冲突/失效/撤回按生命周期过滤，损坏单条或派生索引按原容错机制处理，预算/失去执行权信号仍终止执行。旧未知来源不自动升级为当前可信事实。
+
+静态Graph的unknown/ambiguous不代表已确认运行时调用。Hybrid显式符号target存在被当文件路径的已知边界，调用方可使用相对文件target并把符号写入问题正文。Fake工程结果不构成真实质量或线上成本承诺；真实Provider实验需单独确认数据外发和费用边界。
+
+历史评估绑定的是当时的实现/Prompt与语料指纹。生产源码发生变化后，旧评估的严格指纹校验可能拒绝当前实现；应使用原被测版本/冻结源码回放，或在获授权的评估批次建立新基线，不能修改收据绕过校验或把旧结果当新实现验证。
+
 ## CI 和本机隔离验证
 
-CI 的 backend job 初始化专用 `pycode_test`、生成临时签名密钥、运行配置预检和完整迁移/认证授权/隔离/恢复测试。耗时 B14 压测仍显式启用。
+CI 的 backend job 初始化专用 `pycode_test`、生成临时签名密钥、运行配置预检和完整迁移/认证授权/隔离/恢复测试。本机服务测试继续使用专用`pycode_test`和Redis DB15，先确认无并行测试/Worker且隔离配置正确；不要连接开发库或清理已有数据。B10 Redis候选测量、B14压测保持显式启用的可选实验。
 
 ```bash
 python -m scripts.deploy.smoke

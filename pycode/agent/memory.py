@@ -1101,21 +1101,6 @@ def _query_terms(query: str) -> list[str]:
     return dedupe_preserve_order(terms)
 
 
-def _memory_fingerprints(store: MemoryStore) -> set[str]:
-    fingerprints: set[str] = set()
-    for entry in store.list_memories():
-        try:
-            item = store.load_memory(entry.id)
-        except (OSError, ValueError, UnicodeError, TypeError, KeyError):
-            continue
-        fingerprints.add(_fingerprint(item.type, item.title, item.summary, item.body))
-    return fingerprints
-
-
-def _fingerprint(memory_type: str, title: str, summary: str, body: str) -> str:
-    return digest(dict(type=memory_type,title=title,summary=summary,body=body))
-
-
 def _normalize_confidence(value: Any) -> float:
     try:
         confidence = float(value)
