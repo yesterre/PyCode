@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "kind": "offline_answer_agent_engineering_not_model_quality",
+  "a07a_protocol_sha256": "9b22043b73009b84536908025ae113e18e446d4ed78d2a0079340489c3d61755",
+  "question_fixture": "tests/fixtures/a00/questions.json",
+  "question_sha256": "8083244fe8a5b61b600835ca15a378ec5413e4feb931a5ce49d5d0512dc8bb74",
+  "corpus_commit": "5925bb30fb674451b1c9d08360ca83d00f64780a",
+  "legacy": {
+    "commit": "5925bb30fb674451b1c9d08360ca83d00f64780a",
+    "retriever_sha256": "f58dee7db2fa9c24e74bbed330c230f7c4f29b05ded3514ce8cd3d8dcc8b8e29",
+    "classification": "substitute_legacy_sync_not_original_A00",
+    "original_A00_reproduced": false
+  },
+  "a07a_inputs": {
+    "results.json": "234fb7900c6944301211506499175066056ab12adaa682eedcc602a1359e9b7a",
+    "fixed-build/2/index.json": "8f1be604903e0f28bdf2d4286c1cfb75a37ea51ffaac2ca4bd2cd6eb8a6807fb",
+    "fixed-build/2/graph.json": "f1e610ec99cc223b4e24c5d7d4655ed0e7cb6b7750318f622f8a630c67724247",
+    "retrieval-131072/chunks.json": "6616a01d4cc7df7423bd9afe1492f24f2fecc47723322e1822fd447b516a59d5",
+    "retrieval-131072/fake-artifact/manifest.json": "81af50f27443565f5dcb3bf0b17f970a0fbf2e788682ffc018a93646c0fbdabf",
+    "retrieval-131072/fake-artifact/segments.json": "728c9761ac737cda446d18c88c90997cc37e65f633a3fbb4339801707b1b6735",
+    "retrieval-131072/fake-artifact/vectors.f32": "16a4c8f8841f27a8c574624bddba4f50f592c52b1edbe864996da3fb88cb31e4"
+  },
+  "repeats": 3,
+  "warmups": 0,
+  "limits": {
+    "max_turns": 4,
+    "max_tool_calls": 8,
+    "max_model_calls": 16,
+    "max_query_embeddings": 8,
+    "max_runtime_seconds": 300,
+    "context_tokens": 131072,
+    "tool_output_chars": 32768
+  },
+  "retrieval": {
+    "mode": "hybrid",
+    "top_k": 6,
+    "token_budget": 131072,
+    "graph_depth": 2,
+    "graph_nodes": 32,
+    "graph_edge_checks": 128,
+    "graph_direction": "both"
+  },
+  "fake_model": {
+    "name": "visible-evidence-script-v1",
+    "embedding": "sha256-token-hash-v1",
+    "dimension": 64,
+    "temperature": "not_applicable_script",
+    "seed": "not_applicable_script",
+    "policy": "retrieve_context_then_observed_file_imports_then_citation_placeholder",
+    "ground_truth_access": false
+  },
+  "memory_note": {
+    "id": "review_preference",
+    "type": "preference",
+    "title": "Citation preference",
+    "summary": "Cite current source; static relations are not runtime facts.",
+    "body": "A07_SYNTHETIC_PREFERENCE: provide source addresses and qualify static analysis. This is not a code fact or an answer.",
+    "tags": [
+      "review"
+    ],
+    "related_files": []
+  },
+  "clock": "2026-11-08T00:00:00+00:00",
+  "seed_run_id": "e076106d-32f2-4a11-a7b0-9d9e82555bf0",
+  "ablation_case_ids": [
+    "Q12",
+    "Q14",
+    "Q15",
+    "Q16"
+  ],
+  "variants": {
+    "legacy": {
+      "path": "legacy",
+      "control": "historical_implementation_and_sync_entry"
+    },
+    "fast": {
+      "path": "fast",
+      "control": "controlled_fast_no_upgrade"
+    },
+    "agent": {
+      "path": "agent",
+      "control": "baseline"
+    },
+    "memory_off": {
+      "path": "agent",
+      "control": "enable_memory",
+      "value": false
+    },
+    "one_turn": {
+      "path": "agent",
+      "control": "max_turns",
+      "value": 1
+    },
+    "graph_off": {
+      "path": "agent",
+      "control": "graph_depth",
+      "value": 0
+    },
+    "vector_off": {
+      "path": "agent",
+      "control": "vector_candidates",
+      "value": "empty_without_provider_call"
+    },
+    "keyword_off": {
+      "path": "agent",
+      "control": "keyword_candidate_generator",
+      "value": "disabled_with_downstream_seed_effects"
+    }
+  },
+  "quality": {
+    "status": "unverified_no_real_answers_or_human_review",
+    "eligible_source": "real_model_answer_with_human_review_only",
+    "dimensions": {
+      "factual_correctness": {
+        "type": "ordinal_0_to_4",
+        "rule": "Review independently verifiable claims against pinned source; 0 contradicted, 1 mostly unsupported, 2 mixed, 3 mostly supported, 4 all material claims supported."
+      },
+      "evidence_coverage": {
+        "type": "ratio_0_to_1",
+        "rule": "Human validates supporting code for necessary GT points plus separately documented additional points; automated delivered-line coverage is only an engineering proxy."
+      },
+      "unsupported_claim_ratio": {
+        "type": "nullable_ratio_0_to_1",
+        "rule": "Unsupported verifiable claims / all verifiable claims; no claims means null, not zero. Distinguish static inference from runtime claims."
+      },
+      "answer_completeness": {
+        "type": "ordinal_0_to_4",
+        "rule": "0 no task addressed, 1 few points, 2 partial, 3 most required points, 4 all required points plus explicit uncertainty; unknown needs appropriate abstention, not an invented object."
+      }
+    },
+    "review": "Two independent path-blinded reviewers; record reviewer, claim counts, source spans and reasons; adjudicate disagreements. No filled scores for Fake output. Real model external data/cost plan requires separate approval."
+  },
+  "methodology_version": 2,
+  "workspace_setup": "shared_frozen_corpus_reset_synthetic_memory_v2"
+}
