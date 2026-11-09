@@ -25,6 +25,7 @@ from pycode.utils import dedupe_preserve_order, parse_json_array_response
 MEMORY_INDEX_FILE = "MEMORY.md"
 MEMORY_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 MAX_RELEVANT_MEMORIES = 5
+MAX_METADATA_JSON_DEPTH = 32
 
 
 class MemoryType(StrEnum):
@@ -1042,12 +1043,26 @@ def _parse_memory_file(text: str) -> tuple[dict[str, Any], str]:
         value = value.strip()
         try:
             metadata[key] = json.loads(value)
+            _validate_metadata_depth(metadata[key])
         except json.JSONDecodeError:
             invalid = True
             metadata[key] = value.strip("\"'")
     if metadata.get('schema_version') == SCHEMA_VERSION and invalid:
         raise ValueError('Invalid versioned Memory frontmatter')
     return metadata, body
+
+
+def _validate_metadata_depth(value):
+    # Decoder/encoder recursion thresholds vary by Python build. Enforce the
+    # record limit ourselves before legacy serialization or str coercion.
+    pending = [(value, 0)]
+    while pending:
+        item, depth = pending.pop()
+        if isinstance(item, (list, dict)):
+            if depth >= MAX_METADATA_JSON_DEPTH:
+                raise ValueError('Memory record nesting exceeds limits')
+            children = item.values() if isinstance(item, dict) else item
+            pending.extend((child, depth + 1) for child in children)
 
 
 def _validate_record_fields(value):

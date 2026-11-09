@@ -2,6 +2,7 @@
 from copy import deepcopy
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -24,6 +25,27 @@ def test_protocol_mutation_is_rejected_without_output_or_model_work(tmp_path):
     with pytest.raises(ValueError,match='protocol changed'):
         bench.run_evaluation(tmp_path/'out',protocol_path=path)
     assert not (tmp_path/'out').exists()
+
+
+@pytest.mark.parametrize('autocrlf', ['false', 'true'])
+def test_checkout_preserves_original_dataset_byte_identity(tmp_path, monkeypatch, autocrlf):
+    fixture = 'tests/fixtures/a00/questions.json'
+    checked_out = subprocess.run(
+        ['git', '-c', 'core.autocrlf=' + autocrlf, 'cat-file', '--filters',
+         '--path=' + fixture, 'HEAD:' + fixture],
+        cwd=bench.ROOT, check=True, capture_output=True,
+    ).stdout
+    protocol, original = bench.read_protocol()
+    assert bench.sha(checked_out) == protocol['question_sha256']
+    assert checked_out.count(b'\r\n') == checked_out.count(b'\n') > 0
+    path = tmp_path / fixture
+    path.parent.mkdir(parents=True)
+    path.write_bytes(checked_out)
+    monkeypatch.setattr(bench, 'ROOT', tmp_path)
+    assert bench.read_protocol() == (protocol, original)
+    path.write_bytes(checked_out.replace(b'Q01', b'X01', 1))
+    with pytest.raises(ValueError, match='dataset identity mismatch'):
+        bench.read_protocol()
 
 
 def historical_sample():

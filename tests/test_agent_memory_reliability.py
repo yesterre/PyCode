@@ -113,6 +113,41 @@ def test_one_bad_record_is_isolated_and_retained(tmp_path, damage):
     assert s.rebuild_index()[0].id == 'note' and path.read_bytes() == before
 
 
+@pytest.mark.parametrize('container', ['list', 'dict'])
+@pytest.mark.parametrize('depth', [32, 33])
+def test_metadata_nesting_has_an_explicit_parser_independent_limit(container, depth):
+    from pycode.agent.memory import MAX_METADATA_JSON_DEPTH, _parse_memory_file
+    assert MAX_METADATA_JSON_DEPTH == 32
+    opening, closing = ('[', ']') if container == 'list' else ('{"key":', '}')
+    value = opening * depth + '0' + closing * depth
+    # Both inputs are valid JSON and below the interpreter's recursion limit.
+    assert isinstance(json.loads(value), list if container == 'list' else dict)
+    text = '---\nextra: ' + value + '\n---\nbody'
+    if depth <= MAX_METADATA_JSON_DEPTH:
+        assert _parse_memory_file(text)[0]['extra'] == json.loads(value)
+    else:
+        with pytest.raises(ValueError, match='nesting exceeds limits'):
+            _parse_memory_file(text)
+    # Brackets inside JSON strings must not be treated as nested containers.
+    literal = '[' * 5000 + ']' * 5000
+    assert _parse_memory_file('---\ntitle: ' + json.dumps(literal) + '\n---\nbody')[0]['title'] == literal
+
+
+def test_deep_record_is_isolated_even_when_json_decoder_accepts_it(tmp_path):
+    s = MemoryStore(tmp_path)
+    add(s)
+    path = s.memory_dir / 'broken.md'
+    # Shallow enough for supported decoders; still above our fixed record limit.
+    value = '[' * 33 + '0' + ']' * 33
+    assert isinstance(json.loads(value), list)
+    path.write_text('---\nid: "broken"\ntype: "analysis"\ntags: ' + value + '\n---\nbody', encoding='utf-8')
+    before = path.read_bytes()
+    assert [e.id for e in s.list_memories()] == ['note']
+    assert [e.id for e in s.search_memories('entry', include_body=True)] == ['note']
+    assert 'record_unreadable' in s.diagnostics and len(s.diagnostics) <= 16
+    assert s.rebuild_index()[0].id == 'note' and path.read_bytes() == before
+
+
 def test_index_is_recoverable_cache_and_never_an_unfiltered_prompt(tmp_path):
     s = MemoryStore(tmp_path); add(s)
     for contents in (b'\xff', b'PRIVATE_FAKE_INDEX_DATA'):

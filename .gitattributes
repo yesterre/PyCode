@@ -1,0 +1,3 @@
+# A00's frozen raw-byte receipt was recorded with CRLF on Windows.
+# Preserve that representation on every checkout without changing its Git blob.
+/tests/fixtures/a00/questions.json text eol=crlf
