@@ -2,7 +2,11 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
+import pytest
+
+from backend.app.core.run_metadata import preflight_execution, question_metadata
 from backend.app.repositories import InMemoryUnitOfWork
+from pycode.question import StrategyDecision
 
 
 def _project(client, name: str) -> UUID:
@@ -95,3 +99,86 @@ def test_analysis_history_filters_maps_orders_pages_and_exposes_minimal_fields(
         "Foreign question", "Queued", "Running", "Failed", "No answer", "Unknown",
     } for item in combined)
 
+
+@pytest.mark.parametrize(("strategy", "preflight_status", "expected_mode"), [
+    pytest.param("fast", None, "repository", id="fast"),
+    pytest.param("agent", None, "agent", id="agent"),
+    pytest.param("fast", "insufficient", "agent", id="fast-upgraded-to-agent"),
+    pytest.param("fast", "sufficient", "repository", id="fast-after-preflight"),
+])
+def test_question_history_uses_final_execution_strategy(
+    client, persistence, strategy, preflight_status, expected_mode,
+):
+    project_id = _project(client, "Question strategy")
+    uow = InMemoryUnitOfWork(persistence)
+    question = "Investigate the cross-module call chain"
+    with uow.transaction():
+        snapshot = uow.snapshots.start(project_id, "a" * 40)
+        decision = StrategyDecision(
+            strategy, "general", None, ("default_agent" if strategy == "agent" else "simple_orientation",),
+            "multi_step" if strategy == "agent" else "snapshot_evidence",
+        )
+        request, execution = question_metadata(snapshot, decision, None)
+        if preflight_status is not None:
+            execution = preflight_execution(execution, {
+                "status": preflight_status,
+                "reasons": ["evidence_empty"] if preflight_status == "insufficient" else [],
+                "pack_digest": "f" * 64,
+                "selected_count": 0 if preflight_status == "insufficient" else 1,
+                "discarded_count": 0, "budget": 12000, "estimated_tokens": 100,
+            })
+            assert execution["initial_strategy"] == "fast"
+        run = uow.agent_runs.create(
+            project_id, snapshot.id, task=question, run_type="question", model=None,
+            request_metadata=request, execution_metadata=execution,
+        )
+        uow.agent_runs.complete(run.id, "Persisted answer")
+
+    response = client.get(f"/api/v1/projects/{project_id}/analysis-history")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert set(body) == {"items", "has_more"}
+    assert body["has_more"] is False
+    assert len(body["items"]) == 1
+    item = body["items"][0]
+    assert set(item) == {"id", "created_at", "mode", "question", "answer"}
+    assert item["id"] == str(run.id)
+    assert item["mode"] == expected_mode
+    assert item["question"] == question
+    assert item["answer"] == "Persisted answer"
+
+
+@pytest.mark.parametrize("metadata", [
+    pytest.param(None, id="missing-metadata"),
+    pytest.param({}, id="missing-strategy"),
+    pytest.param({"initial_strategy": "agent"}, id="initial-strategy-only"),
+    pytest.param({"strategy": None}, id="null-strategy"),
+    pytest.param({"strategy": "unknown"}, id="unknown-strategy"),
+    pytest.param({"strategy": ["agent"]}, id="list-strategy"),
+    pytest.param({"strategy": {"name": "agent"}}, id="object-strategy"),
+    pytest.param("agent", id="string-metadata"),
+    pytest.param(["agent"], id="list-metadata"),
+    pytest.param(42, id="number-metadata"),
+])
+def test_question_history_falls_back_for_missing_or_unrecognized_strategy(
+    client, persistence, metadata,
+):
+    project_id = _project(client, "Legacy question")
+    uow = InMemoryUnitOfWork(persistence)
+    with uow.transaction():
+        run = _completed(uow, project_id, "ask", "Investigate with Agent", "Legacy answer")
+        # Seed historical/malformed stored data without weakening new Run validation.
+        persistence.agent_runs[run.id] = replace(
+            run, run_type="question", execution_metadata=metadata,
+        )
+
+    response = client.get(f"/api/v1/projects/{project_id}/analysis-history")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["has_more"] is False
+    assert len(body["items"]) == 1
+    item = body["items"][0]
+    assert item["id"] == str(run.id)
+    assert item["mode"] == "repository"
+    assert item["question"] == "Investigate with Agent"
+    assert item["answer"] == "Legacy answer"

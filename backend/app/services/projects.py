@@ -9,7 +9,7 @@ from backend.app.integrations.graph import load_graph, local_graph
 
 from backend.app.core.errors import BackendError
 from backend.app.core.models import (
-    AnalysisHistoryItem, AnalysisHistoryMode, IndexSummary, Project,
+    AgentRun, AnalysisHistoryItem, AnalysisHistoryMode, IndexSummary, Project,
     ProjectAnalysis, ProjectSnapshot, ProjectStatus,
 )
 from backend.app.infrastructure.artifacts import CHUNKS_FILE, SnapshotArtifactBundle, SnapshotArtifactStore
@@ -27,6 +27,16 @@ _HISTORY_MODES: dict[str, AnalysisHistoryMode] = {
     "agent": "agent",
     "question": "repository",
 }
+
+
+def _history_mode(run: AgentRun) -> AnalysisHistoryMode:
+    if run.run_type == "question":
+        metadata = run.execution_metadata
+        # Use the final strategy, including Fast-to-Agent preflight upgrades.
+        if isinstance(metadata, dict) and metadata.get("strategy") == "agent":
+            return "agent"
+    # Fast questions and missing/unrecognized strategies retain the legacy mode.
+    return _HISTORY_MODES[run.run_type]
 
 
 class ExecutionBoundary(Protocol):
@@ -113,7 +123,7 @@ class ProjectService:
             AnalysisHistoryItem(
                 id=run.id,
                 created_at=run.created_at,
-                mode=_HISTORY_MODES[run.run_type],
+                mode=_history_mode(run),
                 question=run.task,
                 answer=run.result,
             )
