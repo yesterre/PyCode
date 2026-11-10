@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "files": {
+    "tests/fixtures/q_t03/protocol.json": "f49265999170a6f70908bd7dfd51a77e55eb71fc2ebd52495366689df5a6b2be",
+    "tests/fixtures/q_t03/questions.json": "3e49f757bd175f10db7ac963277eba368d88a4858290cbcb2e94c5b40dc6f51a",
+    "tests/fixtures/q_t03/annotation_review.json": "f3e96a0a7267f08805d1dd7cd564bb6e6fc38c6c2928776f033b000ba5fa44e1",
+    "tests/fixtures/q_t03/synthetic_sources.json": "85c941a57019b335f0adee8d0f8d2256d075f45e6a092d9729969527a241fd6c",
+    "scripts/benchmarks/q_t03_evidence_quality.py": "0b6ba4b49d4eb65687d80209b0b449932b0552ebc385257c674d6f0ce2fb721c"
+  },
+  "frozen_before_production_change": true
+}

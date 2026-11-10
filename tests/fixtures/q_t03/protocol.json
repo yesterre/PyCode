@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "baseline_commit": "0dcb368748cbd62d66b316029f78af7d0cca5e5d",
+  "corpora": {
+    "a00": {
+      "commit": "5925bb30fb674451b1c9d08360ca83d00f64780a",
+      "prefixes": [
+        "pycode/",
+        "backend/"
+      ]
+    },
+    "itsdangerous": {
+      "commit": "672971d66a2ef9f85151e53283113f33d642dabd",
+      "fixture": "tests/fixtures/f_t05/itsdangerous/src",
+      "provenance": "tests/fixtures/f_t05/itsdangerous/PROVENANCE.json"
+    },
+    "synthetic": {
+      "fixture": "tests/fixtures/q_t03/synthetic_sources.json"
+    },
+    "legacy": {
+      "fixture": "tests/fixtures/q_t03/synthetic_sources.json",
+      "graph_schema": 1
+    }
+  },
+  "retrieval": {
+    "mode": "hybrid",
+    "top_k": 6,
+    "impact_top_k": 8,
+    "vector_top_k": 6,
+    "token_budget": 32768,
+    "graph_depth": 2,
+    "graph_nodes": 32,
+    "graph_edge_checks": 128,
+    "graph_direction": "both",
+    "rrf_k": 60,
+    "weights": {
+      "keyword": 1.0,
+      "vector": 1.0,
+      "graph": 0.5
+    },
+    "channel_candidate_cap": 20
+  },
+  "vector": {
+    "provider": "offline",
+    "model": "sha256-token-hash-v1",
+    "dimension": 64,
+    "semantic_model": false,
+    "ground_truth_access": false
+  },
+  "agent": {
+    "context_tokens": 131072,
+    "tool_output_chars": 32768
+  },
+  "repeats": 7,
+  "warmup": 1,
+  "wide_span_threshold_lines": 40,
+  "model": {
+    "real_calls": 0,
+    "fake_answers": false,
+    "answer_quality": "not_evaluated",
+    "actual_model_delivery": "not_evaluated"
+  },
+  "primary_improvement_metric": "Fast prompt relation provenance disclosure: per selected graph_path step, source/target/relation plus explicit static/declaration/unknown/ambiguous/legacy resolution and original basis; absence is incomplete, never mislabelled semantic error. Missing relation resolution is disclosed as unavailable, never inferred as static.",
+  "expected_nonchanges": [
+    "Ranking, selected source ranges, Snapshot binding and Graph facts should be preserved; any change is reported.",
+    "Citation address/source metrics apply to evidence references, not generated answer citations."
+  ],
+  "guardrails": [
+    "No model/provider clients or source execution",
+    "Labels are post-run observers only",
+    "Do not alter A07 receipts/fingerprints",
+    "Validation question details are not inspected during implementation choice"
+  ]
+}

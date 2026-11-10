@@ -1,0 +1,2040 @@
+{
+  "version": 1,
+  "annotation_policy": "Source-reviewed by development agent, independent of Retriever predictions; not externally human-adjudicated. Frozen before baseline and production modification. Semantic answer/citation metrics require real answers and are not_evaluated here.",
+  "cases": [
+    {
+      "id": "A01",
+      "corpus": "a00",
+      "category": "function",
+      "question": "parse_python_file 在哪里定义，返回什么信息？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "A01-E1",
+          "path": "pycode/parser.py",
+          "symbol": "parse_python_file",
+          "minimal_ranges": [
+            [
+              17,
+              18
+            ],
+            [
+              47,
+              54
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "pycode/parser.py",
+              "symbol": "parse_python_file",
+              "start_line": 7,
+              "end_line": 54
+            }
+          ],
+          "source_sha256": "611c044d1a625db6a2cd2f0fdb8743058c3dad2593bca39a3ac8158de5d5ab3c"
+        }
+      ],
+      "key_facts": [
+        "Reads UTF-8-sig and parses an AST.",
+        "Returns FileInfo with the listed fields."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "A00 Q01; minimal source statements reviewed independently."
+    },
+    {
+      "id": "A02",
+      "corpus": "a00",
+      "category": "multi_evidence",
+      "question": "Explain SnapshotArtifactStore.validate and its consistency checks.",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "A02-E1",
+          "path": "backend/app/infrastructure/artifacts.py",
+          "symbol": "SnapshotArtifactStore.validate",
+          "minimal_ranges": [
+            [
+              117,
+              134
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "backend/app/infrastructure/artifacts.py",
+              "symbol": "SnapshotArtifactStore.validate",
+              "start_line": 113,
+              "end_line": 134
+            }
+          ],
+          "source_sha256": "e2a29f3949d205bd726500599fa28e14698828f942240fa25fa8f6ea749d35ef"
+        },
+        {
+          "id": "A02-E2",
+          "path": "backend/app/infrastructure/artifacts.py",
+          "symbol": "SnapshotArtifactStore._read_bundle",
+          "minimal_ranges": [
+            [
+              163,
+              178
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "backend/app/infrastructure/artifacts.py",
+              "symbol": "SnapshotArtifactStore._read_bundle",
+              "start_line": 157,
+              "end_line": 188
+            }
+          ],
+          "source_sha256": "e2a29f3949d205bd726500599fa28e14698828f942240fa25fa8f6ea749d35ef"
+        }
+      ],
+      "key_facts": [
+        "Checks ready state, ownership, paths and counts.",
+        "Checks the exact manifest identity and hashes."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": true,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "A00 Q02; full-function truth refined to relevant checks."
+    },
+    {
+      "id": "A05",
+      "corpus": "a00",
+      "category": "dependency",
+      "question": "pycode/engine.py 依赖哪些检索和存储组件？",
+      "split": "development",
+      "intent": "dependency",
+      "target": "pycode/engine.py",
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "A05-E1",
+          "path": "pycode/engine.py",
+          "symbol": null,
+          "minimal_ranges": [
+            [
+              19,
+              25
+            ],
+            [
+              27,
+              27
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "pycode/engine.py",
+              "symbol": null,
+              "start_line": 1,
+              "end_line": 215
+            }
+          ],
+          "source_sha256": "2cc864cf3ac63cbf939e0a42bec8af5b841f01cc747cc440b7bb8e5f31a77fe6"
+        }
+      ],
+      "key_facts": [
+        "engine explicitly imports retriever helpers and storage helpers."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "A00 Q05; use import statements rather than unrelated callee definitions."
+    },
+    {
+      "id": "A06",
+      "corpus": "a00",
+      "category": "impact",
+      "question": "修改 pycode/retriever.py 的文件级导入影响范围是什么？",
+      "split": "development",
+      "intent": "impact",
+      "target": "pycode/retriever.py",
+      "top_k": 8,
+      "evidence": [
+        {
+          "id": "A06-E1",
+          "path": "pycode/retriever.py",
+          "symbol": "retrieve_for_question",
+          "minimal_ranges": [
+            [
+              43,
+              60
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "pycode/retriever.py",
+              "symbol": "retrieve_for_question",
+              "start_line": 43,
+              "end_line": 60
+            }
+          ],
+          "source_sha256": "f58dee7db2fa9c24e74bbed330c230f7c4f29b05ded3514ce8cd3d8dcc8b8e29"
+        },
+        {
+          "id": "A06-E2",
+          "path": "pycode/engine.py",
+          "symbol": null,
+          "minimal_ranges": [
+            [
+              19,
+              25
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "pycode/engine.py",
+              "symbol": null,
+              "start_line": 1,
+              "end_line": 215
+            }
+          ],
+          "source_sha256": "2cc864cf3ac63cbf939e0a42bec8af5b841f01cc747cc440b7bb8e5f31a77fe6"
+        },
+        {
+          "id": "A06-E3",
+          "path": "pycode/tools/retrieve_context.py",
+          "symbol": null,
+          "minimal_ranges": [
+            [
+              4,
+              10
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "pycode/tools/retrieve_context.py",
+              "symbol": null,
+              "start_line": 1,
+              "end_line": 87
+            }
+          ],
+          "source_sha256": "2946c75bd14771e7d34b400757ccdad1e84f4043687f751d8eb57c0af50d2ebc"
+        },
+        {
+          "id": "A06-E4",
+          "path": "pycode/cli.py",
+          "symbol": null,
+          "minimal_ranges": [
+            [
+              13,
+              13
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "pycode/cli.py",
+              "symbol": null,
+              "start_line": 1,
+              "end_line": 1151
+            }
+          ],
+          "source_sha256": "bf7d5e60ab4bc8d2f5ce160f6072d1d2d0a81ecb6c2c467be525dd05d7190727"
+        }
+      ],
+      "key_facts": [
+        "The listed files directly import the retrieval module; runtime effects remain an inference."
+      ],
+      "needs_cross_file": true,
+      "needs_multihop": true,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "A00 Q06; direct import sites are the independent dependency evidence."
+    },
+    {
+      "id": "A08",
+      "corpus": "a00",
+      "category": "multi_evidence",
+      "question": "get_owned 如何在 SQLAlchemy 与 InMemory 实现 Project owner 隔离？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "A08-E1",
+          "path": "backend/app/repositories/sqlalchemy.py",
+          "symbol": "SqlAlchemyProjectRepository.get_owned",
+          "minimal_ranges": [
+            [
+              117,
+              127
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "backend/app/repositories/sqlalchemy.py",
+              "symbol": "SqlAlchemyProjectRepository.get_owned",
+              "start_line": 116,
+              "end_line": 127
+            }
+          ],
+          "source_sha256": "26392d7b232b5b7fa403e5d0c0b4e45c78d87ba48a2da4c668d98d90d3e634f8"
+        },
+        {
+          "id": "A08-E2",
+          "path": "backend/app/repositories/memory.py",
+          "symbol": "InMemoryProjectRepository.get_owned",
+          "minimal_ranges": [
+            [
+              109,
+              112
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "backend/app/repositories/memory.py",
+              "symbol": "InMemoryProjectRepository.get_owned",
+              "start_line": 108,
+              "end_line": 112
+            }
+          ],
+          "source_sha256": "f4dea8d0adf9831940979cdefa62fb5d5b1a4113c360e9af9c68b3d694d62f3e"
+        }
+      ],
+      "key_facts": [
+        "SQL filters id and owner_id; memory checks owner equality."
+      ],
+      "needs_cross_file": true,
+      "needs_multihop": true,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "A00 Q08; source-verified owner isolation branches."
+    },
+    {
+      "id": "A09",
+      "corpus": "a00",
+      "category": "exception",
+      "question": "PyCodeAdapter.ask 捕获 LLMError 后如何映射模型不可用、超时和失败？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "A09-E1",
+          "path": "backend/app/integrations/pycode.py",
+          "symbol": "PyCodeAdapter.ask",
+          "minimal_ranges": [
+            [
+              54,
+              59
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "backend/app/integrations/pycode.py",
+              "symbol": "PyCodeAdapter.ask",
+              "start_line": 48,
+              "end_line": 60
+            }
+          ],
+          "source_sha256": "e9850a52b80d9cc39b04d989f202fbe4eb0525949fd7e050eb3383db5e156330"
+        },
+        {
+          "id": "A09-E2",
+          "path": "backend/app/integrations/pycode.py",
+          "symbol": "_model_error",
+          "minimal_ranges": [
+            [
+              130,
+              136
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "backend/app/integrations/pycode.py",
+              "symbol": "_model_error",
+              "start_line": 129,
+              "end_line": 136
+            }
+          ],
+          "source_sha256": "e9850a52b80d9cc39b04d989f202fbe4eb0525949fd7e050eb3383db5e156330"
+        }
+      ],
+      "key_facts": [
+        "Catches LLMError and delegates mapping.",
+        "Missing config becomes unavailable, timeout becomes timeout, others failed."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": true,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "A00 Q09 narrowed to explicit adapter mapping, not model transport quality."
+    },
+    {
+      "id": "A10",
+      "corpus": "a00",
+      "category": "execution_flow",
+      "question": "ProjectService._analysis_snapshot 如何保证源码与 Artifact 同一 Commit？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "A10-E1",
+          "path": "backend/app/services/projects.py",
+          "symbol": "ProjectService._analysis_snapshot",
+          "minimal_ranges": [
+            [
+              547,
+              555
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "backend/app/services/projects.py",
+              "symbol": "ProjectService._analysis_snapshot",
+              "start_line": 528,
+              "end_line": 555
+            }
+          ],
+          "source_sha256": "72bb09c5cdfdc8f632243d23e89524bd166f6f73d9f27a7ab88cd663fdc027bd"
+        },
+        {
+          "id": "A10-E2",
+          "path": "backend/app/infrastructure/artifacts.py",
+          "symbol": "SnapshotArtifactStore._read_bundle",
+          "minimal_ranges": [
+            [
+              166,
+              178
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "backend/app/infrastructure/artifacts.py",
+              "symbol": "SnapshotArtifactStore._read_bundle",
+              "start_line": 157,
+              "end_line": 188
+            }
+          ],
+          "source_sha256": "e2a29f3949d205bd726500599fa28e14698828f942240fa25fa8f6ea749d35ef"
+        }
+      ],
+      "key_facts": [
+        "Checks commit availability and exact checkout, then validates the artifact.",
+        "Manifest records exact commit and artifact hashes."
+      ],
+      "needs_cross_file": true,
+      "needs_multihop": true,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "A00 Q10; preserve checkout/validation and manifest identity."
+    },
+    {
+      "id": "A16",
+      "corpus": "a00",
+      "category": "uncertain",
+      "question": "反射与运行时 monkey patch 最终注入的对象是哪一个？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [],
+      "key_facts": [
+        "Runtime monkey patches cannot be determined from this source snapshot."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": false,
+      "relations": [],
+      "annotation_origin": "A00 Q16; no invented positive evidence."
+    },
+    {
+      "id": "I01",
+      "corpus": "itsdangerous",
+      "category": "function",
+      "question": "Signer.sign 如何转换 value 并拼接分隔符与签名？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I01-E1",
+          "path": "itsdangerous/signer.py",
+          "symbol": "Signer.sign",
+          "minimal_ranges": [
+            [
+              224,
+              225
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/signer.py",
+              "symbol": "Signer.sign",
+              "start_line": 222,
+              "end_line": 225
+            }
+          ],
+          "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584"
+        }
+      ],
+      "key_facts": [
+        "Converts value to bytes, joins value, sep and get_signature(value)."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I02",
+      "corpus": "itsdangerous",
+      "category": "execution_flow",
+      "question": "Signer.get_signature 的输入转换、密钥、算法与输出编码步骤是什么？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I02-E1",
+          "path": "itsdangerous/signer.py",
+          "symbol": "Signer.get_signature",
+          "minimal_ranges": [
+            [
+              217,
+              220
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/signer.py",
+              "symbol": "Signer.get_signature",
+              "start_line": 215,
+              "end_line": 220
+            }
+          ],
+          "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584"
+        },
+        {
+          "id": "I02-E2",
+          "path": "itsdangerous/encoding.py",
+          "symbol": "want_bytes",
+          "minimal_ranges": [
+            [
+              14,
+              17
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/encoding.py",
+              "symbol": "want_bytes",
+              "start_line": 11,
+              "end_line": 17
+            }
+          ],
+          "source_sha256": "c304f3e6aff7ccb71a01dba793afef4a84adc06a9859edf4ed997f53ceda4453"
+        }
+      ],
+      "key_facts": [
+        "Converts input, derives a key, invokes configured algorithm and URL-safe encodes signature."
+      ],
+      "needs_cross_file": true,
+      "needs_multihop": true,
+      "static_answer_determinate": true,
+      "relations": [
+        {
+          "path": "itsdangerous/signer.py",
+          "scope": "Signer.get_signature",
+          "line": 218,
+          "column": 14,
+          "expression": "self.derive_key",
+          "expected": "unknown_runtime",
+          "target_id": null,
+          "independent_basis": "Source syntax/import and open-dispatch contract reviewed before baseline."
+        },
+        {
+          "path": "itsdangerous/signer.py",
+          "scope": "Signer.get_signature",
+          "line": 217,
+          "column": 16,
+          "expression": "want_bytes",
+          "expected": "static_import",
+          "target_id": "func:itsdangerous/encoding.py:want_bytes",
+          "independent_basis": "Source syntax/import and open-dispatch contract reviewed before baseline."
+        }
+      ],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I03",
+      "corpus": "itsdangerous",
+      "category": "exception",
+      "question": "Signer.verify_signature 遇到签名 base64 解码异常会怎样？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I03-E1",
+          "path": "itsdangerous/signer.py",
+          "symbol": "Signer.verify_signature",
+          "minimal_ranges": [
+            [
+              229,
+              234
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/signer.py",
+              "symbol": "Signer.verify_signature",
+              "start_line": 227,
+              "end_line": 242
+            }
+          ],
+          "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584"
+        }
+      ],
+      "key_facts": [
+        "Decoding exception returns False; input value is converted to bytes."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I04",
+      "corpus": "itsdangerous",
+      "category": "cross_module",
+      "question": "Signer.verify_signature 如何遍历 secret_keys 并调用 derive_key；运行时目标是否唯一？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I04-E1",
+          "path": "itsdangerous/signer.py",
+          "symbol": "Signer.verify_signature",
+          "minimal_ranges": [
+            [
+              236,
+              242
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/signer.py",
+              "symbol": "Signer.verify_signature",
+              "start_line": 227,
+              "end_line": 242
+            }
+          ],
+          "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584"
+        },
+        {
+          "id": "I04-E2",
+          "path": "itsdangerous/signer.py",
+          "symbol": "Signer.derive_key",
+          "minimal_ranges": [
+            [
+              182,
+              194
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/signer.py",
+              "symbol": "Signer.derive_key",
+              "start_line": 182,
+              "end_line": 213
+            }
+          ],
+          "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584"
+        }
+      ],
+      "key_facts": [
+        "Tries reversed keys; successful configured verification returns True.",
+        "Open receiver dispatch does not prove one runtime method."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": true,
+      "static_answer_determinate": true,
+      "relations": [
+        {
+          "path": "itsdangerous/signer.py",
+          "scope": "Signer.verify_signature",
+          "line": 237,
+          "column": 18,
+          "expression": "self.derive_key",
+          "expected": "unknown_runtime",
+          "target_id": null,
+          "independent_basis": "Source syntax/import and open-dispatch contract reviewed before baseline."
+        }
+      ],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I05",
+      "corpus": "itsdangerous",
+      "category": "exception",
+      "question": "Signer.unsign 缺少 sep 时抛出什么异常？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I05-E1",
+          "path": "itsdangerous/signer.py",
+          "symbol": "Signer.unsign",
+          "minimal_ranges": [
+            [
+              246,
+              249
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/signer.py",
+              "symbol": "Signer.unsign",
+              "start_line": 244,
+              "end_line": 256
+            }
+          ],
+          "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584"
+        }
+      ],
+      "key_facts": [
+        "Converts input and raises BadSignature when separator is absent."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I06",
+      "corpus": "itsdangerous",
+      "category": "execution_flow",
+      "question": "Signer.unsign 如何分割字符串并判断验签结果？",
+      "split": "validation",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I06-E1",
+          "path": "itsdangerous/signer.py",
+          "symbol": "Signer.unsign",
+          "minimal_ranges": [
+            [
+              251,
+              256
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/signer.py",
+              "symbol": "Signer.unsign",
+              "start_line": 244,
+              "end_line": 256
+            }
+          ],
+          "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584"
+        }
+      ],
+      "key_facts": [
+        "rsplit separates value and signature; success returns value, failure raises BadSignature with payload."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I07",
+      "corpus": "itsdangerous",
+      "category": "exception",
+      "question": "Signer.validate 何时返回 True 或 False？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I07-E1",
+          "path": "itsdangerous/signer.py",
+          "symbol": "Signer.validate",
+          "minimal_ranges": [
+            [
+              262,
+              266
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/signer.py",
+              "symbol": "Signer.validate",
+              "start_line": 258,
+              "end_line": 266
+            }
+          ],
+          "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584"
+        }
+      ],
+      "key_facts": [
+        "Calls unsign; success is True and BadSignature is False."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I08",
+      "corpus": "itsdangerous",
+      "category": "parameters",
+      "question": "Signer.derive_key 默认 secret_key 从哪里来，显式传入又怎样处理？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I08-E1",
+          "path": "itsdangerous/signer.py",
+          "symbol": "Signer.derive_key",
+          "minimal_ranges": [
+            [
+              195,
+              198
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/signer.py",
+              "symbol": "Signer.derive_key",
+              "start_line": 182,
+              "end_line": 213
+            }
+          ],
+          "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584"
+        }
+      ],
+      "key_facts": [
+        "None uses the last configured key; explicit input goes through want_bytes."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I09",
+      "corpus": "itsdangerous",
+      "category": "parameters",
+      "question": "Signer.derive_key 的 concat 和 django-concat 拼接规则是什么？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I09-E1",
+          "path": "itsdangerous/signer.py",
+          "symbol": "Signer.derive_key",
+          "minimal_ranges": [
+            [
+              200,
+              205
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/signer.py",
+              "symbol": "Signer.derive_key",
+              "start_line": 182,
+              "end_line": 213
+            }
+          ],
+          "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584"
+        }
+      ],
+      "key_facts": [
+        "concat uses salt+key; django-concat inserts the signer literal between them."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I10",
+      "corpus": "itsdangerous",
+      "category": "parameters",
+      "question": "Signer.derive_key 在 hmac 分支如何产生结果？",
+      "split": "validation",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I10-E1",
+          "path": "itsdangerous/signer.py",
+          "symbol": "Signer.derive_key",
+          "minimal_ranges": [
+            [
+              206,
+              209
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/signer.py",
+              "symbol": "Signer.derive_key",
+              "start_line": 182,
+              "end_line": 213
+            }
+          ],
+          "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584"
+        }
+      ],
+      "key_facts": [
+        "Builds HMAC using secret key and digest method, updates with salt, returns digest."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I11",
+      "corpus": "itsdangerous",
+      "category": "exception",
+      "question": "Signer.derive_key 在 none 和未知 key_derivation 下如何返回或抛错？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I11-E1",
+          "path": "itsdangerous/signer.py",
+          "symbol": "Signer.derive_key",
+          "minimal_ranges": [
+            [
+              210,
+              213
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/signer.py",
+              "symbol": "Signer.derive_key",
+              "start_line": 182,
+              "end_line": 213
+            }
+          ],
+          "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584"
+        }
+      ],
+      "key_facts": [
+        "none returns secret_key; unsupported derivation raises TypeError."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I12",
+      "corpus": "itsdangerous",
+      "category": "function",
+      "question": "HMACAlgorithm.get_signature 如何计算签名？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I12-E1",
+          "path": "itsdangerous/signer.py",
+          "symbol": "HMACAlgorithm.get_signature",
+          "minimal_ranges": [
+            [
+              62,
+              64
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/signer.py",
+              "symbol": "HMACAlgorithm.get_signature",
+              "start_line": 62,
+              "end_line": 64
+            }
+          ],
+          "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584"
+        }
+      ],
+      "key_facts": [
+        "Builds HMAC with key, value and configured digest, returns digest bytes."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I13",
+      "corpus": "itsdangerous",
+      "category": "parameters",
+      "question": "_make_keys_list 如何处理单个键和可迭代键？",
+      "split": "validation",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I13-E1",
+          "path": "itsdangerous/signer.py",
+          "symbol": "_make_keys_list",
+          "minimal_ranges": [
+            [
+              70,
+              73
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/signer.py",
+              "symbol": "_make_keys_list",
+              "start_line": 67,
+              "end_line": 73
+            }
+          ],
+          "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584"
+        },
+        {
+          "id": "I13-E2",
+          "path": "itsdangerous/encoding.py",
+          "symbol": "want_bytes",
+          "minimal_ranges": [
+            [
+              14,
+              17
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/encoding.py",
+              "symbol": "want_bytes",
+              "start_line": 11,
+              "end_line": 17
+            }
+          ],
+          "source_sha256": "c304f3e6aff7ccb71a01dba793afef4a84adc06a9859edf4ed997f53ceda4453"
+        }
+      ],
+      "key_facts": [
+        "One string/bytes becomes a singleton list; iterable values are individually converted."
+      ],
+      "needs_cross_file": true,
+      "needs_multihop": true,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I14",
+      "corpus": "itsdangerous",
+      "category": "function",
+      "question": "want_bytes 对 str 和 bytes 输入分别返回什么？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I14-E1",
+          "path": "itsdangerous/encoding.py",
+          "symbol": "want_bytes",
+          "minimal_ranges": [
+            [
+              14,
+              17
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/encoding.py",
+              "symbol": "want_bytes",
+              "start_line": 11,
+              "end_line": 17
+            }
+          ],
+          "source_sha256": "c304f3e6aff7ccb71a01dba793afef4a84adc06a9859edf4ed997f53ceda4453"
+        }
+      ],
+      "key_facts": [
+        "Encodes str with supplied encoding/errors and otherwise returns input."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I15",
+      "corpus": "itsdangerous",
+      "category": "cross_module",
+      "question": "base64_encode 怎样调用 want_bytes 并移除填充？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I15-E1",
+          "path": "itsdangerous/encoding.py",
+          "symbol": "base64_encode",
+          "minimal_ranges": [
+            [
+              24,
+              25
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/encoding.py",
+              "symbol": "base64_encode",
+              "start_line": 20,
+              "end_line": 25
+            }
+          ],
+          "source_sha256": "c304f3e6aff7ccb71a01dba793afef4a84adc06a9859edf4ed997f53ceda4453"
+        },
+        {
+          "id": "I15-E2",
+          "path": "itsdangerous/encoding.py",
+          "symbol": "want_bytes",
+          "minimal_ranges": [
+            [
+              14,
+              17
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/encoding.py",
+              "symbol": "want_bytes",
+              "start_line": 11,
+              "end_line": 17
+            }
+          ],
+          "source_sha256": "c304f3e6aff7ccb71a01dba793afef4a84adc06a9859edf4ed997f53ceda4453"
+        }
+      ],
+      "key_facts": [
+        "Converts to bytes, URL-safe base64 encodes, strips trailing equals."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": true,
+      "static_answer_determinate": true,
+      "relations": [
+        {
+          "path": "itsdangerous/encoding.py",
+          "scope": "base64_encode",
+          "line": 24,
+          "column": 13,
+          "expression": "want_bytes",
+          "expected": "static_lexical",
+          "target_id": "func:itsdangerous/encoding.py:want_bytes",
+          "independent_basis": "Source syntax/import and open-dispatch contract reviewed before baseline."
+        }
+      ],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I16",
+      "corpus": "itsdangerous",
+      "category": "exception",
+      "question": "base64_decode 如何补 padding，以及把解码错误映射成什么？",
+      "split": "validation",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I16-E1",
+          "path": "itsdangerous/encoding.py",
+          "symbol": "base64_decode",
+          "minimal_ranges": [
+            [
+              32,
+              38
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/encoding.py",
+              "symbol": "base64_decode",
+              "start_line": 28,
+              "end_line": 38
+            }
+          ],
+          "source_sha256": "c304f3e6aff7ccb71a01dba793afef4a84adc06a9859edf4ed997f53ceda4453"
+        }
+      ],
+      "key_facts": [
+        "ASCII conversion ignores invalid text, pads to a multiple of four; TypeError/ValueError become BadData."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I17",
+      "corpus": "itsdangerous",
+      "category": "parameters",
+      "question": "int_to_bytes 与 bytes_to_int 怎样处理零字节填充？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I17-E1",
+          "path": "itsdangerous/encoding.py",
+          "symbol": "int_to_bytes",
+          "minimal_ranges": [
+            [
+              49,
+              50
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/encoding.py",
+              "symbol": "int_to_bytes",
+              "start_line": 49,
+              "end_line": 50
+            }
+          ],
+          "source_sha256": "c304f3e6aff7ccb71a01dba793afef4a84adc06a9859edf4ed997f53ceda4453"
+        },
+        {
+          "id": "I17-E2",
+          "path": "itsdangerous/encoding.py",
+          "symbol": "bytes_to_int",
+          "minimal_ranges": [
+            [
+              53,
+              54
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/encoding.py",
+              "symbol": "bytes_to_int",
+              "start_line": 53,
+              "end_line": 54
+            }
+          ],
+          "source_sha256": "c304f3e6aff7ccb71a01dba793afef4a84adc06a9859edf4ed997f53ceda4453"
+        },
+        {
+          "id": "I17-E3",
+          "path": "itsdangerous/encoding.py",
+          "symbol": null,
+          "minimal_ranges": [
+            [
+              44,
+              46
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/encoding.py",
+              "symbol": null,
+              "start_line": 1,
+              "end_line": 54
+            }
+          ],
+          "source_sha256": "c304f3e6aff7ccb71a01dba793afef4a84adc06a9859edf4ed997f53ceda4453"
+        }
+      ],
+      "key_facts": [
+        "Integer bytes strip left zeros; decoding left-pads zeros to width eight with big-endian structure."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": true,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I18",
+      "corpus": "itsdangerous",
+      "category": "execution_flow",
+      "question": "URLSafeSerializerMixin.dump_payload 何时压缩并添加点前缀？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I18-E1",
+          "path": "itsdangerous/url_safe.py",
+          "symbol": "URLSafeSerializerMixin.dump_payload",
+          "minimal_ranges": [
+            [
+              56,
+              69
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/url_safe.py",
+              "symbol": "URLSafeSerializerMixin.dump_payload",
+              "start_line": 55,
+              "end_line": 69
+            }
+          ],
+          "source_sha256": "6b3e1ee5f5e2fefb3e61b5a3f186709f8c2254a7de0fef8610a453e547aee0fe"
+        }
+      ],
+      "key_facts": [
+        "Uses compression only if at least one byte is saved after marker; prepends dot to compressed base64 payload."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I19",
+      "corpus": "itsdangerous",
+      "category": "exception",
+      "question": "URLSafeSerializerMixin.load_payload 如何识别压缩以及报告 base64 错误？",
+      "split": "validation",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I19-E1",
+          "path": "itsdangerous/url_safe.py",
+          "symbol": "URLSafeSerializerMixin.load_payload",
+          "minimal_ranges": [
+            [
+              30,
+              42
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/url_safe.py",
+              "symbol": "URLSafeSerializerMixin.load_payload",
+              "start_line": 23,
+              "end_line": 53
+            }
+          ],
+          "source_sha256": "6b3e1ee5f5e2fefb3e61b5a3f186709f8c2254a7de0fef8610a453e547aee0fe"
+        }
+      ],
+      "key_facts": [
+        "Leading dot sets decompression; base64 failure becomes BadPayload with original error."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I20",
+      "corpus": "itsdangerous",
+      "category": "exception",
+      "question": "URLSafeSerializerMixin.load_payload 的 zlib 异常怎样报告？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I20-E1",
+          "path": "itsdangerous/url_safe.py",
+          "symbol": "URLSafeSerializerMixin.load_payload",
+          "minimal_ranges": [
+            [
+              44,
+              51
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/url_safe.py",
+              "symbol": "URLSafeSerializerMixin.load_payload",
+              "start_line": 23,
+              "end_line": 53
+            }
+          ],
+          "source_sha256": "6b3e1ee5f5e2fefb3e61b5a3f186709f8c2254a7de0fef8610a453e547aee0fe"
+        }
+      ],
+      "key_facts": [
+        "Decompression errors become BadPayload preserving original_error."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I21",
+      "corpus": "itsdangerous",
+      "category": "execution_flow",
+      "question": "Serializer.dumps 从对象到签名输出的步骤是什么？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I21-E1",
+          "path": "itsdangerous/serializer.py",
+          "symbol": "Serializer.dumps",
+          "minimal_ranges": [
+            [
+              314,
+              320
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/serializer.py",
+              "symbol": "Serializer.dumps",
+              "start_line": 309,
+              "end_line": 320
+            }
+          ],
+          "source_sha256": "6d6f1687897c7e3ac6eeff5bfd6794df90e299feedcc6aae3faa0e53ffe925e8"
+        }
+      ],
+      "key_facts": [
+        "Converts serialized payload to bytes, signs it, decodes UTF-8 if text serializer."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I22",
+      "corpus": "itsdangerous",
+      "category": "exception",
+      "question": "Serializer.loads 如何尝试多个 signer 并保留最后一个 BadSignature？",
+      "split": "validation",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I22-E1",
+          "path": "itsdangerous/serializer.py",
+          "symbol": "Serializer.loads",
+          "minimal_ranges": [
+            [
+              334,
+              343
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/serializer.py",
+              "symbol": "Serializer.loads",
+              "start_line": 328,
+              "end_line": 343
+            }
+          ],
+          "source_sha256": "6d6f1687897c7e3ac6eeff5bfd6794df90e299feedcc6aae3faa0e53ffe925e8"
+        }
+      ],
+      "key_facts": [
+        "Iterates unsigners, loads first successful payload, otherwise raises the last signature exception."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I23",
+      "corpus": "itsdangerous",
+      "category": "function",
+      "question": "Serializer.dump_payload 如何保证返回 bytes？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I23-E1",
+          "path": "itsdangerous/serializer.py",
+          "symbol": "Serializer.dump_payload",
+          "minimal_ranges": [
+            [
+              271,
+              276
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/serializer.py",
+              "symbol": "Serializer.dump_payload",
+              "start_line": 271,
+              "end_line": 276
+            }
+          ],
+          "source_sha256": "6d6f1687897c7e3ac6eeff5bfd6794df90e299feedcc6aae3faa0e53ffe925e8"
+        },
+        {
+          "id": "I23-E2",
+          "path": "itsdangerous/encoding.py",
+          "symbol": "want_bytes",
+          "minimal_ranges": [
+            [
+              14,
+              17
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/encoding.py",
+              "symbol": "want_bytes",
+              "start_line": 11,
+              "end_line": 17
+            }
+          ],
+          "source_sha256": "c304f3e6aff7ccb71a01dba793afef4a84adc06a9859edf4ed997f53ceda4453"
+        }
+      ],
+      "key_facts": [
+        "Calls configured serializer.dumps then want_bytes."
+      ],
+      "needs_cross_file": true,
+      "needs_multihop": true,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I24",
+      "corpus": "itsdangerous",
+      "category": "parameters",
+      "question": "Serializer.make_signer 如何处理缺省 salt 并传递参数？",
+      "split": "validation",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I24-E1",
+          "path": "itsdangerous/serializer.py",
+          "symbol": "Serializer.make_signer",
+          "minimal_ranges": [
+            [
+              282,
+              285
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/serializer.py",
+              "symbol": "Serializer.make_signer",
+              "start_line": 278,
+              "end_line": 285
+            }
+          ],
+          "source_sha256": "6d6f1687897c7e3ac6eeff5bfd6794df90e299feedcc6aae3faa0e53ffe925e8"
+        }
+      ],
+      "key_facts": [
+        "Defaults salt to self.salt then invokes configured signer with keys and kwargs."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I25",
+      "corpus": "itsdangerous",
+      "category": "dependency",
+      "question": "itsdangerous/signer.py 从 encoding 导入哪些转换函数？",
+      "split": "development",
+      "intent": "dependency",
+      "target": "itsdangerous/signer.py",
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I25-E1",
+          "path": "itsdangerous/signer.py",
+          "symbol": null,
+          "minimal_ranges": [
+            [
+              8,
+              12
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/signer.py",
+              "symbol": null,
+              "start_line": 1,
+              "end_line": 266
+            }
+          ],
+          "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584"
+        }
+      ],
+      "key_facts": [
+        "Imports base64_decode, base64_encode and want_bytes."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": true,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I26",
+      "corpus": "itsdangerous",
+      "category": "cross_module",
+      "question": "Signer.derive_key 的源码调用点在哪里，是否保证唯一运行时分派？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I26-E1",
+          "path": "itsdangerous/signer.py",
+          "symbol": "Signer.get_signature",
+          "minimal_ranges": [
+            [
+              217,
+              220
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/signer.py",
+              "symbol": "Signer.get_signature",
+              "start_line": 215,
+              "end_line": 220
+            }
+          ],
+          "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584"
+        },
+        {
+          "id": "I26-E2",
+          "path": "itsdangerous/signer.py",
+          "symbol": "Signer.verify_signature",
+          "minimal_ranges": [
+            [
+              236,
+              242
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/signer.py",
+              "symbol": "Signer.verify_signature",
+              "start_line": 227,
+              "end_line": 242
+            }
+          ],
+          "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584"
+        },
+        {
+          "id": "I26-E3",
+          "path": "itsdangerous/signer.py",
+          "symbol": "Signer.derive_key",
+          "minimal_ranges": [
+            [
+              182,
+              194
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/signer.py",
+              "symbol": "Signer.derive_key",
+              "start_line": 182,
+              "end_line": 213
+            }
+          ],
+          "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584"
+        }
+      ],
+      "key_facts": [
+        "Two explicit self.derive_key source call sites exist.",
+        "Open method customization does not prove a unique runtime callee."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": true,
+      "static_answer_determinate": true,
+      "relations": [
+        {
+          "path": "itsdangerous/signer.py",
+          "scope": "Signer.get_signature",
+          "line": 218,
+          "column": 14,
+          "expression": "self.derive_key",
+          "expected": "unknown_runtime",
+          "target_id": null,
+          "independent_basis": "Source syntax/import and open-dispatch contract reviewed before baseline."
+        },
+        {
+          "path": "itsdangerous/signer.py",
+          "scope": "Signer.verify_signature",
+          "line": 237,
+          "column": 18,
+          "expression": "self.derive_key",
+          "expected": "unknown_runtime",
+          "target_id": null,
+          "independent_basis": "Source syntax/import and open-dispatch contract reviewed before baseline."
+        }
+      ],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I27",
+      "corpus": "itsdangerous",
+      "category": "uncertain",
+      "question": "运行时 monkey patch 后 self.derive_key 最终执行的是哪个实现？",
+      "split": "development",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [],
+      "key_facts": [
+        "This snapshot cannot determine a future runtime monkey patch."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": false,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "I28",
+      "corpus": "itsdangerous",
+      "category": "uncertain",
+      "question": "传入外部 algorithm 后，能确定 Signer 的 algorithm.get_signature 总是 HMACAlgorithm 吗？",
+      "split": "validation",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "I28-E1",
+          "path": "itsdangerous/signer.py",
+          "symbol": "Signer.__init__",
+          "minimal_ranges": [
+            [
+              136,
+              137
+            ],
+            [
+              170,
+              173
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "itsdangerous/signer.py",
+              "symbol": "Signer.__init__",
+              "start_line": 129,
+              "end_line": 173
+            }
+          ],
+          "source_sha256": "60ed0257b341bc703a8f9e3d4441c91548d4a23c36a47ab0714a509d4ef23584"
+        }
+      ],
+      "key_facts": [
+        "Custom algorithm can be retained; HMACAlgorithm is only the None fallback."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": false,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "S01",
+      "corpus": "synthetic",
+      "category": "cross_module",
+      "question": "run 如何调用 transform 并处理 None 值？",
+      "split": "validation",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "S01-E1",
+          "path": "entry.py",
+          "symbol": "run",
+          "minimal_ranges": [
+            [
+              3,
+              4
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "entry.py",
+              "symbol": "run",
+              "start_line": 3,
+              "end_line": 4
+            }
+          ],
+          "source_sha256": "cb55939f5a14815129144cb8bf13ec09c7815afd1f13b556107cc1069f36e0e8"
+        },
+        {
+          "id": "S01-E2",
+          "path": "worker.py",
+          "symbol": "transform",
+          "minimal_ranges": [
+            [
+              1,
+              4
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "worker.py",
+              "symbol": "transform",
+              "start_line": 1,
+              "end_line": 4
+            }
+          ],
+          "source_sha256": "7c002a0e2fe264a389b5021643805afda24f213cec5f6893086a2ac8c333abbc"
+        }
+      ],
+      "key_facts": [
+        "run imports and calls worker.transform.",
+        "None raises ValueError; otherwise returns UTF-8 bytes."
+      ],
+      "needs_cross_file": true,
+      "needs_multihop": true,
+      "static_answer_determinate": true,
+      "relations": [
+        {
+          "path": "entry.py",
+          "scope": "run",
+          "line": 4,
+          "column": 11,
+          "expression": "transform",
+          "expected": "static_import",
+          "target_id": "func:worker.py:transform",
+          "independent_basis": "Source syntax/import and open-dispatch contract reviewed before baseline."
+        }
+      ],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "S02",
+      "corpus": "synthetic",
+      "category": "cross_module",
+      "question": "entry.py 的 run 调用哪个 transform，与 other.py 的同名函数有关吗？",
+      "split": "validation",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "S02-E1",
+          "path": "entry.py",
+          "symbol": null,
+          "minimal_ranges": [
+            [
+              1,
+              4
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "entry.py",
+              "symbol": null,
+              "start_line": 1,
+              "end_line": 4
+            }
+          ],
+          "source_sha256": "cb55939f5a14815129144cb8bf13ec09c7815afd1f13b556107cc1069f36e0e8"
+        },
+        {
+          "id": "S02-E2",
+          "path": "worker.py",
+          "symbol": "transform",
+          "minimal_ranges": [
+            [
+              1,
+              4
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "worker.py",
+              "symbol": "transform",
+              "start_line": 1,
+              "end_line": 4
+            }
+          ],
+          "source_sha256": "7c002a0e2fe264a389b5021643805afda24f213cec5f6893086a2ac8c333abbc"
+        }
+      ],
+      "key_facts": [
+        "Explicit import binds worker.transform; same-name other.transform is not its callee."
+      ],
+      "needs_cross_file": true,
+      "needs_multihop": true,
+      "static_answer_determinate": true,
+      "relations": [
+        {
+          "path": "entry.py",
+          "scope": "run",
+          "line": 4,
+          "column": 11,
+          "expression": "transform",
+          "expected": "static_import",
+          "target_id": "func:worker.py:transform",
+          "independent_basis": "Source syntax/import and open-dispatch contract reviewed before baseline."
+        }
+      ],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "S03",
+      "corpus": "synthetic",
+      "category": "uncertain",
+      "question": "invoke 的参数对象 obj.transform 运行时调用哪一个实现？",
+      "split": "validation",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "S03-E1",
+          "path": "dynamic.py",
+          "symbol": "invoke",
+          "minimal_ranges": [
+            [
+              1,
+              2
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "dynamic.py",
+              "symbol": "invoke",
+              "start_line": 1,
+              "end_line": 2
+            }
+          ],
+          "source_sha256": "85d376d0b0f1166bea11b4975bba964eaf600909561febc893dee9b5bf466883"
+        }
+      ],
+      "key_facts": [
+        "Receiver is an unconstrained parameter; runtime target cannot be determined."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": false,
+      "relations": [
+        {
+          "path": "dynamic.py",
+          "scope": "invoke",
+          "line": 2,
+          "column": 11,
+          "expression": "obj.transform",
+          "expected": "unknown_runtime",
+          "target_id": null,
+          "independent_basis": "Source syntax/import and open-dispatch contract reviewed before baseline."
+        }
+      ],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    },
+    {
+      "id": "S04",
+      "corpus": "legacy",
+      "category": "cross_module",
+      "question": "旧版图中 run 到 transform 的关系能证明运行时唯一目标吗？",
+      "split": "validation",
+      "intent": "general",
+      "target": null,
+      "top_k": 6,
+      "evidence": [
+        {
+          "id": "S04-E1",
+          "path": "entry.py",
+          "symbol": "run",
+          "minimal_ranges": [
+            [
+              3,
+              4
+            ]
+          ],
+          "allowed_alternatives": [
+            {
+              "path": "entry.py",
+              "symbol": "run",
+              "start_line": 3,
+              "end_line": 4
+            }
+          ],
+          "source_sha256": "cb55939f5a14815129144cb8bf13ec09c7815afd1f13b556107cc1069f36e0e8"
+        }
+      ],
+      "key_facts": [
+        "Legacy Graph links are hints, not verified binding proofs."
+      ],
+      "needs_cross_file": false,
+      "needs_multihop": false,
+      "static_answer_determinate": false,
+      "relations": [],
+      "annotation_origin": "Source review before baseline; no Retriever output consulted."
+    }
+  ]
+}

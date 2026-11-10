@@ -4,6 +4,26 @@ from dataclasses import dataclass, replace
 import json
 
 
+def _render_relations(item):
+    """Expose stored proof metadata without treating it as runtime verification."""
+    lines=[];documented=set()
+    for step in item.graph_path:
+        edge=f"{step['source']} --{step['relation']}--> {step['target']}"
+        resolution=step.get('resolution')
+        if resolution not in {'static','declaration','unknown','ambiguous','legacy'}:
+            resolution='unavailable'
+        basis=step.get('basis') or 'unavailable'
+        # Keep Graph provenance separate from a visible source-code citation.
+        location=(f"graph_site_path={step['path']}; graph_site_lines={step['start_line']}-{step['end_line']}"
+                  if step.get('path') and step.get('start_line') is not None and step.get('end_line') is not None
+                  else 'graph_site=unavailable')
+        lines.append(f'- {edge} [resolution={resolution}; basis={basis}; {location}; runtime=unverified]')
+        documented.add(edge)
+    lines.extend(f'- {edge} [proof=unavailable; runtime=unverified]'
+                 for edge in item.edges if edge not in documented)
+    return '\n'.join(lines) or '- N/A'
+
+
 def render_evidence(items):
     blocks = []
     for number, item in enumerate(items, 1):
@@ -15,7 +35,7 @@ def render_evidence(items):
             f'Chunk IDs: {", ".join(item.chunk_ids) or "unavailable"}',
             f'Diagnostics: {", ".join(item.diagnostics) or "none"}',
             '节点:', '\n'.join('- ' + n for n in item.node_ids) or '- N/A',
-            '关系:', '\n'.join('- ' + e for e in item.edges) or '- N/A',
+            '关系（图谱出处不能替代可见源码；不证明运行时调用）:', _render_relations(item),
             '代码片段:', item.snippet or 'N/A']))
     return '\n\n'.join(blocks) or '没有检索到可用证据。'
 

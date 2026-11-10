@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "external_human_review": false,
+  "reviewer": "development agent, source-only annotation",
+  "timing": "All labels and metric definitions prepared before baseline; no output-derived changes.",
+  "history": [
+    {
+      "event": "initial source annotation",
+      "questions": 40,
+      "reused_a00_ids": [
+        "Q01",
+        "Q02",
+        "Q05",
+        "Q06",
+        "Q08",
+        "Q09",
+        "Q10",
+        "Q16"
+      ],
+      "edits": "Minimal statement ranges independently reviewed; Q05/Q06 use actual imports; Q09 explicitly limited to error mapping. Existing A00/A07 fixtures unchanged."
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "entry.py": "from worker import transform\n\ndef run(value):\n    return transform(value)\n",
+  "worker.py": "def transform(value):\n    if value is None:\n        raise ValueError(\"missing\")\n    return str(value).encode(\"utf-8\")\n",
+  "other.py": "def transform(value):\n    return 0\n",
+  "dynamic.py": "def invoke(obj):\n    return obj.transform()\n"
+}
