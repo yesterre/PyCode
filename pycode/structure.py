@@ -114,8 +114,7 @@ class _Collector(ast.NodeVisitor):
                     end_col_offset=node.end_col_offset, expression=expression,
                     name=node.func.id if isinstance(node.func, ast.Name) else None)
         self.calls.append(site)
-        names=sorted({n.id for value in [*node.args,*(k.value for k in node.keywords)]
-                      for n in ast.walk(value) if isinstance(n,ast.Name) and isinstance(n.ctx,ast.Load)})
+        names=_escaping_argument_names([*node.args,*(k.value for k in node.keywords)])
         if names:
             self.escapes.append(dict(call_id=site['id'],scope=self.current['key'],names=names))
         if isinstance(node.func, ast.Name) and node.func.id in {'exec','eval','globals','locals','setattr','delattr'}:
@@ -264,6 +263,28 @@ class _Collector(ast.NodeVisitor):
                     dynamic=any(s['dynamic'] for s in self.scopes),
                     blocked_names=sorted({name for s in self.scopes for name, values in s['bindings'].items()
                                           if any(b['kind'] in {'global_or_nonlocal','type_parameter'} for b in values)}))
+
+
+def _escaping_argument_names(values):
+    """Conservative escape roots, except for proved boolean-only projections.
+
+    An identity comparison of names/constants neither dispatches user hooks nor
+    returns an operand. Only its bool reaches the callee. Attribute/call operands
+    and equality/order comparisons retain the original conservative treatment.
+    Nested calls are still independently visited by the structure collector.
+    """
+    pending=list(values);names=set()
+    while pending:
+        node=pending.pop()
+        if (isinstance(node,ast.Compare)
+            and all(isinstance(op,(ast.Is,ast.IsNot)) for op in node.ops)
+            and all(isinstance(value,(ast.Name,ast.Constant))
+                    for value in [node.left,*node.comparators])):
+            continue
+        if isinstance(node,ast.Name) and isinstance(node.ctx,ast.Load):
+            names.add(node.id)
+        pending.extend(ast.iter_child_nodes(node))
+    return sorted(names)
 
 
 def _expression_path(node):

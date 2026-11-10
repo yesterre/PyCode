@@ -1,0 +1,81 @@
+{
+  "original_sha256": "d45c7fec144dca229b67892303e18b8f3863e6b8963ec134e5684cc80265c570",
+  "rationale": "Correct an over-conservative initial oracle; explicitly lowers claimed recall, without removing failures or adjusting implementation.",
+  "review_timing": "After initial implementation and first before/after pair; before the reviewed HEAD replay and reviewed after run. Initial data is retained unchanged.",
+  "corrections": [
+    {
+      "case": "conditional",
+      "original_expected": "uncertain",
+      "original_target": null,
+      "reviewed_expected": "static",
+      "reviewed_target": "method:a.py:C.work",
+      "reason": "If the call reaches a bound receiver, its only possible source is C; possible NameError is not a second callable target."
+    },
+    {
+      "case": "multiple-receivers",
+      "original_expected": "uncertain",
+      "original_target": null,
+      "reviewed_expected": "static",
+      "reviewed_target": "method:a.py:D.work",
+      "reason": "The final unconditional assignment is D(); source has no branch or escape, so D.work is unique."
+    },
+    {
+      "case": "getattr",
+      "original_expected": "uncertain",
+      "original_target": null,
+      "reviewed_expected": "static",
+      "reviewed_target": "method:a.py:C.work",
+      "reason": "Closed fixture uses unshadowed builtin getattr with literal work and a hook-free exact C instance."
+    },
+    {
+      "case": "closure-escape",
+      "original_expected": "uncertain",
+      "original_target": null,
+      "reviewed_expected": "static",
+      "reviewed_target": "method:a.py:C.work",
+      "reason": "The local closure is never called, returned or passed; its dead sink(self) does not actually escape the receiver."
+    },
+    {
+      "case": "closure-receiver",
+      "original_expected": "uncertain",
+      "original_target": null,
+      "reviewed_expected": "static",
+      "reviewed_target": "method:a.py:C.work",
+      "reason": "Closed fixture has only C and no override; nested function captures that same receiver, although current flow IR does not support this proof."
+    },
+    {
+      "case": "inherit",
+      "original_expected": "uncertain",
+      "original_target": null,
+      "reviewed_expected": "static",
+      "reviewed_target": "method:a.py:C.work",
+      "reason": "Exact Child instance inherits work from the single fixed hook-free C base; unsupported MRO analysis is a recall miss."
+    },
+    {
+      "case": "override",
+      "original_expected": "uncertain",
+      "original_target": null,
+      "reviewed_expected": "static",
+      "reviewed_target": "method:a.py:Child.work",
+      "reason": "Exact Child instance defines its own work; source target is unique despite current dynamic_class rejection."
+    },
+    {
+      "case": "super",
+      "original_expected": "uncertain",
+      "original_target": null,
+      "reviewed_expected": "static",
+      "reviewed_target": "method:a.py:C.work",
+      "reason": "Closed fixture has a single fixed Child(C) hierarchy; zero-argument super in Child.run reaches C.work."
+    }
+  ],
+  "added_uncertain_cases": [
+    "conditional-two-types",
+    "branch-two-types",
+    "runtime-getattr-name",
+    "invoked-closure-escape",
+    "passed-closure",
+    "escaped-class",
+    "attribute-possible-alias",
+    "bound-factory-result"
+  ]
+}

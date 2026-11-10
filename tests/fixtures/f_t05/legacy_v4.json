@@ -1,0 +1,348 @@
+{
+  "project_path": "f_t05/self-is-none",
+  "nodes": [
+    {
+      "id": "class:a.py:C",
+      "type": "class",
+      "name": "C",
+      "path": "a.py",
+      "symbol_key": "<module>/C[1]",
+      "parent_id": "file:a.py",
+      "start_line": 1,
+      "end_line": 6
+    },
+    {
+      "id": "file:a.py",
+      "type": "file",
+      "name": "a.py",
+      "path": "a.py",
+      "symbol_key": "<module>",
+      "parent_id": null,
+      "start_line": null,
+      "end_line": null
+    },
+    {
+      "id": "method:a.py:C.run",
+      "type": "method",
+      "name": "C.run",
+      "path": "a.py",
+      "symbol_key": "<module>/C[1]/run[1]",
+      "parent_id": "class:a.py:C",
+      "start_line": 4,
+      "end_line": 6
+    },
+    {
+      "id": "method:a.py:C.work",
+      "type": "method",
+      "name": "C.work",
+      "path": "a.py",
+      "symbol_key": "<module>/C[1]/work[1]",
+      "parent_id": "class:a.py:C",
+      "start_line": 2,
+      "end_line": 3
+    },
+    {
+      "id": "unresolved:call:27c57ae69d6b33ebf32160e4d6ea4673ba24dd72947f10e1dbeadf9a078681ff",
+      "type": "external",
+      "name": "sink",
+      "path": null,
+      "symbol_key": null,
+      "parent_id": null,
+      "start_line": null,
+      "end_line": null
+    },
+    {
+      "id": "unresolved:call:9430e04fc8263cb211c41517b96a55ed83135f2ebf8acb4180c4fef1aaa7a65b",
+      "type": "external",
+      "name": "<dynamic call>",
+      "path": null,
+      "symbol_key": null,
+      "parent_id": null,
+      "start_line": null,
+      "end_line": null
+    }
+  ],
+  "edges": [
+    {
+      "source": "class:a.py:C",
+      "target": "method:a.py:C.run",
+      "type": "contains",
+      "site_id": null,
+      "path": null,
+      "start_line": null,
+      "end_line": null,
+      "resolution": "static",
+      "basis": "lexical_containment"
+    },
+    {
+      "source": "class:a.py:C",
+      "target": "method:a.py:C.work",
+      "type": "contains",
+      "site_id": null,
+      "path": null,
+      "start_line": null,
+      "end_line": null,
+      "resolution": "static",
+      "basis": "lexical_containment"
+    },
+    {
+      "source": "file:a.py",
+      "target": "class:a.py:C",
+      "type": "contains",
+      "site_id": null,
+      "path": null,
+      "start_line": null,
+      "end_line": null,
+      "resolution": "static",
+      "basis": "lexical_containment"
+    },
+    {
+      "source": "method:a.py:C.run",
+      "target": "unresolved:call:27c57ae69d6b33ebf32160e4d6ea4673ba24dd72947f10e1dbeadf9a078681ff",
+      "type": "unresolved_call",
+      "site_id": "call:27c57ae69d6b33ebf32160e4d6ea4673ba24dd72947f10e1dbeadf9a078681ff",
+      "path": "a.py",
+      "start_line": 5,
+      "end_line": 5,
+      "resolution": "unknown",
+      "basis": "name_not_bound_in_module"
+    },
+    {
+      "source": "method:a.py:C.run",
+      "target": "unresolved:call:9430e04fc8263cb211c41517b96a55ed83135f2ebf8acb4180c4fef1aaa7a65b",
+      "type": "unresolved_call",
+      "site_id": "call:9430e04fc8263cb211c41517b96a55ed83135f2ebf8acb4180c4fef1aaa7a65b",
+      "path": "a.py",
+      "start_line": 6,
+      "end_line": 6,
+      "resolution": "unknown",
+      "basis": "receiver_escaped"
+    }
+  ],
+  "schema_version": 4,
+  "binding": {
+    "project_id": "00000000-0000-0000-0000-000000000001",
+    "snapshot_id": "00000000-0000-0000-0000-000000000002",
+    "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "capabilities": [
+    "lexical_scopes",
+    "call_sites",
+    "import_declarations",
+    "same_module_direct_calls",
+    "import_bindings",
+    "cross_module_calls",
+    "symbol_references",
+    "local_receiver_bindings"
+  ],
+  "files": [
+    {
+      "path": "a.py",
+      "source_sha256": "704f79a437ac88300200a2da8522de8072244b9d20c2e85e309ee10b2cc06d0e",
+      "line_count": 6
+    }
+  ],
+  "scopes": [
+    {
+      "id": "file:a.py",
+      "path": "a.py",
+      "key": "<module>",
+      "parent_id": null,
+      "kind": "module",
+      "name": "<module>",
+      "start_line": 1,
+      "end_line": 6
+    },
+    {
+      "id": "class:a.py:C",
+      "path": "a.py",
+      "key": "<module>/C[1]",
+      "parent_id": "file:a.py",
+      "kind": "class",
+      "name": "C",
+      "start_line": 1,
+      "end_line": 6
+    },
+    {
+      "id": "method:a.py:C.work",
+      "path": "a.py",
+      "key": "<module>/C[1]/work[1]",
+      "parent_id": "class:a.py:C",
+      "kind": "method",
+      "name": "C.work",
+      "start_line": 2,
+      "end_line": 3
+    },
+    {
+      "id": "method:a.py:C.run",
+      "path": "a.py",
+      "key": "<module>/C[1]/run[1]",
+      "parent_id": "class:a.py:C",
+      "kind": "method",
+      "name": "C.run",
+      "start_line": 4,
+      "end_line": 6
+    }
+  ],
+  "call_sites": [
+    {
+      "id": "call:27c57ae69d6b33ebf32160e4d6ea4673ba24dd72947f10e1dbeadf9a078681ff",
+      "path": "a.py",
+      "start_line": 5,
+      "end_line": 5,
+      "col_offset": 8,
+      "end_col_offset": 26,
+      "expression": "sink",
+      "scope_id": "method:a.py:C.run",
+      "caller_id": "method:a.py:C.run",
+      "resolution": "unknown",
+      "basis": "name_not_bound_in_module",
+      "target_id": null,
+      "candidate_ids": [],
+      "candidate_count": 0,
+      "binding_chain": [],
+      "flow_chain": []
+    },
+    {
+      "id": "call:9430e04fc8263cb211c41517b96a55ed83135f2ebf8acb4180c4fef1aaa7a65b",
+      "path": "a.py",
+      "start_line": 6,
+      "end_line": 6,
+      "col_offset": 8,
+      "end_col_offset": 19,
+      "expression": "self.work",
+      "scope_id": "method:a.py:C.run",
+      "caller_id": "method:a.py:C.run",
+      "resolution": "unknown",
+      "basis": "receiver_escaped",
+      "target_id": null,
+      "candidate_ids": [],
+      "candidate_count": 0,
+      "binding_chain": [],
+      "flow_chain": []
+    }
+  ],
+  "import_declarations": [],
+  "producer": "pycode-a03c-v1",
+  "binding_facts": [
+    {
+      "path": "a.py",
+      "dynamic": false,
+      "blocked_names": [],
+      "scopes": [
+        {
+          "id": "file:a.py",
+          "bindings": {
+            "C": [
+              {
+                "kind": "definition",
+                "target": "class:a.py:C",
+                "conditional": false
+              }
+            ]
+          }
+        },
+        {
+          "id": "class:a.py:C",
+          "bindings": {
+            "run": [
+              {
+                "kind": "definition",
+                "target": "method:a.py:C.run",
+                "conditional": false
+              }
+            ],
+            "work": [
+              {
+                "kind": "definition",
+                "target": "method:a.py:C.work",
+                "conditional": false
+              }
+            ]
+          }
+        },
+        {
+          "id": "method:a.py:C.work",
+          "bindings": {
+            "self": [
+              {
+                "kind": "parameter",
+                "target": null,
+                "conditional": false
+              }
+            ]
+          }
+        },
+        {
+          "id": "method:a.py:C.run",
+          "bindings": {
+            "other": [
+              {
+                "kind": "parameter",
+                "target": null,
+                "conditional": false
+              }
+            ],
+            "self": [
+              {
+                "kind": "parameter",
+                "target": null,
+                "conditional": false
+              }
+            ]
+          }
+        }
+      ],
+      "definitions": [
+        {
+          "id": "class:a.py:C",
+          "conditional": false,
+          "decorated": false,
+          "dynamic_class": false
+        },
+        {
+          "id": "method:a.py:C.work",
+          "conditional": false,
+          "decorated": false,
+          "dynamic_class": false
+        },
+        {
+          "id": "method:a.py:C.run",
+          "conditional": false,
+          "decorated": false,
+          "dynamic_class": false
+        }
+      ]
+    }
+  ],
+  "flow_facts": [
+    {
+      "path": "a.py",
+      "assignments": [],
+      "mutations": [],
+      "escapes": [
+        {
+          "call_id": "call:27c57ae69d6b33ebf32160e4d6ea4673ba24dd72947f10e1dbeadf9a078681ff",
+          "names": [
+            "self"
+          ],
+          "scope_id": "method:a.py:C.run"
+        }
+      ],
+      "methods": [
+        {
+          "id": "method:a.py:C.work",
+          "receiver": "self",
+          "descriptor": "instance",
+          "simple_init": false
+        },
+        {
+          "id": "method:a.py:C.run",
+          "receiver": "self",
+          "descriptor": "instance",
+          "simple_init": false
+        }
+      ]
+    }
+  ]
+}

@@ -108,7 +108,7 @@ class _CodeGraphBuilder:
                           sorted(self.edges, key=lambda e:(e.source,e.target,e.type,e.site_id or '')),
                           schema_version=4, binding=asdict(self.binding) if self.binding is not None else None,
                           capabilities=(*CAPABILITIES,*BINDING_CAPABILITIES,*FLOW_CAPABILITIES), files=files, scopes=scopes, call_sites=calls,
-                          import_declarations=declarations, producer='pycode-a03c-v1',binding_facts=bindings,flow_facts=flows)
+                          import_declarations=declarations, producer='pycode-a03c-v2',binding_facts=bindings,flow_facts=flows)
         from pycode.graph_schema import validate_graph
         validate_graph(graph)
         return graph

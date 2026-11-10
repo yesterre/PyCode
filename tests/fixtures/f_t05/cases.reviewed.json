@@ -1,0 +1,1380 @@
+{
+  "version": 2,
+  "annotation_policy": "Source-based oracle review, not supported-feature policy. Eight originally uncertain cases have unique source targets and now count as recall misses. Original V1 and all raw results preserved. Eight genuinely uncertain cases added; no production changes during review.",
+  "cases": [
+    {
+      "id": "self",
+      "category": "basic",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self):\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 5,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "renamed-self",
+      "category": "basic",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(me):\n        me.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 5,
+          "column": 8,
+          "expression": "me.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "local-object",
+      "category": "basic",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\ndef run():\n    obj=C()\n    obj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/run[1]",
+          "line": 6,
+          "column": 4,
+          "expression": "obj.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "module-object",
+      "category": "basic",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\nobj=C()\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 5,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "self-alias",
+      "category": "alias",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self):\n        alias=self\n        alias.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 6,
+          "column": 8,
+          "expression": "alias.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "object-alias",
+      "category": "alias",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\ndef run():\n    obj=C()\n    alias=obj\n    alias.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/run[1]",
+          "line": 7,
+          "column": 4,
+          "expression": "alias.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "alias-chain",
+      "category": "alias",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\ndef run():\n    obj=C()\n    alias=obj\n    other=alias\n    other.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/run[1]",
+          "line": 8,
+          "column": 4,
+          "expression": "other.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "class-alias",
+      "category": "alias",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\nAlias=C\nobj=Alias()\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 6,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "annotated-object",
+      "category": "alias",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\ndef run():\n    obj: C=C()\n    obj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/run[1]",
+          "line": 6,
+          "column": 4,
+          "expression": "obj.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "homonym-c",
+      "category": "homonym",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\nclass D:\n    def work(self):\n        return 2\nobj=C()\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 8,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "homonym-d",
+      "category": "homonym",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\nclass D:\n    def work(self):\n        return 2\nobj=D()\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 8,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "static",
+          "target_id": "method:a.py:D.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "import-class",
+      "category": "cross_module",
+      "files": {
+        "a.py": "from service import C\ndef run():\n    obj=C()\n    obj.work()\n",
+        "service.py": "class C:\n    def work(self):\n        return 1\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/run[1]",
+          "line": 4,
+          "column": 4,
+          "expression": "obj.work",
+          "expected": "static",
+          "target_id": "method:service.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "import-module",
+      "category": "cross_module",
+      "files": {
+        "a.py": "import service as s\nobj=s.C()\nobj.work()\n",
+        "service.py": "class C:\n    def work(self):\n        return 1\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 3,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "static",
+          "target_id": "method:service.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "reexport-class",
+      "category": "cross_module",
+      "files": {
+        "a.py": "from public import C\nobj=C()\nobj.work()\n",
+        "service.py": "class C:\n    def work(self):\n        return 1\n",
+        "public.py": "from service import C\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 3,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "static",
+          "target_id": "method:service.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "import-function",
+      "category": "cross_module",
+      "files": {
+        "a.py": "from service import work as imported\nimported()\n",
+        "service.py": "def work():\n    pass\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 2,
+          "column": 0,
+          "expression": "imported",
+          "expected": "static",
+          "target_id": "func:service.py:work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "bound-method",
+      "category": "bound_method",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\nobj=C()\nfunc=obj.work\nfunc()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 6,
+          "column": 0,
+          "expression": "func",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "self-bound-method",
+      "category": "bound_method",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self):\n        func=self.work\n        func()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 6,
+          "column": 8,
+          "expression": "func",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "bound-method-alias",
+      "category": "bound_method",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\nobj=C()\nfunc=obj.work\nalias=func\nalias()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 7,
+          "column": 0,
+          "expression": "alias",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "static-method",
+      "category": "descriptor",
+      "files": {
+        "a.py": "class C:\n    @staticmethod\n    def work():\n        pass\nC.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 5,
+          "column": 0,
+          "expression": "C.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "class-method",
+      "category": "descriptor",
+      "files": {
+        "a.py": "class C:\n    @classmethod\n    def work(cls):\n        pass\nC.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 5,
+          "column": 0,
+          "expression": "C.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "class-receiver",
+      "category": "descriptor",
+      "files": {
+        "a.py": "class C:\n    @staticmethod\n    def work():\n        pass\n    @classmethod\n    def run(cls):\n        cls.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 7,
+          "column": 8,
+          "expression": "cls.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "instance-static",
+      "category": "descriptor",
+      "files": {
+        "a.py": "class C:\n    @staticmethod\n    def work():\n        pass\nobj=C()\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 6,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "field-instance",
+      "category": "basic",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\nclass Holder:\n    def __init__(self):\n        self.service=C()\n    def run(self):\n        self.service.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/Holder[1]/run[1]",
+          "line": 8,
+          "column": 8,
+          "expression": "self.service.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "field-alias",
+      "category": "alias",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\nclass Holder:\n    def __init__(self):\n        self.service=C()\n    def run(self):\n        alias=self.service\n        alias.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/Holder[1]/run[1]",
+          "line": 9,
+          "column": 8,
+          "expression": "alias.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "local-function-alias",
+      "category": "alias",
+      "files": {
+        "a.py": "def work():\n    pass\nfunc=work\nfunc()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 4,
+          "column": 0,
+          "expression": "func",
+          "expected": "static",
+          "target_id": "func:a.py:work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "import-method-alias",
+      "category": "cross_module",
+      "files": {
+        "a.py": "from service import C\nobj=C()\nfunc=obj.work\nfunc()\n",
+        "service.py": "class C:\n    def work(self):\n        return 1\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 4,
+          "column": 0,
+          "expression": "func",
+          "expected": "static",
+          "target_id": "method:service.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "simple-initializer",
+      "category": "basic",
+      "files": {
+        "a.py": "class C:\n    def __init__(self):\n        self.value=1\n    def work(self):\n        pass\nobj=C()\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 7,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "constructor-parameter",
+      "category": "basic",
+      "files": {
+        "a.py": "class C:\n    def __init__(self,value):\n        self.value=value\n    def work(self):\n        pass\nobj=C(1)\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 7,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed nominal definition; one receiver source, no visible dynamic override or object escape."
+        }
+      ]
+    },
+    {
+      "id": "self-is-none",
+      "category": "identity_projection",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self, other=None):\n        sink(self is None)\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 6,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Only booleans from passive name/constant identity comparisons reach the outer call; the instance never does. Remaining nominal safety checks still apply."
+        }
+      ]
+    },
+    {
+      "id": "self-is-not-none",
+      "category": "identity_projection",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self, other=None):\n        sink(self is not None)\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 6,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Only booleans from passive name/constant identity comparisons reach the outer call; the instance never does. Remaining nominal safety checks still apply."
+        }
+      ]
+    },
+    {
+      "id": "identity-chain",
+      "category": "identity_projection",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self, other=None):\n        sink(self is other is None)\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 6,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Only booleans from passive name/constant identity comparisons reach the outer call; the instance never does. Remaining nominal safety checks still apply."
+        }
+      ]
+    },
+    {
+      "id": "tuple-of-booleans",
+      "category": "identity_projection",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self, other=None):\n        sink((self is None, self is not other))\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 6,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Only booleans from passive name/constant identity comparisons reach the outer call; the instance never does. Remaining nominal safety checks still apply."
+        }
+      ]
+    },
+    {
+      "id": "list-of-booleans",
+      "category": "identity_projection",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self, other=None):\n        sink([self is None])\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 6,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Only booleans from passive name/constant identity comparisons reach the outer call; the instance never does. Remaining nominal safety checks still apply."
+        }
+      ]
+    },
+    {
+      "id": "dict-boolean-value",
+      "category": "identity_projection",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self, other=None):\n        sink({\"present\": self is not None})\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 6,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Only booleans from passive name/constant identity comparisons reach the outer call; the instance never does. Remaining nominal safety checks still apply."
+        }
+      ]
+    },
+    {
+      "id": "boolean-operator",
+      "category": "identity_projection",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self, other=None):\n        sink((self is None) or False)\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 6,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Only booleans from passive name/constant identity comparisons reach the outer call; the instance never does. Remaining nominal safety checks still apply."
+        }
+      ]
+    },
+    {
+      "id": "identity-in-conditional",
+      "category": "identity_projection",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self, other=None):\n        sink(1 if self is None else 2)\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 6,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Only booleans from passive name/constant identity comparisons reach the outer call; the instance never does. Remaining nominal safety checks still apply."
+        }
+      ]
+    },
+    {
+      "id": "alias-identity",
+      "category": "identity_projection",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self, other=None):\n        alias=self\n        sink(alias is None)\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 7,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Only booleans from passive name/constant identity comparisons reach the outer call; the instance never does. Remaining nominal safety checks still apply."
+        }
+      ]
+    },
+    {
+      "id": "source-identity-alias-call",
+      "category": "identity_projection",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self, other=None):\n        alias=self\n        sink(self is None)\n        alias.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 7,
+          "column": 8,
+          "expression": "alias.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Only booleans from passive name/constant identity comparisons reach the outer call; the instance never does. Remaining nominal safety checks still apply."
+        }
+      ]
+    },
+    {
+      "id": "keyword-identity",
+      "category": "identity_projection",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self, other=None):\n        sink(flag=self is None)\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 6,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Only booleans from passive name/constant identity comparisons reach the outer call; the instance never does. Remaining nominal safety checks still apply."
+        }
+      ]
+    },
+    {
+      "id": "nested-pure-projection",
+      "category": "identity_projection",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self, other=None):\n        sink(bool(self is None))\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 6,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Only booleans from passive name/constant identity comparisons reach the outer call; the instance never does. Remaining nominal safety checks still apply."
+        }
+      ]
+    },
+    {
+      "id": "parameter",
+      "category": "uncertain_receiver",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\ndef run(obj):\n    obj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/run[1]",
+          "line": 5,
+          "column": 4,
+          "expression": "obj.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "Arbitrary parameter may have multiple runtime types."
+        }
+      ]
+    },
+    {
+      "id": "factory",
+      "category": "uncertain_receiver",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\nobj=factory()\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 5,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "Factory return type is not proved."
+        }
+      ]
+    },
+    {
+      "id": "conditional",
+      "category": "uncertain_receiver",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\nif flag:\n    obj=C()\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 6,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "If the call reaches a bound receiver, its only possible source is C; possible NameError is not a second callable target."
+        }
+      ]
+    },
+    {
+      "id": "multiple-receivers",
+      "category": "uncertain_receiver",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\nclass D:\n    def work(self):\n        return 2\nobj=C()\nobj=D()\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 9,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "static",
+          "target_id": "method:a.py:D.work",
+          "rationale": "The final unconditional assignment is D(); source has no branch or escape, so D.work is unique."
+        }
+      ]
+    },
+    {
+      "id": "getattr",
+      "category": "dynamic",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\nobj=C()\ngetattr(obj,\"work\")()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 5,
+          "column": 0,
+          "expression": "getattr(obj,\"work\")",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed fixture uses unshadowed builtin getattr with literal work and a hook-free exact C instance."
+        }
+      ]
+    },
+    {
+      "id": "setattr",
+      "category": "dynamic",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\nobj=C()\nsetattr(obj,\"work\",replacement)\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 6,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "Dynamic replacement can change target."
+        }
+      ]
+    },
+    {
+      "id": "instance-write",
+      "category": "dynamic",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\nobj=C()\nobj.work=replacement\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 6,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "Visible instance method replacement."
+        }
+      ]
+    },
+    {
+      "id": "class-write",
+      "category": "dynamic",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\nC.work=replacement\nobj=C()\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 6,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "Visible class method replacement."
+        }
+      ]
+    },
+    {
+      "id": "direct-escape",
+      "category": "escape",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\nobj=C()\nsink(obj)\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 6,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "Unknown code can mutate receiver."
+        }
+      ]
+    },
+    {
+      "id": "alias-escape",
+      "category": "escape",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\nobj=C()\nalias=obj\nsink(alias)\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 7,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "Escaped alias can mutate original receiver."
+        }
+      ]
+    },
+    {
+      "id": "closure-escape",
+      "category": "escape",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self):\n        def inner():\n            sink(self)\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 7,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "The local closure is never called, returned or passed; its dead sink(self) does not actually escape the receiver."
+        }
+      ]
+    },
+    {
+      "id": "closure-receiver",
+      "category": "escape",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self):\n        def inner():\n            self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]/inner[1]",
+          "line": 6,
+          "column": 12,
+          "expression": "self.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed fixture has only C and no override; nested function captures that same receiver, although current flow IR does not support this proof."
+        }
+      ]
+    },
+    {
+      "id": "inherit",
+      "category": "inheritance",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\nclass Child(C):\n    pass\nobj=Child()\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 7,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Exact Child instance inherits work from the single fixed hook-free C base; unsupported MRO analysis is a recall miss."
+        }
+      ]
+    },
+    {
+      "id": "override",
+      "category": "inheritance",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\nclass Child(C):\n    def work(self):\n        pass\nobj=Child()\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 8,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "static",
+          "target_id": "method:a.py:Child.work",
+          "rationale": "Exact Child instance defines its own work; source target is unique despite current dynamic_class rejection."
+        }
+      ]
+    },
+    {
+      "id": "super",
+      "category": "inheritance",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\nclass Child(C):\n    def run(self):\n        super().work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/Child[1]/run[1]",
+          "line": 6,
+          "column": 8,
+          "expression": "super().work",
+          "expected": "static",
+          "target_id": "method:a.py:C.work",
+          "rationale": "Closed fixture has a single fixed Child(C) hierarchy; zero-argument super in Child.run reaches C.work."
+        }
+      ]
+    },
+    {
+      "id": "property",
+      "category": "descriptor",
+      "files": {
+        "a.py": "class C:\n    @property\n    def work(self):\n        return factory\nobj=C()\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 6,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "Property result is dynamic, not the getter method call target."
+        }
+      ]
+    },
+    {
+      "id": "custom-descriptor",
+      "category": "descriptor",
+      "files": {
+        "a.py": "class C:\n    work=descriptor\nobj=C()\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 4,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "Unknown descriptor may return any callable."
+        }
+      ]
+    },
+    {
+      "id": "getattribute",
+      "category": "descriptor",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def __getattribute__(self,name):\n        return replacement\nobj=C()\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 7,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "Dynamic attribute hooks invalidate nominal lookup."
+        }
+      ]
+    },
+    {
+      "id": "equality-not-identity",
+      "category": "projection_negative",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self):\n        sink(self == None)\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 6,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "Equality can execute arbitrary __eq__; no purity proof."
+        }
+      ]
+    },
+    {
+      "id": "attribute-identity",
+      "category": "projection_negative",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self):\n        sink(self.value is None)\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 6,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "Attribute may invoke a descriptor; passive operand proof fails."
+        }
+      ]
+    },
+    {
+      "id": "nested-escape",
+      "category": "projection_negative",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self):\n        sink(mutate(self) is None)\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 6,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "Nested call still receives the actual receiver."
+        }
+      ]
+    },
+    {
+      "id": "boolean-returns-object",
+      "category": "projection_negative",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self):\n        sink((self is None) or self)\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 6,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "Boolean operator can pass the receiver itself."
+        }
+      ]
+    },
+    {
+      "id": "conditional-returns-object",
+      "category": "projection_negative",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        return 1\n    def run(self):\n        sink(self if self is not None else None)\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 6,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "Conditional result can be the actual receiver."
+        }
+      ]
+    },
+    {
+      "id": "duplicate-definition",
+      "category": "homonym",
+      "files": {
+        "a.py": "def work():\n    pass\ndef work():\n    pass\nwork()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 5,
+          "column": 0,
+          "expression": "work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "Multiple lexical definitions must stay ambiguous."
+        }
+      ]
+    },
+    {
+      "id": "conditional-two-types",
+      "category": "uncertain_receiver",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        pass\nclass D:\n    def work(self):\n        pass\nobj=C() if flag else D()\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 8,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "The flag selects different classes with different methods."
+        }
+      ]
+    },
+    {
+      "id": "branch-two-types",
+      "category": "uncertain_receiver",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        pass\nclass D:\n    def work(self):\n        pass\nif flag:\n    obj=C()\nelse:\n    obj=D()\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 11,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "Mutually exclusive branches select different targets."
+        }
+      ]
+    },
+    {
+      "id": "runtime-getattr-name",
+      "category": "dynamic",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        pass\nobj=C()\ngetattr(obj,name)()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 5,
+          "column": 0,
+          "expression": "getattr(obj,name)",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "Attribute name is runtime data, not a fixed method name."
+        }
+      ]
+    },
+    {
+      "id": "invoked-closure-escape",
+      "category": "escape",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        pass\n    def run(self):\n        def inner():\n            sink(self)\n        inner()\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 8,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "The closure actually runs and passes self to unknown mutating code."
+        }
+      ]
+    },
+    {
+      "id": "passed-closure",
+      "category": "escape",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        pass\n    def run(self):\n        sink(lambda: self)\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 6,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "The callee can execute the lambda, obtain self and mutate work."
+        }
+      ]
+    },
+    {
+      "id": "escaped-class",
+      "category": "escape",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        pass\nsink(C)\nobj=C()\nobj.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 6,
+          "column": 0,
+          "expression": "obj.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "Unknown callee can replace C.work before the method call."
+        }
+      ]
+    },
+    {
+      "id": "attribute-possible-alias",
+      "category": "escape",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        pass\n    def run(self):\n        sink(self.value)\n        self.work()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>/C[1]/run[1]",
+          "line": 6,
+          "column": 8,
+          "expression": "self.work",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "value may alias self or invoke a descriptor; no object reachability proof."
+        }
+      ]
+    },
+    {
+      "id": "bound-factory-result",
+      "category": "bound_method",
+      "files": {
+        "a.py": "class C:\n    def work(self):\n        pass\nobj=factory()\nfunc=obj.work\nfunc()\n"
+      },
+      "labels": [
+        {
+          "path": "a.py",
+          "scope": "<module>",
+          "line": 6,
+          "column": 0,
+          "expression": "func",
+          "expected": "uncertain",
+          "target_id": null,
+          "rationale": "Unknown factory result supplies the bound callable; no unique class."
+        }
+      ]
+    }
+  ]
+}
