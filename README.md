@@ -1,248 +1,250 @@
 # PyCode
 
-> 面向 Git Repository 的 AI 代码分析 Agent：把确定版本的代码转换为可检索索引与 Code Graph，再基于证据完成仓库问答、影响分析和多步骤 Agent Task。
+**v3.0 · 面向 Python 代码仓库的 AI 代码理解与分析系统**
 
-PyCode 用于理解一个现有代码库，而不是把整个仓库直接塞进一次 LLM 请求。系统从公共 HTTPS Git URL 获取 Repository，将分析固定到明确的 commit，构建 Python 代码索引和 Code Graph，并通过 React Web UI 提供项目管理、分析、Trace、历史记录与图谱查询。
+PyCode 将静态结构化分析、Code Graph、Hybrid RAG 和 Agent 执行机制结合起来，为仓库问答、调用关系查询和影响分析提供可追溯的代码证据。适合阅读陌生项目、定位实现、梳理依赖，以及分析修改可能涉及的文件。
 
-当前版本包含完整的 Web/API/Worker 链路，也保留可独立使用的 Python Core 和 CLI。推荐使用 Docker Compose 启动完整系统。
+系统先把确定 Git commit 的源码构建为 Index、Graph 和 Chunk，再围绕问题选择证据交给模型，控制上下文范围并保留来源。React Web UI 提供项目管理、统一问答、执行 Trace、分析历史和局部图谱；Python Core 与 CLI 也可独立使用。
 
-## 项目简介
+[核心功能](#核心功能) · [v3.0 主要升级](#v30-主要升级) · [系统架构](#系统架构) · [关键技术设计](#关键技术设计) · [Web 功能与使用流程](#web-功能与使用流程) · [Docker 快速开始](#docker-compose-快速开始) · [本地开发](#本地开发) · [技术栈与项目结构](#技术栈与项目结构) · [测试与质量保障](#测试与质量保障) · [能力边界](#当前能力边界) · [后续方向](#后续方向)
 
-代码库分析经常遇到两个问题：上下文太大，以及结论和代码版本无法对应。PyCode 在 LLM 前增加了一层由项目自己管理的分析基础设施：
+## 核心功能
 
-- **Snapshot** 将一次索引和分析绑定到确定的 Git commit。
-- **Index** 从 Python AST 中提取文件、class、function、method 等结构。
-- **Code Graph** 记录包含、import、call 等关系。
-- **Retrieval 与 Evidence** 只选择当前问题需要的上下文，并在回答中保留证据。
-- **Agent Runtime** 负责规划、工具调用、多轮决策、项目级 Memory 与 Trace。
-
-Snapshot 保存 commit identity、索引摘要、Code Graph 与 Chunk Artifact；Embedding 产物独立发布并校验。执行分析前，系统会将 Repository checkout 到对应 commit，并校验该 Snapshot 的 Artifact。这样历史结果可以回到产生它的代码版本；这不是为每次任务创建独立 Git worktree。
-
-## 🚀 核心功能
-
-| 功能 | 当前实现 |
+| 能力 | 当前实现 |
 | --- | --- |
-| Repository 管理 | 登记公共 HTTPS Git URL 与可选 branch；在受控 Workspace 中 clone/fetch，并解析 exact commit。 |
-| Index 与 Code Graph | 分析 Python 文件，构建 file/class/function/method 节点以及 import、call 等关系；Artifact 与 Snapshot 绑定。 |
-| 统一问答 | Web 使用单一提问入口，异步返回 Run/Task 标识；系统按问题选择 Fast 或 Agent，并保存结果和证据。 |
-| Impact Analysis | 文件影响分析作为内部检索意图保留；旧同步 `/impact` 接口仍接受相对 `file_path`。 |
-| Agent 执行 | 在既有 Celery Worker 中规划、取证、观察后继续调用工具；证据不足的 Fast 问题可升级一次并复用首轮 Evidence Pack。 |
-| Trace 与历史 | 通过认证 SSE 展示实际发生的 LLM、工具、Context 和 Timeline；Fast 不伪造 Plan/工具事件，终态结果与 Trace 可回放。历史保留统一问答及旧入口记录。 |
+| Repository 与项目管理 | 登记公共 HTTPS Git URL 和可选分支；按 Project 隔离 Workspace，支持索引、Snapshot 查询及项目归档/恢复。 |
+| Python 结构化分析 | 从 AST 提取文件、类、函数、方法、作用域、导入和调用位置，构建 Index 与 Code Graph。 |
+| Hybrid RAG | 融合 Keyword、可选 Vector 和静态 Graph；按完整源码单元组织 Evidence Pack，保留文件、行号、符号和版本来源。 |
+| 统一问答 | 服务端规则路由 Fast/Agent；Fast 证据不足时可升级一次到 Agent，并复用首轮 Evidence Pack。 |
+| Agent 执行 | 多轮规划、工具调用、观察与停止控制；共享执行预算，支持受控 Context 和项目级 Memory。 |
+| Trace 与历史 | 认证 SSE 展示实际 LLM、工具、Context 和 Timeline；保存终态结果与 Trace，支持重新查询和历史回放。 |
+| Web 工作台 | 中文界面提供项目、统一问答、分析历史和 Cytoscape 局部图谱，展示代码证据及静态关系边界。 |
+| 后端工程 | JWT 认证、资源归属校验、异步任务、幂等提交、限流、执行租约与恢复、健康检查和可选指标端点。 |
+| 容器部署 | Docker Compose 编排 PostgreSQL、Redis、迁移、API、Worker、Beat 和 Frontend，保留持久化数据。 |
 
-Web 图谱接口和页面按符号或精确文件路径查询局部关系图，使用 Cytoscape 展示，避免一次向浏览器传输完整图谱。
+仓库导入与索引不安装目标项目依赖，也不执行其程序。Web Agent 以代码理解和只读分析为主；静态影响分析、实际运行测试和自动修改代码是不同能力。
 
-## 🧠 Agent 工作方式
+## v3.0 主要升级
 
-Web 的统一问答提交到 `POST /api/v1/projects/{project_id}/questions`，返回 HTTP 202 和 `run_id`、`task_id`、`status`。用户无需选择执行模式：服务端规则路由决定 Fast 或 Agent，Worker 使用提交时固定的已授权 ready Snapshot。Project 后来切换当前 Snapshot，不会改写已接受任务的绑定；工具参数不能替换可信 Project/Snapshot/Commit。
+v1.0 建立了静态索引、图谱和 Agent Core；v2.0 将其接入 Web/API、持久化、Worker、实时 Trace 与 Docker。v3.0 在这些已有链路上加强后端治理、统一问答和证据一致性。
 
-Fast 复用统一 Retriever 和 Evidence Pack，证据充分时直接回答；预检发现证据不足时可升级一次到 Agent，并复用首轮 Pack。Agent 使用原有多轮 Runtime，过程如下：
+- **后端工程**：围绕 PostgreSQL 事务和资源归属管理 Project、Snapshot、Run 与 Task；补充 JWT、用户级限流与并发任务上限、幂等提交、队列发布补偿、执行租约/心跳和过期任务协调。配置预检、就绪检查、结构化日志及可选 `/metrics` 支持运行诊断。
+- **Agent 系统**：统一异步问答入口，保留兼容 API；规则路由与证据充分性预检连接 Fast/Agent。执行预算覆盖轮数、工具、模型、查询 Embedding 和时长；Context 按完整单元选择，Memory 按来源及 Snapshot 适用性过滤，Trace 记录实际执行过程。
+- **Code Graph 与 RAG**：Snapshot、Chunk 与 Graph 绑定；Schema v4 记录作用域、部分词法/导入绑定及受限实例来源。Keyword/Vector/Graph 共享 Retriever，通过 Evidence Pack 统一证据范围、去重和预算，保留关系的解析状态与依据。
 
-```text
-User Task
-    │
-    ▼
-固定已授权 ready Snapshot
-    │
-    ▼
-┌──────────────────────────── Agent Harness ────────────────────────────┐
-│ Snapshot Boundary · Planner · Context/Memory · Tool Registry · Policy │
-│ Hooks · Trace/Todo · Evidence · Loop/Stop Control                     │
-│                                                                       │
-│   ┌──────────────────────── Agent Loop ───────────────────────────┐    │
-│   │ Plan/State → Context → LLM Decision → Tool Call → Observation │    │
-│   │      ▲                                              │         │    │
-│   │      └────────── continue / next action ─────────────┘         │    │
-│   └─────────────────────────────┬─────────────────────────────────┘    │
-│                                 │ complete / failed / stop             │
-└─────────────────────────────────┼──────────────────────────────────────┘
-                                  ▼
-                         Final Result + Trace
+近期两个专项的改动范围：
+
+- **F-T05-01**：对仅由名称/常量组成的 `is/is not` 比较，避免将传出的布尔结果误判成接收者逃逸，恢复这类受限场景的静态绑定。固定真实仓库评测没有显示绑定质量提升，已有开放实例分派问题仍存在。见[专项回归](tests/test_f_t05_graph_resolution.py)。
+- **Q-T03-01**：Fast 证据渲染保留已有 `graph_path` 的 `resolution`、`basis` 和图谱出处，缺失证明明确标记不可用，并保留 `runtime=unverified`。改动未改变候选、选中源码或 Graph，不能据此推导引用语义精度或最终答案正确率提升。见[证据回归](tests/test_q_t03_evidence_quality.py)。
+
+Reranking、MMR 和新的 AST 证据精排方案属于后续方向。
+
+## 系统架构
+
+```mermaid
+flowchart TD
+    Browser[浏览器 / React] --> Nginx[Nginx :8080]
+    Nginx -->|API / 认证 SSE| API[FastAPI :8000]
+    API -->|业务状态 / 结果 / 终态 Trace| DB[(PostgreSQL)]
+    API -->|任务投递 / 协调 / 实时 Trace| Redis[(Redis)]
+    Redis --> Worker[Celery Worker]
+    Beat[Celery Beat] -->|发布补偿 / 过期任务协调| Redis
+    Worker --> DB
+    API --> Workspace[共享 Workspace / Snapshot Artifact]
+    Worker --> Workspace
+    API --> Core[PyCode Core]
+    Worker --> Core
+    Core --> LLM[配置的 LLM / 可选 Embedding 服务]
 ```
 
-Agent 可按计划使用已注册的只读分析工具，例如：
+业务数据流为：**Git Repository → Snapshot（Index / Graph / Chunk）→ Retrieval / Evidence → Fast / Agent → Result / Trace**。
 
-- `retrieve_context`：根据问题和意图检索相关代码上下文。
-- `query_graph`：查询定义、imports、imported-by、calls、callers/callees 或入口候选，并保留静态解析边界。
-- `search_code`：在项目文件中搜索文本或正则表达式。
-- `read_file`：读取 Repository 内的 UTF-8 文本文件及指定行范围。
+FastAPI 负责认证、授权、提交和查询；统一问答、基础索引与语义索引由 Worker 执行，兼容同步分析仍在 API 路径中保留。PostgreSQL 是任务业务状态和终态记录的持久化来源；Redis 承担消息队列、项目操作协调和有界实时 Trace。API 与 Worker 共享源码和产物目录，Beat 定期触发恢复协调。
 
-Core 还包含 Git diff、测试运行和内部状态工具，但是否可用由执行策略和任务授权控制。Web Agent 默认执行分析，不把它描述为能够任意修改代码的自主软件工程师。
+## 关键技术设计
 
-Keyword、Vector、Graph 通过同一 Retriever 选择证据；Vector 仅查询匹配当前绑定及模型配置的已发布产物，Query 不重建索引。精确命中和已有结构化意图保留原策略，静态关系不代表运行时调用事实。
+### 预构建索引与版本一致性
 
-Agent 的轮数、工具、模型、查询 Embedding 和时长限制共用一次执行预算；完整模型输入另按保守 UTF-8 字节上界估算。进入 Prompt 的证据/工具输出以完整单元选择，超预算会明确舍弃并记录原因，不能把不完整内容伪称为整个定义。估算不是服务端计费 Token，累计输入也不是单次请求上限。
+预先解析 AST 和构建图谱，让后续问题复用结构信息，减少反复扫描。分析提交先授权并固定 ready Snapshot；已接受任务保持原 Snapshot/Commit，不跟随 Project 后来的版本切换。
 
-Memory 位于当前 Project/Repository Workspace 的 `.pclens/memory`。用户明确声明的项目背景/偏好、代码派生记录和未验证模型推断具有不同来源与适用范围；旧 Snapshot 的代码事实不能直接当作当前事实，Memory 不能替代当前源码。生命周期包含去重、冲突、失效及撤回，自动提取不能复活适用的撤回记录。它不是跨 Project 的用户画像或 Chat Conversation Memory，切换 Snapshot/归档不会自动清空它；旧未知来源也不会自动升级成可信事实。
+Snapshot Artifact 通过 Manifest、内容哈希和 Project/Snapshot/Commit 绑定校验；Graph 与 Chunk 的源码、符号及范围也必须一致。执行前将受控 Repository checkout 到对应 commit，由项目锁协调共享 Workspace。它并非每次任务独立创建 Git worktree。
 
-兼容入口继续保留，语义分别为：
+Graph Schema 与 Snapshot Manifest 分别版本化。旧 ready Snapshot 按原能力兼容读取，服务升级或对同一 commit 再索引不保证原地升级 Graph；不能手改 Manifest 或删除旧产物绕过一致性检查。详见[部署与已有数据说明](backend/DEPLOYMENT.md#agent-检索与现有数据)。
 
-| API | 执行方式 |
+### Hybrid RAG 与 Evidence Pack
+
+[统一 Retriever](pycode/retriever.py) 保留精确文件/符号命中及已有结构化意图策略；普通 Hybrid 查询通过 RRF 融合关键词、可用向量和有界静态图扩展。精确匹配可跳过向量查询，每个问题不一定使用全部通道。
+
+[Evidence Pack](pycode/evidence_pack.py) 按完整文件/符号源码选择证据，检查绑定、重复、重叠与预算；超限时整项舍弃并记录原因。Fast 渲染和 Agent 工具复用同一证据结构，图谱出处与实际交付源码范围分开表达。引用地址和源码一致性校验不等于自然语言结论已被证明。
+
+Embedding 独立发布并验证模型、维度和内容哈希；查询只读匹配当前绑定的产物，不建索引或修复。Vector 不可用时带诊断降级到可用 Keyword/静态 Graph，语义索引失败不撤销基础 Snapshot 的 ready 状态。
+
+### Fast、Agent、Context 与 Memory
+
+[规则路由与预检](pycode/question.py) 将明确目标或简单定位类问题交给 Fast，将跨模块、多步分析等交给 Agent。Fast 先检查证据充分性，需要升级时复用首轮 Pack。
+
+Agent 按“规划/状态 → Context → 模型决策 → 工具 → 观察”循环，使用 `retrieve_context`、`query_graph`、`search_code`、`read_file` 等工具。Policy 约束工具执行，服务端可信绑定不能被模型工具参数替换；Core 中的测试工具需要显式授权，不表示 Web 会执行目标仓库测试。
+
+一次执行共享预算，完整模型输入另受 Context 上限约束；证据和工具输出按完整单元选择或明确舍弃。相关“Token”字段使用保守 UTF-8 字节上界估算，不能当作模型计费 Token 或线上成本结论。
+
+Memory 保存在项目 Workspace 的 `.pclens/memory`。用户背景/偏好、代码派生事实和未验证模型提示分别处理，支持去重、冲突、失效和撤回；旧 Snapshot 的代码事实不能直接用于当前版本。Memory 不替代源码，也不是跨项目用户画像或多轮聊天记录；切换 Snapshot 或归档不自动清空它。
+
+### 异步任务、恢复与资源隔离
+
+提交在事务中持久化 Run/Task，再投递 Celery；幂等键避免重复创建，Beat 协调已入库但未成功投递的任务。执行使用 PostgreSQL 租约/心跳及项目锁；过期任务按执行阶段处理，已进入 Agent Core 的任务不会被盲目整轮重放。
+
+Project、Snapshot、Run、Task、Trace 和 SSE 按项目 owner 校验归属。软归档阻止新工作，已接受任务保持原绑定与恢复语义。细节见[后端部署说明](backend/DEPLOYMENT.md)。
+
+## Web 功能与使用流程
+
+| 页面/区域 | 使用方式 |
 | --- | --- |
-| `POST /api/v1/projects/{id}/questions` | 统一异步提交，服务端路由与证据不足升级。 |
-| `POST /api/v1/projects/{id}/ask`、`POST /api/v1/projects/{id}/impact` | 原同步分析接口，不自动变成统一异步任务。 |
-| `POST /api/v1/agent-runs` | 原异步 Agent 入口，继续执行 Agent Runtime。 |
+| Projects | 创建项目，查看仓库、分支、当前 Snapshot 和状态，归档/恢复项目。 |
+| Project Workspace | 提交索引，在统一提问框输入问题，查看 Run/Task 状态、Answer 和 Evidence。 |
+| Workspace 内的 Trace | 查看实时/历史 Timeline、Plan、LLM Activities、Tool Calls、Context 和最终结果；Fast 只展示实际发生的事件。 |
+| Analysis History | 回看独立的成功分析记录；旧文本缺少结构化证据时不补造出处。 |
+| Code Graph | 按符号或精确文件路径查询局部图谱，筛选节点类型并查看详情。 |
 
-这些接口、结果查询与 Trace/SSE 都遵守 Project owner 授权。软归档阻止新工作，已接受任务仍按原绑定及恢复规则执行。
+首次使用：**注册/登录 → 创建公共 HTTPS 仓库项目 → 构建索引 → 等待基础 ready → 提问 → 查看结果、证据与 Trace**。语义索引状态独立，可通过 Snapshot 详情 API 查询。影响分析可在问题正文说明相对文件路径与修改意图。
 
-## 🏗️ 系统架构
+Analysis History 是独立分析记录，不提供多轮 Conversation 语义。
 
-```text
-Browser
-   │
-   ▼
-React + TypeScript ──build──▶ Nginx :8080
-                                  │ /api + SSE
-                                  ▼
-                             FastAPI :8000
-                              │    │
-                  business    │    └────────▶ Redis
-                    state     │                 │ queue / live trace
-                              ▼                 ▼
-                         PostgreSQL       Celery Worker
-                                              │
-                                              ▼
-                                      Shared Workspace
-                                              │
-                         ┌────────────────────┼───────────────────┐
-                         ▼                    ▼                   ▼
-                    Git Repository       Snapshot/Artifact   PyCode Agent Core
-                                                                  │
-                                                                  ▼
-                                                                 LLM
+## Docker Compose 快速开始
 
-Celery Beat ──▶ queued/stale task reconciliation ──▶ Worker
-```
+### 1. 获取源码并创建配置
 
-- FastAPI 负责 Project、Snapshot、统一异步问答、兼容同步分析、Agent Run、Trace 和任务状态 API。
-- PostgreSQL 是 Project、Snapshot、Agent Run、Background Task 与终态 Trace 的持久化来源。
-- Redis 用作 Celery broker、项目操作协调和有界实时 Trace stream。
-- Backend 与 Worker 共享 Workspace；Worker 执行索引、独立语义索引任务及统一问答的 Fast/Agent 路径。
-- Celery Beat 定期触发 queued publish 与 stale execution 的恢复协调。
-
-## 🖥️ Web 功能
-
-React Web UI 使用中文界面，主要包含：
-
-| 页面 | 能力 |
-| --- | --- |
-| Projects | 创建和浏览 Project，查看 Repository、branch、状态与当前 Snapshot。 |
-| Project Workspace | 构建索引；通过单一提问框提交问题，查看执行状态、Answer 和可折叠 Evidence。 |
-| Agent Trace | 查看实时/历史 Timeline、Plan、LLM Activities、Tool Calls、Context 和最终 Result。 |
-| Analysis History | 按时间查看统一问答与兼容入口的成功结果；历史为空的结构化元数据不会从旧文本中伪造证据。 |
-| Code Graph | 按符号或文件查询局部图谱，筛选节点类型并查看节点详情。 |
-
-Analysis History 中的每一项都是独立分析记录，不是多轮对话线程。
-
-## 📦 快速开始
-
-### Docker Compose（推荐）
-
-需要 Docker Engine（或 Docker Desktop）及 Docker Compose plugin。
-
-当前后端的配置预检、就绪探针、初始化与升级/回滚步骤见[后端部署说明](backend/DEPLOYMENT.md)。请先检出要部署的目标版本，下面的复制操作不要覆盖已有 `.env`。
+需要 Git、Docker Engine 或 Docker Desktop，以及支持 `--wait` 的 Docker Compose plugin。仓库默认分支为 `v3.0`，普通 Clone 即取得该分支：
 
 ```bash
 git clone https://github.com/yesterre/PyCode.git
 cd PyCode
-# 先检出要部署的固定版本/提交，再继续配置与构建。
-cp .env.example .env
 ```
 
-PowerShell 中复制配置文件：
+Linux/macOS 创建配置（保留已有文件）：
+
+```bash
+cp -n .env.example .env
+```
+
+Windows PowerShell：
 
 ```powershell
-Copy-Item .env.example .env
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
-编辑 `.env`，至少配置数据库密码和随机 JWT 密钥；LLM 相关变量只在启用问答/Agent 时需要。不要提交真实密码或 API Key。
+### 2. 编辑配置
 
-```dotenv
-POSTGRES_USER=pycode
-POSTGRES_PASSWORD=replace-with-a-url-safe-password
-POSTGRES_DB=pycode
-PYCODE_JWT_SECRET=replace-with-a-generated-secret-of-at-least-32-bytes
+编辑 `.env`；不要提交真实密码、API Key 或将密钥放入 `VITE_*`。模板中的数据库占位密码与空 JWT 密钥必须替换。
 
-OPENAI_API_KEY=replace-with-your-api-key
-OPENAI_MODEL=your-model
-OPENAI_BASE_URL=
-OPENAI_API_TYPE=responses
-```
+| 配置 | 要求 |
+| --- | --- |
+| `POSTGRES_USER`、`POSTGRES_DB` | 必填；可保留模板中的 `pycode`。 |
+| `POSTGRES_PASSWORD` | 必须替换为真实 URL-safe 密码；Compose 同时将它用于 PostgreSQL 初始化和数据库 URL。 |
+| `PYCODE_JWT_SECRET` | 必填，至少 32 字节的随机密钥；仅支持 `HS256`。 |
+| `OPENAI_API_KEY`、`OPENAI_MODEL` | 问答/Agent 需要有效配置；元数据、索引和健康检查不需要模型 Key。 |
+| `OPENAI_BASE_URL`、`OPENAI_API_TYPE` | 使用自定义兼容服务时设置地址；不支持 Responses API 的服务使用 `chat`，默认类型为 `responses`。 |
+| `PYCODE_EMBEDDING_*` | 可选，默认关闭；与 LLM 凭据独立。启用前填写 Provider、API Key、Base URL 和 Model。 |
 
-`POSTGRES_PASSWORD` 会同时进入 PostgreSQL 初始化配置和容器内的 SQLAlchemy URL，请使用 URL-safe 值。使用不支持 Responses API 的 OpenAI-compatible provider 时，将 `OPENAI_API_TYPE` 改为 `chat`，并填写相应的 `OPENAI_BASE_URL`。
+Embedding 当前适配 `tencent_tokenhub`，支持的模型为 `kinfra-text-embedding-0.6b` 和 `kinfra-text-embedding-4b`；配置模板提供完整变量。开启 `PYCODE_EMBEDDING_ENABLED=true` 后，基础索引成功可触发语义索引，代码片段和查询文本可能发送到所配服务并产生费用。
 
-启动完整系统：
+`PYCODE_RETRIEVAL_MODE` 未设置时代码默认 `keyword`，模板显式选择 `hybrid`；Embedding 关闭时仍可使用关键词与静态图证据。高级超时、预算、限流、租约和观测配置见 [`.env.example`](.env.example)，不要独立随意缩短租约/锁超时。
+
+Compose 覆盖容器内的 `DATABASE_URL`、`REDIS_URL` 和 `PYCODE_WORKSPACE_ROOT`，分别指向内部服务与共享卷；无需将本地开发 URL 手改为容器地址。已有 PostgreSQL 卷不会因修改 `POSTGRES_PASSWORD` 自动更改密码。
+
+### 3. 构建、启动与检查
+
+在项目根目录执行：
 
 ```bash
-docker compose up --build -d
+docker compose config --quiet
+docker compose up --build -d --wait
+docker compose ps
+docker compose logs --tail=100 migrate backend worker
 ```
 
-启动后访问：
+配置校验使用 `--quiet`，避免将展开后的凭据输出到日志。容器入口还有角色配置预检。默认共七个服务：`postgres`、`redis`、一次性 `migrate`、`backend`、`worker`、`beat`、`frontend`。
+
+首次空库初始化与后续迁移均由 `migrate` 自动运行 `alembic upgrade head`：PostgreSQL healthy → 迁移成功，且 Redis healthy → Backend/Worker/Beat 启动 → Backend healthy → Frontend 启动。`migrate` 成功退出是正常状态，迁移失败不会绕过条件启动应用。
+
+默认入口：
 
 - Web UI：<http://127.0.0.1:8080>
-- Backend Swagger：<http://127.0.0.1:8000/docs>
-- Backend health：<http://127.0.0.1:8000/health>
-- Backend readiness：<http://127.0.0.1:8000/ready>（配置、迁移版本和 Redis 就绪）
+- Swagger：<http://127.0.0.1:8000/docs>
+- 进程存活：<http://127.0.0.1:8000/health>
+- 就绪检查：<http://127.0.0.1:8000/ready>（认证配置、数据库迁移版本、Redis；不请求 Git/LLM）
 
-Compose 会先等待 PostgreSQL healthy，再运行 `alembic upgrade head`；Migration 成功后启动 Backend、Worker、Beat 和 Frontend。PostgreSQL、Redis 与 Workspace 分别使用 named volume。
+端口可通过 `PYCODE_WEB_PORT`、`PYCODE_API_PORT` 调整，默认仅绑定本机 `127.0.0.1`；PostgreSQL 和 Redis 不发布宿主端口。对外服务需另行设置受控入口。
 
-常用操作：
+### 4. 认证与访问
+
+Web 支持注册和登录。API 提供 `POST /api/v1/auth/register`、`POST /api/v1/auth/login`、`GET /api/v1/auth/me`，注册/登录 JSON 使用 `account_name`、`password`；注册密码为 6～128 个字符，不要求字符组合，不自动修剪密码空格或转换大小写。没有默认管理员，旧无归属项目需通过受控迁移明确 owner。
+
+API 使用 `Authorization: Bearer <access_token>`；Swagger 可在登录后通过 Authorize 填入 Token。Token 默认有效期 900 秒，`PYCODE_ACCESS_TOKEN_TTL_SECONDS` 允许 1～3600 秒。直接启动 API 时 JWT 配置无效会使认证与 `/ready` 返回 503，`/health` 仍仅表示进程存活；容器入口会提前拒绝无效配置。
+
+统一问答 `POST /api/v1/projects/{id}/questions` 返回 202 及 `run_id`、`task_id`、`status`。旧同步 `/ask`、`/impact` 和异步 `POST /api/v1/agent-runs` 保持各自语义与授权规则；`/impact` 接受相对 `file_path`。
+
+Trace SSE `/api/v1/agent-runs/{run_id}/events` 同样要求 Bearer Header；React 使用认证 `fetch` 流，重连携带 `Last-Event-ID`。原生 `EventSource` 不能附加该 Header，不要把 Token 放入 URL。`POST /api/v1/tasks/health` 不公开。
+
+### 5. 停止、持久化与更新
+
+PostgreSQL、Redis 和 Workspace 分别使用 named volume；源码、Snapshot Artifact 和 Memory 位于 Workspace 中。
 
 ```bash
-# 启动已有环境
-docker compose up -d
-
-# 首次启动或代码变更后重新构建
-docker compose up --build -d
-
-# 查看服务状态与日志
-docker compose ps
-docker compose logs -f
-
-# 暂停与恢复
+# 暂停 / 恢复现有容器
 docker compose stop
 docker compose start
 
-# 关闭容器，保留 named volume 数据
+# 删除容器与网络，保留 named volume 数据
 docker compose down
+
+# 再次启动已有环境
+docker compose up -d --wait
 ```
 
-`docker compose down -v` 会删除 Docker 环境中的 PostgreSQL、Redis 和 Workspace 持久化数据，不应作为日常停止命令。
+**`docker compose down -v` 会删除数据库、Redis 和 Workspace 数据卷，不用于日常停止。** 升级前备份数据库与 Workspace，保留 Redis 数据，等待任务静默，并保存旧镜像、匹配的 Compose 与配置；不要覆盖唯一回滚镜像。迁移和回滚步骤见[升级与回滚](backend/DEPLOYMENT.md#升级与回滚)。
 
-### 本地开发
+仅修改模型配置后，重新创建读取配置的服务：
 
-本地开发建议使用 Python 3.11+、Git、PostgreSQL、Redis 和 Node.js 24（与 CI/Docker 一致）。先启动本机 PostgreSQL 与 Redis，然后在项目根目录执行：
+```bash
+docker compose up -d --force-recreate backend worker
+```
+
+Nginx 在启动时解析 Backend 地址；Backend 重建后若 Web 出现 502，可执行 `docker compose restart frontend` 刷新 upstream。
+
+## 本地开发
+
+建议 Python 3.12（项目要求 3.11+）、Node.js 24（与 CI/Docker 一致）、Git，以及独立运行的 PostgreSQL 和 Redis。在项目根目录：
 
 ```bash
 python -m venv .venv
-
-# Linux / macOS
+# Linux/macOS
 source .venv/bin/activate
-
-# Windows PowerShell
-# .\.venv\Scripts\Activate.ps1
-
+# Windows PowerShell 使用：.\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-cp .env.example .env
-python -m alembic upgrade head
 ```
 
-Windows PowerShell 可将复制命令替换为 `Copy-Item .env.example .env`。本地 `.env` 中的 `DATABASE_URL`、`REDIS_URL` 应指向 `localhost`；如需运行问答或 Agent，再填写 `OPENAI_*` 配置。
-
-在独立终端启动 Backend、Worker 和 Beat：
+按快速开始步骤创建 `.env`，填写 JWT 与本地服务配置。此时 `DATABASE_URL`、`REDIS_URL` 必须指向实际本机服务，数据库已存在且账号有迁移权限；Compose 中的 `POSTGRES_*` 不会自动初始化本地数据库。
 
 ```bash
-python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+python -m backend.check_config --role migration
+python -m alembic upgrade head
+python -m backend.check_config --role api --exec -- python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+```
+
+另外两个终端从项目根目录、使用同一虚拟环境和配置启动 Worker、Beat：
+
+```bash
 python -m celery -A backend.app.worker:app worker --loglevel=INFO
 python -m celery -A backend.app.worker:app beat --loglevel=INFO
 ```
 
-Windows 上的 Celery Worker 使用 `solo` pool：
+Windows Worker 使用 `solo`：
 
 ```powershell
 python -m celery -A backend.app.worker:app worker --loglevel=INFO --pool=solo
 ```
 
-启动 Frontend：
+再开终端启动前端：
 
 ```bash
 cd frontend
@@ -250,103 +252,50 @@ npm ci
 npm run dev
 ```
 
-开发入口为 <http://127.0.0.1:5173>。Vite 会把 `/api` 代理到 `http://127.0.0.1:8000`。
+访问 <http://127.0.0.1:5173>，Vite 将 `/api` 代理到本机 8000 端口。生产式预检启动与更多配置见[本地启动](backend/DEPLOYMENT.md#本地启动)。
 
-## ⚙️ 配置
+## 技术栈与项目结构
 
-模型配置来自 `.env`：
-
-| 变量 | 说明 |
+| 层 | 技术与职责 |
 | --- | --- |
-| `OPENAI_API_KEY` | 模型服务凭证；Repository indexing 不需要，问答和 Agent 需要。 |
-| `OPENAI_MODEL` | 默认模型名称。 |
-| `OPENAI_BASE_URL` | OpenAI-compatible gateway 地址；使用官方默认地址时留空。 |
-| `OPENAI_API_TYPE` | `responses` 或 `chat`。 |
-
-Docker Compose 还要求 `POSTGRES_USER`、`POSTGRES_PASSWORD` 和 `POSTGRES_DB`。容器内的 `DATABASE_URL`、`REDIS_URL` 与 `PYCODE_WORKSPACE_ROOT` 由 Compose 覆盖为 service DNS 和共享 Workspace；本地开发则直接使用 `.env` 中的值。
-
-Git timeout、Repository retry、LLM/Redis timeout、项目锁、SSE 上限、任务 lease 和 recovery interval 等高级选项均以 `PYCODE_*` 变量提供，默认值和说明见 [`.env.example`](.env.example)。
-
-Embedding 与 LLM 独立配置，代码默认关闭。启用 `PYCODE_EMBEDDING_ENABLED=true` 后，基础索引成功可触发既有 Worker 中的语义索引任务，可能向所配 Provider 发送代码片段并产生费用；需要单独设置 `PYCODE_EMBEDDING_*`。`PYCODE_RETRIEVAL_MODE` 未设置时代码默认 `keyword`，模板显式选择 `hybrid`；缺少或损坏的向量、配置错误、Provider 失败会带诊断降级到可用的 Keyword/静态 Graph，不撤销基础 Snapshot 的 ready 状态，也不在查询时重建。模型/维度/内容哈希与绑定必须匹配，不能因 Commit 相同就跨 Project/Snapshot 复用产物。
-
-部署、Artifact 版本兼容及预算/Memory 的运行边界见[后端部署说明](backend/DEPLOYMENT.md#agent-检索与现有数据)。
-
-修改模型配置后，重新创建读取该配置的服务：
-
-```bash
-docker compose up -d --force-recreate backend worker
-```
-
-Nginx 配置在启动时解析 `backend` 地址。如果重建 Backend 后 Web UI 出现 `502`，刷新其 upstream：
-
-```bash
-docker compose restart frontend
-```
-
-## 后端用户认证
-
-后端提供 `POST /api/v1/auth/register`、`POST /api/v1/auth/login` 和
-`GET /api/v1/auth/me`。注册和登录使用 JSON 字段 `account_name`、`password`；
-注册密码长度为 6～128 个字符，不要求大小写、数字或特殊符号组合，不自动去除首尾空格或转换大小写。
-
-按 [`.env.example`](.env.example) 配置 `PYCODE_JWT_SECRET`，使用至少 32 字节的随机密钥。
-`PYCODE_JWT_ALGORITHM` 仅支持 `HS256`；`PYCODE_ACCESS_TOKEN_TTL_SECONDS` 默认 900 秒，
-允许范围为 1～3600 秒。直接运行 API 时缺少有效密钥会使认证入口和 `/ready` 返回 503，`/health` 仍表示进程存活；容器入口会在启动 API 前拒绝无效配置。Worker 不依赖浏览器 JWT。
-
-可通过 Swagger 完成注册和登录，将返回的 `access_token` 填入 Authorize，
-再调用 `/api/v1/auth/me`；API 客户端使用 `Authorization: Bearer <access_token>` Header。
-Project 列表、创建、详情、索引提交、问答、影响分析、分析历史、Snapshot 和 Graph
-接口均需要此 Header，仅访问当前用户拥有的项目及其资源。
-旧的无归属项目需通过受控迁移明确归属。AgentRun 提交、Task/AgentRun 查询及 Trace
-历史接口及 SSE `/api/v1/agent-runs/{run_id}/events` 也需要此 Header，并按关联项目校验归属。
-SSE 使用支持自定义 Header 的客户端或 `fetch` 流，重连时发送 `Last-Event-ID`；
-原生 `EventSource` 无法附加 Bearer Header；当前 React 前端已使用认证 `fetch` 流并携带重放序号。不要将 Token 放入 URL。
-`POST /api/v1/tasks/health` 不再公开，health 探针任务仅由内部 Service/Worker 调用。
-
-## 🧰 技术栈
-
-| 层 | 技术 |
-| --- | --- |
-| Frontend | React、TypeScript、Vite、TanStack Query、Cytoscape、Tailwind CSS、Nginx |
-| Backend | FastAPI、SQLAlchemy、Alembic、PostgreSQL |
-| Async / Realtime | Redis、Celery、SSE |
-| Agent Core | Python AST、LLM、Tool Calling、Memory、Code Graph、Rich CLI |
-| Infrastructure | Docker、Docker Compose、GitHub Actions |
-| Testing | pytest、Vitest、Testing Library、Playwright |
-
-## 📁 项目结构
+| 前端 | React、TypeScript、Vite、TanStack Query 管理交互与请求；Cytoscape 展示局部图谱，Tailwind CSS 提供样式，Nginx 提供静态资源与 API/SSE 代理。 |
+| 后端 | FastAPI 提供 API；SQLAlchemy、Alembic、PostgreSQL 管理事务、业务记录与迁移；JWT 校验访问身份。 |
+| 异步与实时 | Celery/Beat 执行和协调长任务；Redis 提供 broker、锁与实时流，SSE 向浏览器传递进度。 |
+| 分析与 Agent | Python AST、符号解析、Code Graph、Keyword/Vector 检索、Evidence Pack、Tool Calling、Context/Memory/Trace；Rich 提供 CLI 输出。 |
+| 工程保障 | Docker Compose、GitHub Actions、pytest、Vitest、Testing Library、Playwright。 |
 
 ```text
 PyCode/
-├── backend/           # FastAPI、DB、Repository lifecycle、Worker integration
-├── frontend/          # React + TypeScript Web UI
-├── pycode/            # Index、Code Graph、retrieval、Agent Core 与 tools
-├── tests/             # Core、Backend、浏览器测试与 fixtures
-│   └── fixtures/
-│       └── demo_project/
-├── compose.yaml       # 完整部署编排
+├── backend/           # API、Service、Repository、Worker、数据库迁移与部署说明
+├── frontend/          # React 页面、API 适配、组件与浏览器测试
+├── pycode/            # AST、Index、Graph、Retriever、Agent、工具与 CLI
+├── tests/             # Core/Backend 回归、受控浏览器服务与冻结 fixtures
+├── scripts/           # 部署 Smoke、Benchmark 与专项复现工具
+├── .github/workflows/ # CI
+├── compose.yaml       # 容器编排
 ├── .env.example       # 配置模板
 └── README.md
 ```
 
-## 🔎 典型使用流程
+## 测试与质量保障
 
-1. 在 Projects 页面创建 Project，填写公共 HTTPS Repository URL 和可选 branch。
-2. 在 Project Workspace 提交 Index 任务。Worker clone/fetch Repository、解析 commit，并发布 Snapshot、Index、Graph 和 Chunk Artifact。
-3. 等待 Project 基础索引 `ready`；语义索引状态独立，可从 Snapshot 详情查看，不影响基础证据可用性。
-4. 在统一提问框输入问题；可在正文描述目标文件及影响分析需求，由系统选择路径。
-5. 查看任务状态、实际 Trace、最终 Answer/Evidence；刷新后仍可查询结果和回放。
-6. 从 Analysis History 回看成功结果，或在 Code Graph 页面查询符号和文件关系。
+[GitHub Actions](.github/workflows/ci.yml) 包含四个独立 job：
 
-## 🧪 测试与 CI
+| Job | 检查范围 |
+| --- | --- |
+| `backend` | Python 3.12、专用 PostgreSQL/Redis、迁移、配置预检和 pytest；覆盖 Core、认证授权、隔离、任务生命周期与恢复。 |
+| `frontend` | `npm ci`、Vitest、TypeScript 类型检查和生产构建。 |
+| `e2e` | 受控 FastAPI 测试服务、Vite 与 Chromium 的浏览器流程；失败时上传诊断。 |
+| `docker` | `python -m scripts.deploy.smoke`，构建并验证独立 Compose 部署、持久化和依赖故障恢复。 |
 
-Backend 与 Core：
+本地后端测试需显式配置独立的 `TEST_DATABASE_URL` 测试库，以及指向专用 Redis DB15 的 `TEST_REDIS_URL`/`REDIS_URL`；不要使用开发库或与运行中的 Worker 共享测试资源。隔离方式以 CI 和[部署验证说明](backend/DEPLOYMENT.md#ci-和本机隔离验证)为准。
 
 ```bash
+# 从项目根目录，先完成测试环境配置
 python -m pytest --basetemp=.pytest_tmp -o cache_dir=.pytest_tmp/.pytest_cache --tb=short
 ```
 
-Frontend：
+前端与浏览器测试：
 
 ```bash
 cd frontend
@@ -354,31 +303,29 @@ npm ci
 npm test
 npm run typecheck
 npm run build
-```
-
-受控浏览器 E2E：
-
-```bash
-cd frontend
+npx playwright install chromium
 npm run e2e
 ```
 
-Playwright 流程使用受控 FastAPI test server、Vite 和 headless Chromium，不调用付费 LLM，也不要求 PostgreSQL 或 Redis。首次运行前需要安装 Playwright Chromium。
+E2E 使用项目根目录的 `.venv`，自动启动受控测试服务，不要求真实 PostgreSQL/Redis，也不调用付费模型。Docker Smoke 需要可用 Docker，使用自建的随机项目、端口及临时凭据，只清理自己创建的测试资源；不要对现有部署执行清卷操作。
 
-GitHub Actions 中的 `backend`、`frontend` 和 `docker` jobs 分别覆盖 Python 配置/迁移/授权与隔离测试、Frontend 测试/类型检查/构建，以及隔离 Compose 的构建、启动、持久化和健康故障恢复验证。
+Graph 和 RAG 专项使用冻结样本、协议、哈希及前后可比性检查，分别观察绑定、证据覆盖、关系披露和性能。复现入口见 [Graph 评测](scripts/benchmarks/f_t05_graph_reviewed.py)和 [RAG 评测](scripts/benchmarks/q_t03_evidence_quality.py)。历史收据绑定当时源码/Prompt，复现应使用匹配版本，不能改收据绕过校验。
 
-## ⚠️ 当前限制
+Fake/Stub LLM、离线向量和少量固定仓库样本只验证对应工程链路与实验口径，不能代替真实回答的人工复核，也不能外推生产准确率、费用或大仓库吞吐。
 
-- Index 与 Code Graph 当前主要面向 Python Repository；调用关系来自静态 AST，无法完整覆盖反射、运行时注入和所有动态分派，unknown/ambiguous 不应被解释为确定调用。
-- Git 接入当前面向公共 HTTPS URL，默认允许 `github.com`、`gitlab.com` 和 `gitee.com`；不支持私有 SSH Repository。为控制边界，符号链接、submodule 和 Repository 自带的 `.pclens` 会被拒绝。
-- Repository ingestion 不安装依赖，也不运行目标仓库代码；Impact Analysis 是以 `file_path` 为入口的静态分析辅助结果，仍需结合项目语义复核。
-- 问答与 Agent 依赖 OpenAI 或 OpenAI-compatible API，执行时间和结果受 provider quota、rate limit、模型能力与网络状态影响。
-- Analysis History 是按 Project 保存的独立成功分析记录，不提供多轮 Conversation 语义。
-- 旧 ready Snapshot 的 Graph 能力以已发布版本为准；软件升级或对同一 Commit 再次索引不保证原地升级 Graph。兼容读取不是静默重建或迁移，详见部署说明。
-- Hybrid 当前对显式符号 `target` 存在被视作文件路径的边界；显式目标优先用项目相对文件路径，符号名可写在问题正文中。
-- Fake/Stub 评估验证工程链路，不证明真实回答准确率、Memory 语义收益或线上费用；没有真实回答与人工复核时，质量指标仍未验证。保守 Token 估算、两个本项目规模的测量也不能外推计费或超大仓库表现。
-- Python 依赖使用版本范围而非完整 lock，Backend 源码构建不是 byte-for-byte reproducible；Frontend 使用 `package-lock.json` 和 `npm ci`。
+## 当前能力边界
+
+- **语言与调用解析**：主要支持 Python。静态图不能完整覆盖动态调用、反射、继承/运行时多态；即使标记 `static`，也不保证某次运行的唯一目标，`unknown/ambiguous` 更不能当作确定调用。
+- **证据与回答**：源码可追溯和引用地址合法，不表示自然语言结论正确。当前校验不证明每条回答断言都得到语义支持；项目也不是完整的自主代码修改与软件交付系统。
+- **仓库接入**：支持公共 HTTPS Git，默认允许 `github.com`、`gitlab.com`、`gitee.com`；不支持私有 SSH 仓库。导入拒绝符号链接、submodule 和仓库自带的 `.pclens`。
+- **外部服务**：LLM 与可选 Embedding 需用户配置，受模型能力、配额、限流和网络影响；Embedding 适配范围以当前配置校验为准。
+- **显式目标**：Hybrid 对符号 `target` 存在被当作文件路径的边界，优先使用项目相对文件路径，把符号写入问题正文。
+- **版本与复现**：旧 Snapshot 不自动获得新 Graph 能力；Python 依赖使用版本范围而非完整 lock，后端源码构建不保证字节级复现。前端使用 `package-lock.json` 与 `npm ci`。
+
+## 后续方向
+
+以下为未来方向：Reranking、MMR 与证据选择优化；更深入的调用来源、属性与跨过程分析；更多真实仓库/回答的独立评测；跨仓库和多语言支持。它们不作为当前版本的已交付能力。
 
 ---
 
-**Version:** v3.0 开发分支（综合验收待完成） · **Author:** Yesterre
+**Version:** v3.0 · **Author:** Yesterre

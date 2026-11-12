@@ -2,8 +2,9 @@
 # Preserve that representation on every checkout without changing its Git blob.
 /tests/fixtures/a00/questions.json text eol=crlf
 
-# Q-T03 receipts freeze LF bytes; keep them reproducible on Windows checkouts.
-/tests/fixtures/q_t03/*.json text eol=lf
+# Q-T03 JSON receipts freeze CRLF bytes recorded on Windows.
+# Preserve those bytes on every checkout; keep the evaluation script LF.
+/tests/fixtures/q_t03/*.json text eol=crlf
 /scripts/benchmarks/q_t03_evidence_quality.py text eol=lf
 /docs_v3.0/q_t03_evidence_quality/** text eol=lf
 /docs_v3.0/Q-T03-01_rag_evidence_quality_improvement.md text eol=lf
